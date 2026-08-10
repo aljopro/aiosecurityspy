@@ -7,21 +7,24 @@ async-context-manager protocol.
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import logging
-import math
-import re
+from datetime import UTC
 from typing import TYPE_CHECKING, Final
 
 import aiohttp
 
+from .connection import ConnectionSettings
 from .const import DEFAULT_PORT, DEFAULT_TIMEOUT, ENDPOINT_SYSTEM_INFO
 from .exceptions import SecuritySpyAuthError, SecuritySpyConnectError
 from .models import ServerInfo
+from .stream import SecuritySpyEventStream
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from datetime import tzinfo
+
+    from .stream import EventCallback, LifecycleCallback
 
 __all__ = ["SecuritySpyClient"]
 
@@ -39,69 +42,6 @@ _HTTP_REDIRECT_MAX: Final = 399
 #: misbehaving server, and buffering it inside a Home Assistant process is worse
 #: than failing. The request timeout bounds duration, not bytes.
 _MAX_BODY_BYTES: Final = 8 * 1024 * 1024
-
-#: Hostnames are validated against an allowlist rather than a denylist: a
-#: denylist of "characters that break a URL" is impossible to get right, and a
-#: near-miss puts caller-controlled text into the URL we build.
-_HOSTNAME_RE: Final = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$")
-
-
-def _validate_host(host: str) -> tuple[str, str]:
-    """Validate a host and return ``(canonical_host, url_host)``.
-
-    ``url_host`` is the form safe to interpolate into a URL: an IPv6 literal is
-    bracketed, because ``http://::1:8000`` is not a parseable URL.
-
-    Raises:
-        ValueError: The host is empty, over-long, or contains any character
-            outside ``[A-Za-z0-9._-]`` -- which is what rejects a scheme, port,
-            userinfo, path or whitespace. This is a character allowlist, not the
-            full DNS grammar: it is what keeps caller-controlled text out of the
-            URL, and it does not reject every malformed hostname (an empty label
-            such as ``a..b`` still passes and simply fails to resolve).
-
-    """
-    candidate = host.strip()
-    if candidate.startswith("[") and candidate.endswith("]"):
-        candidate = candidate[1:-1]
-    if candidate:
-        try:
-            parsed = ipaddress.ip_address(candidate)
-        except ValueError:
-            pass
-        else:
-            text = parsed.compressed
-            return text, f"[{text}]" if parsed.version == 6 else text  # noqa: PLR2004 - IP version
-    if not candidate or not _HOSTNAME_RE.match(candidate):
-        # Deliberately does not echo the value: it is caller-supplied text and
-        # a userinfo-bearing host would contain a password.
-        msg = "host must be a bare hostname or IP address, without scheme, port or path"
-        raise ValueError(msg)
-    return candidate, candidate
-
-
-def _validate_credentials(username: str, password: str) -> None:
-    """Reject credentials HTTP Basic auth cannot carry.
-
-    Both checks exist to keep the credential out of a traceback: aiohttp raises
-    ``UnicodeEncodeError`` at *request* time for a non-latin-1 credential, and
-    that exception's ``args`` contain the password itself.
-
-    Raises:
-        ValueError: The username contains ``':'`` (forbidden by RFC 7617) or a
-            credential is not encodable as latin-1. Neither message quotes the
-            value.
-
-    """
-    if ":" in username:
-        msg = "username must not contain ':' (HTTP Basic auth cannot encode it)"
-        raise ValueError(msg)
-    for label, value in (("username", username), ("password", password)):
-        try:
-            value.encode("latin-1")
-        except UnicodeEncodeError:
-            msg = f"{label} must be encodable as latin-1 for HTTP Basic auth"
-            raise ValueError(msg) from None
 
 
 class SecuritySpyClient:
@@ -160,53 +100,84 @@ class SecuritySpyClient:
             TypeError: ``port`` is not an integer.
 
         """
-        self._host, self._url_host = _validate_host(host)
-        # `isinstance(True, int)` is True and a float port formats straight into
-        # the URL, so a type check has to precede the range check: otherwise
-        # port=8000.5 yields "http://host:8000.5" and every request fails
-        # opaquely. Type annotations do not constrain runtime callers such as a
-        # config flow reading user input.
-        if isinstance(port, bool) or not isinstance(port, int):
-            msg = "port must be an integer"
-            raise TypeError(msg)
-        if not 1 <= port <= 65535:  # noqa: PLR2004 - the TCP port range is not a magic number
-            msg = "port must be between 1 and 65535"
-            raise ValueError(msg)
-        if not math.isfinite(timeout) or timeout <= 0:
-            # aiohttp reads `total=0` as "no timeout", and `inf`/`nan` slip past
-            # a bare `<= 0` check while leaving the request effectively
-            # unbounded -- either would void the guarantee that a wrong-host TLS
-            # handshake fails rather than hangs.
-            msg = "timeout must be a positive, finite number of seconds"
-            raise ValueError(msg)
-        _validate_credentials(username, password)
-        self._session = session
-        self._port = port
-        self._auth = aiohttp.BasicAuth(username, password)
-        self._verify_ssl = verify_ssl
-        self._scheme = "https" if use_https else "http"
-        self._timeout = aiohttp.ClientTimeout(total=timeout)
+        # Validation, URL construction and credential handling live in
+        # `connection.py` so the event stream shares exactly one definition of
+        # them rather than re-deriving transport state (AD-13).
+        self._connection = ConnectionSettings.create(
+            session,
+            host,
+            port,
+            username=username,
+            password=password,
+            use_https=use_https,
+            verify_ssl=verify_ssl,
+            timeout=timeout,
+        )
 
     @property
     def host(self) -> str:
         """The configured host."""
-        return self._host
+        return self._connection.host
 
     @property
     def port(self) -> int:
         """The configured port."""
-        return self._port
+        return self._connection.port
 
     @property
     def base_url(self) -> str:
         """The server's base URL. It never contains credentials."""
-        return f"{self._scheme}://{self._url_host}:{self._port}"
+        return self._connection.base_url
+
+    def event_stream(  # noqa: PLR0913 - four independent lifecycle callbacks plus tuning; all keyword-only
+        self,
+        *,
+        on_event: EventCallback,
+        on_connected: LifecycleCallback | None = None,
+        on_disconnected: LifecycleCallback | None = None,
+        on_reconnected: LifecycleCallback | None = None,
+        on_auth_failed: LifecycleCallback | None = None,
+        server_timezone: tzinfo = UTC,
+    ) -> SecuritySpyEventStream:
+        """Create an event-stream reader bound to this client's server.
+
+        The stream is not started: call
+        :meth:`~aiosecurityspy.SecuritySpyEventStream.connect` on the result.
+        It reuses this client's validated host, credential, TLS flag and
+        timeout, so there is one construction path and no duplicated
+        validation.
+
+        Args:
+            on_event: Called with every decoded event. May be sync or async.
+            on_connected: Called once, on the first-ever successful connect.
+            on_disconnected: Called once per lost connection.
+            on_reconnected: Called on every successful connect after the first.
+            on_auth_failed: Called on 401/403, after which reconnection pauses
+                until ``resume()`` is called.
+            server_timezone: Timezone of the server's wall-clock timestamps.
+                **[ASSUMPTION]** No SecuritySpy endpoint exposes it, so this
+                defaults to UTC.
+
+        Returns:
+            A stopped :class:`~aiosecurityspy.SecuritySpyEventStream`.
+
+        """
+        return SecuritySpyEventStream(
+            self._connection,
+            on_event=on_event,
+            on_connected=on_connected,
+            on_disconnected=on_disconnected,
+            on_reconnected=on_reconnected,
+            on_auth_failed=on_auth_failed,
+            server_timezone=server_timezone,
+        )
 
     def __repr__(self) -> str:
         """Return a representation that cannot leak credentials."""
         return (
-            f"SecuritySpyClient(host={self._host!r}, port={self._port}, "
-            f"scheme={self._scheme!r}, verify_ssl={self._verify_ssl})"
+            f"SecuritySpyClient(host={self._connection.host!r}, "
+            f"port={self._connection.port}, scheme={self._connection.scheme!r}, "
+            f"verify_ssl={self._connection.verify_ssl})"
         )
 
     __str__ = __repr__
@@ -237,15 +208,17 @@ class SecuritySpyClient:
         per-request SSL flag, the timeout, status-to-exception mapping and JSON
         parsing all happen exactly once, here.
         """
-        url = f"{self.base_url}/{path}"
-        _LOGGER.debug("Requesting %s from %s:%s", path, self._host, self._port)
+        url = self._connection.build_url(path)
+        _LOGGER.debug(
+            "Requesting %s from %s:%s", path, self._connection.host, self._connection.port
+        )
         try:
-            async with self._session.get(
+            async with self._connection.session.get(
                 url,
                 params=dict(params or {}),
-                auth=self._auth,
-                ssl=self._verify_ssl,
-                timeout=self._timeout,
+                auth=self._connection.auth,
+                ssl=self._connection.verify_ssl,
+                timeout=self._connection.request_timeout(),
                 # SecuritySpy 301-redirects plain HTTP to its HTTPS *port*, and
                 # a different port is a different origin, so aiohttp strips the
                 # Authorization header when following it (verified against
@@ -259,24 +232,28 @@ class SecuritySpyClient:
             ) as response:
                 status = response.status
                 if status in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
-                    raise SecuritySpyAuthError(self._host, self._port, status)
+                    raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
                 if _HTTP_REDIRECT_MIN <= status <= _HTTP_REDIRECT_MAX:
                     # Almost always "you asked for http, this server wants
                     # https". Say so, rather than reporting a bare 301.
                     raise SecuritySpyConnectError(
-                        self._host,
-                        self._port,
+                        self._connection.host,
+                        self._connection.port,
                         f"server redirected (HTTP {status}); if the server uses TLS, "
                         "construct the client with use_https=True",
                     )
                 if not _HTTP_OK_MIN <= status <= _HTTP_OK_MAX:
                     raise SecuritySpyConnectError(
-                        self._host, self._port, f"unexpected HTTP status {status}"
+                        self._connection.host,
+                        self._connection.port,
+                        f"unexpected HTTP status {status}",
                     )
                 declared = response.content_length
                 if declared is not None and declared > _MAX_BODY_BYTES:
                     raise SecuritySpyConnectError(
-                        self._host, self._port, "server response body was too large"
+                        self._connection.host,
+                        self._connection.port,
+                        "server response body was too large",
                     )
                 # Accumulate rather than issuing one `read(n)`: StreamReader.read
                 # returns whatever is currently buffered, not n bytes, so a
@@ -290,7 +267,9 @@ class SecuritySpyClient:
                     total += len(chunk)
                     if total > _MAX_BODY_BYTES:
                         raise SecuritySpyConnectError(
-                            self._host, self._port, "server response body was too large"
+                            self._connection.host,
+                            self._connection.port,
+                            "server response body was too large",
                         )
                 raw = b"".join(chunks)
                 body = raw.decode(response.get_encoding())
@@ -301,24 +280,34 @@ class SecuritySpyClient:
             # wrong-port server answering text/html hits this on every call, and
             # it must not escape as a bare RuntimeError.
             raise SecuritySpyConnectError(
-                self._host, self._port, "server response encoding was not determinable"
+                self._connection.host,
+                self._connection.port,
+                "server response encoding was not determinable",
             ) from err
         except (UnicodeDecodeError, LookupError) as err:
             # A body that will not decode -- or that declares a charset Python
             # does not know -- is a broken server, not a Python bug; it must not
             # escape as a bare ValueError or LookupError.
             raise SecuritySpyConnectError(
-                self._host, self._port, "server response was not decodable text"
+                self._connection.host,
+                self._connection.port,
+                "server response was not decodable text",
             ) from err
         except TimeoutError as err:
-            raise SecuritySpyConnectError(self._host, self._port, "request timed out") from err
+            raise SecuritySpyConnectError(
+                self._connection.host, self._connection.port, "request timed out"
+            ) from err
         except aiohttp.ClientError as err:
             raise SecuritySpyConnectError(
-                self._host, self._port, f"transport failure ({type(err).__name__})"
+                self._connection.host,
+                self._connection.port,
+                f"transport failure ({type(err).__name__})",
             ) from err
         except OSError as err:
             raise SecuritySpyConnectError(
-                self._host, self._port, f"connection failure ({type(err).__name__})"
+                self._connection.host,
+                self._connection.port,
+                f"connection failure ({type(err).__name__})",
             ) from err
 
         try:
@@ -327,5 +316,5 @@ class SecuritySpyClient:
             # The body is deliberately not echoed: it can contain device
             # credentials (research §8.3).
             raise SecuritySpyConnectError(
-                self._host, self._port, "server response was not valid JSON"
+                self._connection.host, self._connection.port, "server response was not valid JSON"
             ) from err

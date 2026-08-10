@@ -63,6 +63,77 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+### Read the live event stream
+
+`event_stream()` returns a reader that owns its own lifecycle: CR-only record framing,
+a heartbeat watchdog (loss after three missed ~10 s heartbeats), indefinite exponential
+backoff, and explicit lifecycle callbacks. Callbacks may be sync or async, and one that
+raises is logged and swallowed rather than killing the stream.
+
+```python
+import asyncio
+
+import aiohttp
+
+from aiosecurityspy import ClassificationPayload, SecuritySpyClient, StreamEvent
+
+
+async def main() -> None:
+    async with aiohttp.ClientSession() as session:
+        client = SecuritySpyClient(
+            session,
+            "nvr.example.com",
+            8001,
+            username="ha-readonly",
+            password="...",
+            use_https=True,
+        )
+
+        def on_event(event: StreamEvent) -> None:
+            if isinstance(event.payload, ClassificationPayload):
+                print(f"camera {event.camera}: {dict(event.payload.classes)}")
+
+        stream = client.event_stream(
+            on_event=on_event,
+            on_connected=lambda: print("stream live"),
+            on_disconnected=lambda: print("stream lost; reconnecting"),
+            on_reconnected=lambda: print("stream back; reconcile state"),
+            on_auth_failed=lambda: print("credentials rejected; call resume() to retry"),
+        )
+        await stream.connect()
+        try:
+            await asyncio.sleep(60)
+        finally:
+            await stream.disconnect()
+
+
+asyncio.run(main())
+```
+
+A few things the protocol makes non-obvious:
+
+- **`connected` fires once**, on the first successful connect of the stream's life. Every
+  later successful connect fires `reconnected` — including after your own
+  `disconnect()`/`connect()` pair, because any gap means state must be reconciled.
+- **On 401/403 the stream pauses** rather than retrying. `on_auth_failed` fires once, and
+  nothing else happens until you call `await stream.resume()` — `connect()` declines while
+  paused, and the pause survives `disconnect()`, so the rejected credential has exactly one
+  door out of it. The library never re-authenticates and never counts auth failures.
+- **`event.camera is None`** means the record was not camera-specific (the wire format
+  sends `X`), not that it was invalid. `NULL` heartbeats arrive this way.
+- **`event.event_number` restarts at 0 on every reconnect.** Record it; never key off it.
+- **The classification vocabulary is open.** A label from a custom CoreML model arrives in
+  `ClassificationPayload.classes` unchanged. Use `slugged()` only when you need a
+  permanent key.
+- **`MOTION_END` is unreliable** and is not an inactivity signal; implement your own
+  timeout if you need one.
+
+- **Backoff resets after every successful connection**, so a server that drops the stream
+  periodically retries promptly instead of creeping up to the five-minute ceiling.
+
+`disconnect()` is idempotent, is safe to call from inside a callback, and leaves no task,
+timer, or socket behind. Your session is untouched either way.
+
 ### Use a least-privileged SecuritySpy account
 
 Create a dedicated SecuritySpy user for this library rather than reusing an administrator
@@ -85,9 +156,9 @@ traceback.
 
 ## Status
 
-Early development. The client, typed models, protocol constants, and exception hierarchy
-are in place; the event stream, capture history, detection-episode reducer, settings
-writes, and anonymizer land in subsequent releases. The public API is not yet stable.
+Early development. The client, typed models, protocol constants, exception hierarchy, and
+the event stream are in place; capture history, the detection-episode reducer, settings
+writes, and the anonymizer land in subsequent releases. The public API is not yet stable.
 
 ## Development
 

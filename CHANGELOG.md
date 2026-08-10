@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `SecuritySpyEventStream` and `SecuritySpyClient.event_stream(...)`: a reader for
+  `++eventStream?version=3` that owns its whole lifecycle. Records are framed on CR
+  (`0x0D`) **only** — the stream contains zero LF bytes, so nothing in the library waits
+  on a line feed — and a record split across TCP chunk boundaries reassembles. A record
+  left unterminated when the stream ends is discarded rather than half-decoded, and one
+  that exceeds the 64 KiB cap with no separator in sight is dropped rather than buffered
+  without bound — and the reader then stays out of sync until the next separator, so the
+  tail of a dropped record is never emitted as though it were a whole one.
+- Stream lifecycle: a heartbeat watchdog that declares loss after three missed ~10 s
+  heartbeats (measured as socket silence, so a busy camera cannot false-positive),
+  indefinite exponential backoff with jitter and a capped ceiling (the delay returns to
+  its initial value after every successful connection, so a server that drops the stream
+  periodically does not creep up to the ceiling and stay there), and explicit
+  `on_connected` / `on_disconnected` / `on_reconnected` / `on_auth_failed` callbacks.
+  `connected` fires only on the first-ever successful connect; every later one is a
+  `reconnected`. On 401/403 the stream fires `on_auth_failed` and **pauses** reconnection
+  until the consumer calls `resume()` — the library never re-authenticates and never
+  counts auth failures. The pause has exactly one door out of it: `connect()` declines
+  while paused, and the pause survives `disconnect()`, so a rejected credential cannot be
+  retried through the ordinary entry point. `connect()` and `disconnect()` are idempotent
+  and serialized against each other, callbacks may be sync or async, and a callback that
+  raises is logged and swallowed. `disconnect()` is safe to call from inside a callback,
+  which runs on the reader task: the cancellation unwinds as the callback returns rather
+  than the reader awaiting itself. No exception escapes the stream, and the stream request
+  carries no total timeout (it is long-lived by design) but does carry a bounded connect
+  timeout.
+- Frozen event models in `events.py`: `StreamEvent` plus `MotionPayload`,
+  `ClassificationPayload` (with `slugged()`), `TriggerPayload`, `FilePayload`, and
+  `ErrorPayload`, and the pure `parse_event_line()` decoder. A camera field of `X` decodes
+  to `camera=None`, meaning "not camera-specific" rather than invalid; a malformed record
+  is skipped and the stream continues; an unknown event type is delivered with its `INFO`
+  verbatim. Numeric fields are parsed strictly — no underscore literals, no non-ASCII
+  digits, no `nan`/`inf`, and no integer long enough to trip CPython's conversion limit —
+  because every one of those would otherwise decode to something the wire format never
+  meant, or raise out of the parser and end a live connection. The classification vocabulary stays open, so a label from a user-supplied
+  CoreML model carries through unchanged. Timestamps become timezone-aware UTC, with the
+  original 14-character string preserved on `raw_timestamp` and the server's timezone an
+  injectable assumption defaulting to UTC.
+- Protocol constants: `ENDPOINT_EVENT_STREAM`, `EVENT_STREAM_VERSION`, the `EVENT_*` type
+  names of research §3.3, the §3.4 trigger-reason bit table as `TRIGGER_REASON_NAMES` with
+  `decode_trigger_reasons()`, and the heartbeat and backoff defaults.
+- A recorded-shape event-stream fixture (`tests/fixtures/event_stream.bin`, CR-terminated
+  with zero LF bytes), pure decoding tests, stubbed lifecycle tests, and stream tests
+  against a real in-process `aiohttp` server that chunks mid-record.
 - `SecuritySpyClient`: an async REST client over a caller-injected `aiohttp.ClientSession`.
   The library never creates, reconfigures, or closes a session, so the client has no
   `close()` and no async-context-manager protocol. Credentials are sent only as
@@ -49,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Host, port, timeout and credential validation, URL construction, and the `BasicAuth`
+  credential moved out of `client.py` into an internal `connection.py`, so the client and
+  the event stream share exactly one definition of validated transport state and one place
+  a URL is built. `SecuritySpyClient`'s observable behaviour is unchanged.
 - Narrowed the `aiohttp` dependency to `>=3.12,<4`, matching the architecture's declared
   stack now that `aiohttp` is actually imported.
 
