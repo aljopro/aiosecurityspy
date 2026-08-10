@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
-dependencies = ["aiohttp>=3.10"]
+dependencies = ["aiohttp>=3.12,<4"]
 
 [project.urls]
 Homepage = "https://github.com/aljopro/aiosecurityspy"
