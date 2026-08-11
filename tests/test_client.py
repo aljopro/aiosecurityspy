@@ -5,13 +5,21 @@ from __future__ import annotations
 import contextlib
 import json
 import traceback
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import pytest
 
 from aiosecurityspy import (
+    CAPTURE_FILTER_ALL,
+    CAPTURE_FILTER_ANIMAL,
+    CAPTURE_FILTER_CONTINUOUS,
+    CAPTURE_FILTER_HUMAN,
+    CAPTURE_FILTER_MOVIES,
+    CAPTURE_FILTER_VEHICLE,
     SecuritySpyAuthError,
     SecuritySpyClient,
     SecuritySpyConnectError,
@@ -635,3 +643,303 @@ async def test_redirects_are_not_followed() -> None:
     session = FakeSession(200, fixture_body())
     await make_client(session).async_get_server_info()
     assert session.calls[0][1]["allow_redirects"] is False
+
+
+# --- capture history: request shape and ordering (spec 1.4) -----------------
+
+START_DATE = date(2026, 8, 9)
+END_DATE = date(2026, 8, 10)
+CAPLIST_URL = f"http://{HOST}:{PORT}/++caplist"
+FIXTURE_CAPTURE_COUNT = 5
+NEWEST_START = datetime(2026, 8, 9, 17, 35, 19, tzinfo=UTC)
+
+
+def caplist_body() -> str:
+    return (FIXTURES / "caplist.json").read_text()
+
+
+async def get_captures(
+    session: FakeSession,
+    cameras: list[int] | None = None,
+    **kwargs: Any,  # noqa: ANN401 - passthrough to the method's own signature
+) -> tuple[Any, ...]:
+    client = make_client(session)
+    return await client.async_get_captures(
+        [1] if cameras is None else cameras,
+        start_date=kwargs.pop("start_date", START_DATE),
+        end_date=kwargs.pop("end_date", END_DATE),
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_captures_issue_exactly_one_batched_request() -> None:
+    session = FakeSession(200, caplist_body())
+    await get_captures(session, [4, 1, 1])
+    assert len(session.calls) == 1
+    url, kwargs = session.calls[0]
+    assert url == CAPLIST_URL
+    # Sorted, de-duplicated, and with research §4's trailing comma.
+    assert kwargs["params"]["cams"] == "1,4,"
+    assert kwargs["params"]["startDate"] == "2026-08-09"
+    assert kwargs["params"]["endDate"] == "2026-08-10"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("object_class", "expected"),
+    [
+        ("human", CAPTURE_FILTER_HUMAN),
+        ("vehicle", CAPTURE_FILTER_VEHICLE),
+        ("animal", CAPTURE_FILTER_ANIMAL),
+    ],
+)
+async def test_object_class_is_filtered_server_side(object_class: str, expected: int) -> None:
+    session = FakeSession(200, caplist_body())
+    await get_captures(session, object_class=object_class)
+    assert session.calls[0][1]["params"]["filter"] == str(expected)
+
+
+@pytest.mark.asyncio
+async def test_no_class_filter_sends_filter_all() -> None:
+    session = FakeSession(200, caplist_body())
+    await get_captures(session)
+    assert session.calls[0][1]["params"]["filter"] == str(CAPTURE_FILTER_ALL)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_filter", [CAPTURE_FILTER_MOVIES, CAPTURE_FILTER_CONTINUOUS])
+async def test_raw_capture_filter_is_passed_through(raw_filter: int) -> None:
+    session = FakeSession(200, caplist_body())
+    await get_captures(session, capture_filter=raw_filter)
+    assert session.calls[0][1]["params"]["filter"] == str(raw_filter)
+
+
+@pytest.mark.asyncio
+async def test_no_local_bitmask_filtering_happens() -> None:
+    """`filter=` is the whole filter. Everything the server returned comes back."""
+    session = FakeSession(200, caplist_body())
+    captures = await get_captures(session, [1, 4, 7], object_class="human")
+    assert len(captures) == FIXTURE_CAPTURE_COUNT
+    assert any(not capture.object_classes for capture in captures)
+
+
+# --- argument validation ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unknown_object_class_raises_before_any_request() -> None:
+    session = FakeSession(200, caplist_body())
+    with pytest.raises(ValueError, match="animal, human, vehicle"):
+        await get_captures(session, object_class="delivery_van")
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"start_date": END_DATE, "end_date": START_DATE}, "start_date"),
+        ({"object_class": "human", "capture_filter": CAPTURE_FILTER_MOVIES}, "not both"),
+        ({"capture_filter": -1}, "capture_filter"),
+        ({"capture_filter": True}, "capture_filter"),
+    ],
+)
+async def test_bad_arguments_raise_before_any_request(kwargs: dict[str, Any], match: str) -> None:
+    session = FakeSession(200, caplist_body())
+    with pytest.raises(ValueError, match=match):
+        await get_captures(session, **kwargs)
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cameras", [[-1], [0, -3], ["1"], [True], [1.0]])
+async def test_bad_camera_numbers_raise_before_any_request(cameras: list[Any]) -> None:
+    session = FakeSession(200, caplist_body())
+    with pytest.raises(ValueError, match="non-negative integers"):
+        await get_captures(session, cameras)
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_empty_camera_list_issues_no_request() -> None:
+    session = FakeSession(200, caplist_body())
+    assert await get_captures(session, []) == ()
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_camera_zero_is_a_real_camera() -> None:
+    session = FakeSession(200, "[]")
+    await get_captures(session, [0])
+    assert session.calls[0][1]["params"]["cams"] == "0,"
+
+
+# --- body shapes ------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_empty_result_is_an_empty_tuple() -> None:
+    session = FakeSession(200, "[]")
+    assert await get_captures(session) == ()
+
+
+@pytest.mark.asyncio
+async def test_embedded_list_body_decodes() -> None:
+    session = FakeSession(200, json.dumps({"captures": json.loads(caplist_body())}))
+    captures = await get_captures(session)
+    assert len(captures) == FIXTURE_CAPTURE_COUNT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", ['"a string"', "42", "null", "{}", '{"error": "nope"}'])
+async def test_unusable_body_raises_connect_error_without_echoing_it(body: str) -> None:
+    session = FakeSession(200, body)
+    with pytest.raises(SecuritySpyConnectError) as excinfo:
+        await get_captures(session)
+    assert "nope" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_skippable_entries_are_dropped_and_the_rest_decode() -> None:
+    session = FakeSession(200, caplist_body())
+    captures = await get_captures(session, [1, 4, 7])
+    # The fixture holds seven entries: a bare string and a `c`-less object go.
+    assert len(captures) == FIXTURE_CAPTURE_COUNT
+    assert sorted({capture.camera for capture in captures}) == [1, 4, 7]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403])
+async def test_auth_rejection_surfaces_from_the_shared_seam(status: int) -> None:
+    session = FakeSession(status, "")
+    with pytest.raises(SecuritySpyAuthError):
+        await get_captures(session)
+
+
+# --- ordering ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_captures_come_back_newest_first_with_undated_last() -> None:
+    entries = json.loads(caplist_body())
+    session = FakeSession(200, json.dumps(list(reversed(entries))))
+    captures = await get_captures(session, [1, 4, 7])
+    assert captures[0].start == NEWEST_START
+    dated = [capture.start for capture in captures if capture.start is not None]
+    assert dated == sorted(dated, reverse=True)
+    assert captures[-1].start is None
+
+
+@pytest.mark.asyncio
+async def test_ordering_is_independent_of_server_ordering() -> None:
+    entries = json.loads(caplist_body())
+    forward = FakeSession(200, json.dumps(entries))
+    backward = FakeSession(200, json.dumps(list(reversed(entries))))
+    assert await get_captures(forward, [1, 4, 7]) == await get_captures(backward, [1, 4, 7])
+
+
+@pytest.mark.asyncio
+async def test_equal_starts_break_ties_by_camera_then_filename() -> None:
+    same = {"f": "2026-08-09", "s": 10, "t": 1}
+    session = FakeSession(
+        200,
+        json.dumps(
+            [
+                {**same, "c": 2, "n": "b.m4v"},
+                {**same, "c": 1, "n": "z.m4v"},
+                {**same, "c": 1, "n": "a.m4v"},
+                {**same, "c": 2, "n": "a.m4v"},
+            ]
+        ),
+    )
+    captures = await get_captures(session, [1, 2])
+    assert [(c.camera, c.filename) for c in captures] == [
+        (1, "a.m4v"),
+        (1, "z.m4v"),
+        (2, "a.m4v"),
+        (2, "b.m4v"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_server_timezone_is_applied_to_capture_starts() -> None:
+    session = FakeSession(200, caplist_body())
+    captures = await get_captures(session, server_timezone=ZoneInfo("America/Chicago"))
+    assert captures[0].start == datetime(2026, 8, 9, 22, 35, 19, tzinfo=UTC)
+
+
+# --- review regressions (spec 1.4 review pass) ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_error_envelope_does_not_win_over_the_named_capture_array() -> None:
+    """A body carrying both an error list and the captures must decode the captures.
+
+    Taking the first list-valued entry made this dict-insertion-order dependent:
+    the server's captures were dropped and the caller was told, indistinguishably
+    from a quiet day, that nothing matched.
+    """
+    session = FakeSession(
+        200,
+        json.dumps({"error": ["server busy"], "captures": json.loads(caplist_body())}),
+    )
+    captures = await get_captures(session)
+    assert len(captures) == FIXTURE_CAPTURE_COUNT
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_envelope_is_a_failure_rather_than_no_captures() -> None:
+    """Two unnamed lists cannot be disambiguated, so this is not a capture list."""
+    session = FakeSession(200, json.dumps({"a": [{"c": 1}], "b": [{"c": 2}]}))
+    with pytest.raises(SecuritySpyConnectError):
+        await get_captures(session)
+
+
+@pytest.mark.asyncio
+async def test_an_error_list_alone_is_a_failure_not_an_empty_result() -> None:
+    session = FakeSession(200, json.dumps({"result": "error", "detail": ["denied"]}))
+    with pytest.raises(SecuritySpyConnectError) as excinfo:
+        await get_captures(session)
+    assert "denied" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["start_date", "end_date"])
+async def test_a_datetime_bound_is_rejected_before_any_request(field: str) -> None:
+    """`datetime` subclasses `date`, so it passes the annotation and the range check.
+
+    It would then serialise as a full ISO instant, which the server cannot match
+    against a folder date -- a silently wrong query rather than a failure.
+    """
+    session = FakeSession(200, caplist_body())
+    with pytest.raises(ValueError, match="dates"):
+        await get_captures(session, None, **{field: datetime(2026, 8, 9, 12, tzinfo=UTC)})
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_non_date_bound_is_rejected_before_any_request() -> None:
+    session = FakeSession(200, caplist_body())
+    with pytest.raises(ValueError, match="dates"):
+        await get_captures(session, start_date=cast("Any", "2026-08-09"))
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_filter", [8, 99, -1])
+async def test_an_undefined_capture_filter_is_rejected(raw_filter: int) -> None:
+    """A filter SecuritySpy does not define may be ignored, returning everything."""
+    session = FakeSession(200, caplist_body())
+    with pytest.raises(ValueError, match="CAPTURE_FILTER"):
+        await get_captures(session, capture_filter=raw_filter)
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_ties_the_camera_and_filename_cannot_separate_stay_deterministic() -> None:
+    same = {"f": "2026-08-09", "s": 10, "c": 1, "n": "a.m4v"}
+    entries = [{**same, "m": 20}, {**same, "m": 10}]
+    forward = FakeSession(200, json.dumps(entries))
+    backward = FakeSession(200, json.dumps(list(reversed(entries))))
+    assert await get_captures(forward, [1]) == await get_captures(backward, [1])

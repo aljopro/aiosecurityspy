@@ -9,19 +9,27 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC
-from typing import TYPE_CHECKING, Final
+from datetime import UTC, date, datetime
+from typing import TYPE_CHECKING, Final, cast
 
 import aiohttp
 
 from .connection import ConnectionSettings
-from .const import DEFAULT_PORT, DEFAULT_TIMEOUT, ENDPOINT_SYSTEM_INFO
+from .const import (
+    CAPTURE_FILTER_ALL,
+    CAPTURE_FILTERS,
+    DEFAULT_PORT,
+    DEFAULT_TIMEOUT,
+    ENDPOINT_CAPTURE_LIST,
+    ENDPOINT_SYSTEM_INFO,
+    capture_filter_for_class,
+)
 from .exceptions import SecuritySpyAuthError, SecuritySpyConnectError
-from .models import ServerInfo
+from .models import Capture, ServerInfo
 from .stream import SecuritySpyEventStream
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
     from datetime import tzinfo
 
     from .stream import EventCallback, LifecycleCallback
@@ -42,6 +50,142 @@ _HTTP_REDIRECT_MAX: Final = 399
 #: misbehaving server, and buffering it inside a Home Assistant process is worse
 #: than failing. The request timeout bounds duration, not bytes.
 _MAX_BODY_BYTES: Final = 8 * 1024 * 1024
+
+#: Unreachable fallback for the newest-first sort key, which only ever runs
+#: over captures whose `start` is not None. It exists so the key function is
+#: total for the type checker rather than needing a cast. Deliberately not
+#: named for the Unix epoch: AD-15 forbids an epoch standing in for an absent
+#: time, and this is the floor of the representable range, not 1970.
+_SORT_FLOOR: Final = datetime.min.replace(tzinfo=UTC)
+
+
+#: Keys a wrapped `++caplist` array has been seen or is plausibly sent under.
+#: Checked before the "exactly one list" fallback so an error envelope cannot
+#: win by ordering.
+_CAPTURE_LIST_KEYS: Final = ("captures", "caplist", "files", "file")
+
+
+def _validated_camera_numbers(cameras: Iterable[int]) -> tuple[int, ...]:
+    """Return the requested camera numbers, sorted and de-duplicated.
+
+    Sorting and de-duplicating makes the emitted ``cams`` parameter a function
+    of the *set* of cameras rather than of the caller's iteration order, so the
+    request is byte-identical across calls and testable.
+
+    Raises:
+        ValueError: A camera number is not a non-negative integer. No message
+            quotes the offending value.
+
+    """
+    numbers: set[int] = set()
+    for camera in cameras:
+        # The static type says `int`, but this is a public entry point and a
+        # `bool` or a string camera number would otherwise reach the wire as a
+        # query for something else entirely. The cast widens the static type so
+        # the runtime check is not eliminated as dead.
+        if not isinstance(cast("object", camera), int) or isinstance(camera, bool) or camera < 0:
+            message = "camera numbers must be non-negative integers"
+            raise ValueError(message)
+        numbers.add(camera)
+    return tuple(sorted(numbers))
+
+
+def _are_plain_dates(*values: date) -> bool:
+    """Return whether every bound is a ``date`` and none is a ``datetime``.
+
+    ``datetime`` subclasses ``date``, so a ``datetime`` satisfies the
+    annotation and the range comparison, then serialises as a full ISO instant
+    -- a ``startDate`` the server cannot match against a folder date. The cast
+    widens the static type so the runtime check is not eliminated as dead.
+    """
+    return all(
+        isinstance(cast("object", value), date) and not isinstance(value, datetime)
+        for value in values
+    )
+
+
+def _resolve_capture_filter(object_class: str | None, capture_filter: int | None) -> int:
+    """Resolve the ``filter`` query value from the two mutually exclusive forms.
+
+    Raises:
+        ValueError: The class has no server-side filter, or the raw filter
+            value is not one SecuritySpy defines. An out-of-range value is
+            rejected rather than sent: the server is not documented to
+            validate it, and a filter it ignores returns the *whole* history
+            while looking like a narrow query.
+
+    """
+    if object_class is not None:
+        # Server-side (research §4.2). There is deliberately no fetch-everything
+        # fallback: filtering the `o` bitmask locally would transfer the whole
+        # day's history for every camera to reach the same answer.
+        return capture_filter_for_class(object_class)
+    if capture_filter is None:
+        return CAPTURE_FILTER_ALL
+    # The cast widens the static type so the runtime check is not eliminated as
+    # dead; `bool` is excluded because True would otherwise mean filter 1.
+    if (
+        not isinstance(cast("object", capture_filter), int)
+        or isinstance(capture_filter, bool)
+        or capture_filter not in CAPTURE_FILTERS
+    ):
+        message = "capture_filter must be one of the CAPTURE_FILTER_* values"
+        raise ValueError(message)
+    return capture_filter
+
+
+def _capture_entries(payload: object) -> list[object] | None:
+    """Locate the capture array in a ``++caplist`` body, or return ``None``.
+
+    Research §4 records a bare JSON array, but the envelope has only been read
+    off one server version, so a mapping wrapping the array under a *named* key
+    is accepted too. Any other list in the body is ignored rather than guessed
+    at: taking whatever list turned up first would let ``{"error": [...],
+    "captures": [...]}`` decode the wrong array, and would report an envelope
+    whose only list is a list of error strings as "no captures" instead of as
+    the failure it is. Anything else is not a capture list.
+    """
+    if isinstance(payload, list):
+        return list(payload)  # pyright: ignore[reportUnknownArgumentType]
+    if isinstance(payload, dict):
+        for key in _CAPTURE_LIST_KEYS:
+            named = payload.get(key)  # pyright: ignore[reportUnknownVariableType]
+            if isinstance(named, list):
+                return list(named)  # pyright: ignore[reportUnknownArgumentType]
+    return None
+
+
+def _tiebreak(capture: Capture) -> tuple[int, str, str, int, int]:
+    """Total ordering key for captures the primary key cannot separate.
+
+    Every field a caller can observe participates, so two entries share a key
+    only when they are indistinguishable, and the documented determinism does
+    not quietly fall back to the server's ordering.
+    """
+    return (
+        capture.camera,
+        capture.filename,
+        capture.folder_date,
+        capture.capture_type if capture.capture_type is not None else -1,
+        capture.file_size if capture.file_size is not None else -1,
+    )
+
+
+def _ordered_newest_first(captures: list[Capture]) -> tuple[Capture, ...]:
+    """Order captures newest first, deterministically.
+
+    The server's ordering is not part of the contract, so it is imposed here.
+    Captures with no reconstructable start sort last: they are unorderable in
+    time, and putting them first would make "the most recent capture" wrong.
+    """
+    dated = [capture for capture in captures if capture.start is not None]
+    undated = [capture for capture in captures if capture.start is None]
+    # Two stable passes: the tiebreak first, then the primary key. Python's sort
+    # is stable even with reverse=True, so equal starts keep the tiebreak order.
+    dated.sort(key=_tiebreak)
+    dated.sort(key=lambda capture: capture.start or _SORT_FLOOR, reverse=True)
+    undated.sort(key=_tiebreak)
+    return (*dated, *undated)
 
 
 class SecuritySpyClient:
@@ -200,6 +344,131 @@ class SecuritySpyClient:
         """
         payload = await self._request_json(ENDPOINT_SYSTEM_INFO, {"format": "json"})
         return ServerInfo.from_api(payload)
+
+    async def async_get_captures(  # noqa: PLR0913 - the camera set, the two date bounds and the two filter forms are irreducible; everything but `cameras` is keyword-only
+        self,
+        cameras: Iterable[int],
+        *,
+        start_date: date,
+        end_date: date,
+        object_class: str | None = None,
+        capture_filter: int | None = None,
+        server_timezone: tzinfo = UTC,
+    ) -> tuple[Capture, ...]:
+        """Read capture history for many cameras in **one** request.
+
+        This is the persistent counterpart to the event stream: ``++caplist``
+        is SecuritySpy's stored record, so an answer derived from it is correct
+        after a restart. The camera list is batched into a single ``cams``
+        parameter and the object-class filter is applied *by the server*, so
+        the request count is one -- never one per camera, and never cameras x
+        classes.
+
+        The date range is required and is not widened or defaulted: a bounded
+        lookback window is the consumer's policy, not this library's. It is
+        also the only bound on the response, which is read into memory whole
+        and capped: a wide window over many cameras with no filter can exceed
+        that cap and fail with "server response body was too large". Narrowing
+        the window or the filter is the fix; the endpoint offers no paging.
+
+        Args:
+            cameras: Camera numbers to query. Sorted and de-duplicated, so the
+                request is deterministic regardless of the caller's ordering.
+            start_date: First folder date to include. A ``datetime`` is
+                rejected: the server matches folder dates, not instants.
+            end_date: Last folder date to include. **[ASSUMPTION]** Both bounds
+                are treated as inclusive. Research §4 records only a
+                same-day query, which is consistent with an inclusive end but
+                does not establish it.
+            object_class: Restrict to one object class, filtered server-side.
+                SecuritySpy offers a filter for ``human``, ``vehicle`` and
+                ``animal`` only. Note that these filters select *motion-capture
+                movies* of that class (research §4.2): a JPG capture or a
+                continuous recording carrying the same class in its ``o``
+                bitmask is not returned by them.
+            capture_filter: A raw ``filter`` value for the non-class filters
+                (``CAPTURE_FILTER_MOVIES``, ``CAPTURE_FILTER_CONTINUOUS``, and
+                so on). Mutually exclusive with ``object_class``.
+            server_timezone: Timezone of the server's wall clock, used to turn
+                ``f`` plus seconds-since-midnight into a UTC instant.
+                **[ASSUMPTION]** No SecuritySpy endpoint exposes it, so this
+                defaults to UTC.
+
+        Raises:
+            ValueError: A caller mistake -- a non-integer or negative camera
+                number, a ``datetime`` or non-date bound, ``start_date`` after
+                ``end_date``, an object class the server has no filter for, a
+                ``capture_filter`` SecuritySpy does not define, or both filter
+                forms at once. Raised before any request is issued.
+                No message quotes the offending value.
+            SecuritySpyConnectError: The server was unreachable, timed out,
+                answered with an unexpected status, or sent a body that was
+                neither a list of captures nor a mapping containing one.
+            SecuritySpyAuthError: The credentials were rejected (401/403).
+
+        Returns:
+            The decoded captures, newest first. Empty when nothing matched.
+
+        """
+        if object_class is not None and capture_filter is not None:
+            message = "pass either object_class or capture_filter, not both"
+            raise ValueError(message)
+        # `datetime` is a subclass of `date`, so a `datetime` satisfies both the
+        # annotation and the comparison below and would then serialise as a full
+        # ISO instant -- a `startDate` the server cannot match. Reject it rather
+        # than truncate: a caller who passed a time meant something by it.
+        if not _are_plain_dates(start_date, end_date):
+            # ValueError, not TypeError: this method documents every caller
+            # mistake as a ValueError, and the constructor already sets that
+            # precedent for a wrong host or timeout.
+            message = "start_date and end_date must be dates, not datetimes"
+            raise ValueError(message)
+        if start_date > end_date:
+            message = "start_date must not be after end_date"
+            raise ValueError(message)
+        numbers = _validated_camera_numbers(cameras)
+        filter_value = _resolve_capture_filter(object_class, capture_filter)
+
+        if not numbers:
+            # Nothing to ask about. Short-circuiting here rather than sending an
+            # empty `cams` keeps the "one request covers many cameras" rule from
+            # degenerating into "one request that means every camera".
+            return ()
+
+        payload = await self._request_json(
+            ENDPOINT_CAPTURE_LIST,
+            {
+                # The trailing comma is not cosmetic: the server's own client
+                # sends it (research §4) and this is a recorded wire shape.
+                "cams": "".join(f"{number}," for number in numbers),
+                "startDate": start_date.isoformat(),
+                "endDate": end_date.isoformat(),
+                "filter": str(filter_value),
+            },
+        )
+        return self._decode_captures(payload, server_timezone)
+
+    def _decode_captures(self, payload: object, server_timezone: tzinfo) -> tuple[Capture, ...]:
+        """Decode a ``++caplist`` body into ordered captures."""
+        entries = _capture_entries(payload)
+        if entries is None:
+            # The body is deliberately not echoed: it can contain device
+            # credentials (research §8.3).
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "server response was not a capture list",
+            )
+        captures: list[Capture] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                _LOGGER.debug("Skipping non-object capture entry")
+                continue
+            mapping = {str(key): item for key, item in entry.items()}  # pyright: ignore[reportUnknownVariableType]
+            capture = Capture.from_api(mapping, server_timezone=server_timezone)
+            if capture is not None:
+                captures.append(capture)
+        return _ordered_newest_first(captures)
 
     async def _request_json(self, path: str, params: Mapping[str, str] | None = None) -> object:
         """Issue one authenticated GET and return its parsed JSON body.

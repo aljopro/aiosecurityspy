@@ -134,6 +134,93 @@ A few things the protocol makes non-obvious:
 `disconnect()` is idempotent, is safe to call from inside a callback, and leaves no task,
 timer, or socket behind. Your session is untouched either way.
 
+### Ask when a human was last seen
+
+The event stream is transient and restarts at zero. `++caplist` is SecuritySpy's
+*persisted* record, so an answer derived from it is still correct after a restart.
+`async_get_captures()` batches every camera into **one** request and lets the server do
+the class filtering, so the cost is one request — not one per camera, and not
+cameras × classes.
+
+```python
+import asyncio
+from datetime import UTC, datetime, timedelta
+
+import aiohttp
+
+from aiosecurityspy import SecuritySpyClient, SecuritySpyError
+
+
+async def main() -> None:
+    async with aiohttp.ClientSession() as session:
+        client = SecuritySpyClient(
+            session,
+            "nvr.example.com",
+            8001,
+            username="ha-readonly",
+            password="...",
+            use_https=True,
+        )
+
+        today = datetime.now(UTC).date()
+        try:
+            captures = await client.async_get_captures(
+                [1, 2, 3],
+                start_date=today - timedelta(days=1),
+                end_date=today,
+                object_class="human",
+            )
+        except SecuritySpyError as err:
+            print(f"could not read capture history: {err}")
+            return
+
+        if not captures:
+            print("no human captures in the window")
+            return
+
+        newest = captures[0]  # results come back newest first
+        print(f"camera {newest.camera}: human at {newest.start} ({newest.filename})")
+        print(f"  classes={sorted(newest.object_classes)} type={newest.capture_type_name}")
+
+
+asyncio.run(main())
+```
+
+Worth knowing:
+
+- **The date range is required and is never widened.** How far back to look is your
+  policy, not the library's.
+- **`object_class` is filtered by the server**, and SecuritySpy offers a filter for
+  `human`, `vehicle` and `animal` only. Anything else raises `ValueError` before a
+  request is issued rather than silently degrading into a fetch-everything scan. For the
+  non-class filters (movies only, continuous capture only) pass `capture_filter=` with a
+  `CAPTURE_FILTER_*` constant instead; passing both is a `ValueError`. Note that these
+  three filters select *motion-capture movies* of that class: a JPG capture or a
+  continuous recording that carries the same class in its `o` bitmask is not returned by
+  them.
+- **Both date bounds are `date` objects, not `datetime`s.** A `datetime` is rejected: the
+  server matches folder dates, and an ISO instant is a query it cannot satisfy.
+- **The whole response is read into memory** and capped, and `caplist` offers no paging.
+  A wide window over many cameras with no filter can exceed the cap and fail; narrowing
+  the window or the filter is the fix.
+- **`Capture.start` is a timezone-aware UTC instant** reconstructed from the folder date
+  plus seconds-since-midnight, because the wire format carries no absolute time. Pass
+  `server_timezone=` if your server does not run in UTC. An unreconstructable time is
+  `None` — never epoch, never zero — and those captures sort last. The wire format sends
+  a wall-clock second-of-day with no fold bit, so on the one ambiguous local hour of a
+  DST fall-back the earlier instant is chosen, and on a spring-forward day two captures
+  in the skipped hour can reconstruct to the same instant.
+- **`Capture.path` is a `<camera>/<folderDate>/<filename>` triple, not a URL.** It is not
+  percent-encoded — real filenames contain spaces — so quote it before use. An entry
+  whose filename or folder date carries a path separator gets an empty `path` rather than
+  one that could address a different file.
+- **`Capture.object_classes` is the persisted classification**, empty rather than `None`
+  when the server recorded none.
+- **`Capture.capture_type` is a bare `int`** on purpose. `caplist`'s type field and
+  `clip`'s `movieType` share a letter and mean different things, so there is no shared
+  enumeration; use `is_movie` or `capture_type_name`, and an unknown future value carries
+  through rather than being rejected.
+
 ### Use a least-privileged SecuritySpy account
 
 Create a dedicated SecuritySpy user for this library rather than reusing an administrator
@@ -156,8 +243,8 @@ traceback.
 
 ## Status
 
-Early development. The client, typed models, protocol constants, exception hierarchy, and
-the event stream are in place; capture history, the detection-episode reducer, settings
+Early development. The client, typed models, protocol constants, exception hierarchy, the
+event stream, and capture history are in place; the detection-episode reducer, settings
 writes, and the anonymizer land in subsequent releases. The public API is not yet stable.
 
 ## Development

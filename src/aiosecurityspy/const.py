@@ -19,11 +19,24 @@ __all__ = [
     "BACKOFF_JITTER",
     "BACKOFF_MAX",
     "BACKOFF_MULTIPLIER",
+    "CAPTURE_FILTERS",
+    "CAPTURE_FILTER_ALL",
+    "CAPTURE_FILTER_ANIMAL",
+    "CAPTURE_FILTER_CONTINUOUS",
+    "CAPTURE_FILTER_HUMAN",
+    "CAPTURE_FILTER_IMAGES",
+    "CAPTURE_FILTER_MOTION",
+    "CAPTURE_FILTER_MOVIES",
+    "CAPTURE_FILTER_VEHICLE",
+    "CAPTURE_TYPE_IMAGE",
+    "CAPTURE_TYPE_MOVIE",
+    "CAPTURE_TYPE_NAMES",
     "CLASS_ANIMAL",
     "CLASS_HUMAN",
     "CLASS_VEHICLE",
     "DEFAULT_PORT",
     "DEFAULT_TIMEOUT",
+    "ENDPOINT_CAPTURE_LIST",
     "ENDPOINT_EVENT_STREAM",
     "ENDPOINT_PREFIX",
     "ENDPOINT_SYSTEM_INFO",
@@ -49,6 +62,7 @@ __all__ = [
     "HEARTBEAT_MISSES_BEFORE_LOSS",
     "MIN_SERVER_VERSION",
     "MIN_SERVER_VERSION_TEXT",
+    "OBJECT_CLASS_BITS",
     "PERMISSION_NAMES",
     "PERM_AUDIORCV",
     "PERM_AUDIOSND",
@@ -61,7 +75,9 @@ __all__ = [
     "PERM_TRIGGER",
     "STREAM_MAX_RECORD_BYTES",
     "TRIGGER_REASON_NAMES",
+    "capture_filter_for_class",
     "class_slug",
+    "decode_object_classes",
     "decode_permissions",
     "decode_trigger_reasons",
 ]
@@ -83,6 +99,9 @@ ENDPOINT_SYSTEM_INFO: Final = f"{ENDPOINT_PREFIX}systemInfo"
 
 #: Long-lived event-stream endpoint (research §3). The response never ends.
 ENDPOINT_EVENT_STREAM: Final = f"{ENDPOINT_PREFIX}eventStream"
+
+#: Capture-history endpoint (research §4). One request covers many cameras.
+ENDPOINT_CAPTURE_LIST: Final = f"{ENDPOINT_PREFIX}caplist"
 
 #: The event-stream protocol version this library speaks. Sent as the
 #: ``version`` query parameter; version 3 is the record format of research §3.2.
@@ -211,6 +230,78 @@ CLASS_HUMAN: Final = "human"
 CLASS_VEHICLE: Final = "vehicle"
 CLASS_ANIMAL: Final = "animal"
 
+# `++caplist?filter=` values (research §4.2, from the web client's `capFilter`
+# control). The server does the class filtering itself, so "when was a human
+# last seen" is one request with `filter=5` -- never a `filter=0` fetch of the
+# whole day's history followed by a local bitmask scan.
+CAPTURE_FILTER_ALL: Final = 0  # all files
+CAPTURE_FILTER_IMAGES: Final = 1  # all images
+CAPTURE_FILTER_MOVIES: Final = 2  # all movies
+CAPTURE_FILTER_CONTINUOUS: Final = 3  # continuous-capture movies
+CAPTURE_FILTER_MOTION: Final = 4  # motion-capture movies
+CAPTURE_FILTER_HUMAN: Final = 5  # human motion-capture movies
+CAPTURE_FILTER_VEHICLE: Final = 6  # vehicle motion-capture movies
+CAPTURE_FILTER_ANIMAL: Final = 7  # animal motion-capture movies
+
+#: Every ``filter`` value SecuritySpy defines. The server is not documented to
+#: validate the parameter, and a value it ignores returns the whole history
+#: while looking like a narrow query, so an unknown value is rejected here.
+CAPTURE_FILTERS: Final[frozenset[int]] = frozenset(
+    {
+        CAPTURE_FILTER_ALL,
+        CAPTURE_FILTER_IMAGES,
+        CAPTURE_FILTER_MOVIES,
+        CAPTURE_FILTER_CONTINUOUS,
+        CAPTURE_FILTER_MOTION,
+        CAPTURE_FILTER_HUMAN,
+        CAPTURE_FILTER_VEHICLE,
+        CAPTURE_FILTER_ANIMAL,
+    }
+)
+
+# `caplist.t` -- the capture's media type (research §4.1).
+#
+# ⚠️ These must NEVER be shared with `clip.movieType` / `cliplist.t`, where the
+# same letter means Motion Capture (0) vs Continuous Capture (1) (research
+# §4b.3). Same letter, different meaning: no enumeration, mapping or constant
+# name may be reused across the two, which is also why `Capture.capture_type`
+# stays a bare `int` rather than becoming an enum a later story could reach for.
+CAPTURE_TYPE_MOVIE: Final = 1
+CAPTURE_TYPE_IMAGE: Final = 2
+
+#: Mapping of ``caplist.t`` value to a stable, snake_case media-type name.
+#: Exposed as a read-only view so a consumer cannot corrupt decoding globally.
+#: An unrecognised value has no name and is carried through as the raw integer.
+CAPTURE_TYPE_NAMES: Final[Mapping[int, str]] = MappingProxyType(
+    {
+        CAPTURE_TYPE_MOVIE: "movie",
+        CAPTURE_TYPE_IMAGE: "image",
+    }
+)
+
+#: Mapping of ``caplist.o`` classification bit value to an object-class name
+#: (research §4.1). The persisted counterpart of the transient stream signal.
+#: Exposed as a read-only view so a consumer cannot corrupt decoding globally.
+OBJECT_CLASS_BITS: Final[Mapping[int, str]] = MappingProxyType(
+    {
+        1: CLASS_HUMAN,
+        2: CLASS_VEHICLE,
+        4: CLASS_ANIMAL,
+    }
+)
+
+# The server offers a `filter` value for exactly these three classes. The open
+# vocabulary rule (AD-9) governs labels arriving *from* the server; it cannot
+# conjure a server-side scan that does not exist, so an unfilterable class is a
+# caller mistake rather than something to emulate locally.
+_CLASS_CAPTURE_FILTERS: Final[Mapping[str, int]] = MappingProxyType(
+    {
+        CLASS_HUMAN: CAPTURE_FILTER_HUMAN,
+        CLASS_VEHICLE: CAPTURE_FILTER_VEHICLE,
+        CLASS_ANIMAL: CAPTURE_FILTER_ANIMAL,
+    }
+)
+
 _SLUG_INVALID = re.compile(r"[^a-z0-9]+")
 
 
@@ -264,6 +355,63 @@ def decode_trigger_reasons(mask: int) -> frozenset[str]:
     if mask < 0:
         return frozenset()
     return frozenset(name for bit, name in TRIGGER_REASON_NAMES.items() if mask & bit)
+
+
+def decode_object_classes(mask: int) -> frozenset[str]:
+    """Decode a persisted ``caplist.o`` classification bitmask into class names.
+
+    Degrades exactly like :func:`decode_permissions`: unknown bits are ignored
+    because the server may grow new ones, a negative mask decodes to nothing
+    (Python ints are of infinite width, so ``-1 & bit`` would otherwise report
+    every class), and a non-integer decodes to nothing rather than raising.
+
+    A mask of ``0`` -- and an absent or null ``o`` field, which the caller
+    passes through as ``0`` -- yields an empty frozenset, never ``None``.
+
+    Args:
+        mask: The raw ``o`` bitmask from a capture entry.
+
+    Returns:
+        The set of object classes the server recorded against the capture.
+
+    """
+    # Exported helper: degrade rather than raising a bare TypeError out of the
+    # public surface. The cast widens the static type so the runtime check is
+    # not eliminated as dead. `bool` is excluded because True would otherwise
+    # decode as mask 1.
+    if not isinstance(cast("object", mask), int) or isinstance(mask, bool):
+        return frozenset()
+    if mask < 0:
+        return frozenset()
+    return frozenset(name for bit, name in OBJECT_CLASS_BITS.items() if mask & bit)
+
+
+def capture_filter_for_class(name: str) -> int:
+    """Return the ``++caplist?filter=`` value that selects one object class.
+
+    Args:
+        name: An object-class name. It is normalized with :func:`class_slug`,
+            so ``"Human"`` and ``"human"`` are the same request.
+
+    Raises:
+        ValueError: The server has no server-side filter for that class. The
+            message names the three classes it does have, because there is no
+            correct local fallback: fetching everything and filtering on the
+            ``o`` bitmask is exactly the transfer cost this endpoint exists to
+            avoid.
+
+    Returns:
+        The ``filter`` value to send.
+
+    """
+    filter_value = _CLASS_CAPTURE_FILTERS.get(class_slug(name))
+    if filter_value is None:
+        supported = ", ".join(sorted(_CLASS_CAPTURE_FILTERS))
+        message = (
+            f"SecuritySpy has no capture filter for that object class; use one of: {supported}"
+        )
+        raise ValueError(message)
+    return filter_value
 
 
 def class_slug(name: str) -> str:
