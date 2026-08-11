@@ -134,6 +134,116 @@ A few things the protocol makes non-obvious:
 `disconnect()` is idempotent, is safe to call from inside a callback, and leaves no task,
 timer, or socket behind. Your session is untouched either way.
 
+### Reduce `CLASSIFY` frames into detection episodes
+
+`CLASSIFY` is a per-frame inference stream, not a detection event: 191 records on one
+camera in 95 s, 0–2 s apart, with confidence swinging 8 → 97 between adjacent frames for a
+single subject. `EpisodeReducer` turns that into one "a human was here, peak confidence
+99". It is a pure component — no I/O, no timers, no `asyncio` — so it is equally usable
+against a recording or a list of synthetic signals.
+
+**You own the clock.** A pure reducer cannot notice that *nothing* has happened, so you
+must call `tick(now)` periodically or an episode whose camera went quiet stays open
+forever. This is the one obligation that fails silently if you skip it.
+
+```python
+import asyncio
+from datetime import UTC, datetime, timedelta
+
+import aiohttp
+
+from aiosecurityspy import (
+    EpisodeClosed,
+    EpisodeOpened,
+    EpisodeReducer,
+    ReducerConfig,
+    SecuritySpyClient,
+)
+
+
+async def main() -> None:
+    async with aiohttp.ClientSession() as session:
+        client = SecuritySpyClient(
+            session,
+            "nvr.example.com",
+            8001,
+            username="ha-readonly",
+            password="...",
+            use_https=True,
+        )
+
+        # An override REPLACES the default outright — it is not merged into it —
+        # so each one restates all three values rather than inheriting two.
+        reducer = EpisodeReducer(
+            default=ReducerConfig(threshold=70.0, debounce=3, gap=timedelta(seconds=30)),
+            overrides={
+                # A dim doorway camera: lower bar, everything else as above.
+                (4, None): ReducerConfig(threshold=50.0, debounce=3, gap=timedelta(seconds=30)),
+                # Vehicles are slower and larger: more evidence, longer memory.
+                (None, "vehicle"): ReducerConfig(
+                    threshold=70.0, debounce=5, gap=timedelta(seconds=60)
+                ),
+            },
+        )
+
+        def report(events: tuple[EpisodeOpened | EpisodeClosed, ...]) -> None:
+            for event in events:
+                episode = event.episode
+                verb = "started" if isinstance(event, EpisodeOpened) else "ended"
+                print(
+                    f"camera {episode.camera}: {episode.object_class} {verb} "
+                    f"peak={episode.peak_confidence:.0f} signals={episode.signal_count}"
+                )
+
+        stream = client.event_stream(on_event=lambda event: report(reducer.feed(event)))
+        await stream.connect()
+        try:
+            while True:
+                # The tick obligation. Anything comfortably shorter than your gap works.
+                await asyncio.sleep(5)
+                report(reducer.tick(datetime.now(UTC)))
+        finally:
+            await stream.disconnect()
+            # The stream is gone, so no further signal can arrive: end what is open
+            # rather than stranding it.
+            report(reducer.close_all(datetime.now(UTC)))
+
+
+asyncio.run(main())
+```
+
+Worth knowing:
+
+- **The three defaults are provisional.** `DEFAULT_DETECTION_THRESHOLD` (70 %),
+  `DEFAULT_DETECTION_DEBOUNCE` (3 signals) and `DEFAULT_DETECTION_GAP` (30 s) are starting
+  points, not values verified against a real installation. Expect to tune them.
+- **Threshold, debounce and gap are per camera per object class.** Overrides resolve
+  `(camera, class)` → `(camera, None)` → `(None, class)` → the default, and **the first
+  match wins whole**. An override is a replacement, not a merge: any field it leaves out
+  falls back to the provisional module default, *not* to the `default=` config you passed.
+  Two override keys that normalize to the same pair (`"Delivery Van"` and
+  `"DELIVERY_VAN"`) are a `ValueError` rather than a silent last-one-wins.
+- **Episodes close on inactivity, never on low confidence.** A run of below-threshold
+  frames is mid-episode, not the end of one — and `MOTION_END` is far too unreliable to
+  close anything with.
+- **`peak_confidence` covers the whole span**, including the debounce signals that opened
+  the episode and any below-threshold frame inside it. It is never the value at the
+  threshold crossing.
+- **`end` is the instant the episode lapsed** (`last_signal + gap`), not the `now` that
+  noticed. A late tick does not stretch an episode, and a signal arriving after the gap
+  has already elapsed closes the stale episode before starting a fresh debounce run — so
+  tick and arrival always agree about where the boundary was.
+- **`add()` only expires its own camera and class.** A signal's timestamp is evidence
+  about the camera that sent it; one camera with a fast clock must not end another
+  camera's live episode. Sweeping everything is `tick(now)`'s job, with your clock.
+- **`reset()` emits nothing** on purpose: it means you stopped tracking, not that anything
+  ended. Use `close_all(now)` when you do want to claim the boundaries. `close_all` stamps
+  `end=now`, raised to the episode's own last signal if your `now` predates it.
+- **Two raw labels that slug the same are one episode.** Both are kept in `raw_labels`.
+  Note that `class_slug()` keeps only `[a-z0-9_]` and falls back to `"unknown"`, so labels
+  written entirely in a non-Latin script all reduce under a single `"unknown"` episode per
+  camera; `raw_labels` is where they stay distinguishable.
+
 ### Ask when a human was last seen
 
 The event stream is transient and restarts at zero. `++caplist` is SecuritySpy's
@@ -244,8 +354,9 @@ traceback.
 ## Status
 
 Early development. The client, typed models, protocol constants, exception hierarchy, the
-event stream, and capture history are in place; the detection-episode reducer, settings
-writes, and the anonymizer land in subsequent releases. The public API is not yet stable.
+event stream, capture history, and the detection-episode reducer are in place; settings
+writes and the anonymizer land in subsequent releases. The public API is not yet stable,
+and the reducer's three defaults are explicitly provisional.
 
 ## Development
 

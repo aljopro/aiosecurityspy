@@ -8,6 +8,7 @@ library so every other module can depend on it.
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, cast
 
@@ -34,6 +35,9 @@ __all__ = [
     "CLASS_ANIMAL",
     "CLASS_HUMAN",
     "CLASS_VEHICLE",
+    "DEFAULT_DETECTION_DEBOUNCE",
+    "DEFAULT_DETECTION_GAP",
+    "DEFAULT_DETECTION_THRESHOLD",
     "DEFAULT_PORT",
     "DEFAULT_TIMEOUT",
     "ENDPOINT_CAPTURE_LIST",
@@ -229,6 +233,37 @@ STREAM_MAX_RECORD_BYTES: Final = 64 * 1024
 CLASS_HUMAN: Final = "human"
 CLASS_VEHICLE: Final = "vehicle"
 CLASS_ANIMAL: Final = "animal"
+
+# Detection-episode reduction defaults (research §3.5). `CLASSIFY` is a
+# per-frame inference stream -- 191 records on one camera in 95 s, 0-2 s apart,
+# with confidence swinging 8 -> 97 between adjacent frames for a single subject
+# -- so a consumer has to reduce it before it means anything. These three values
+# are the tuning vocabulary that reduction is driven by; they live here with the
+# rest of the protocol vocabulary rather than inside the reducer, because the
+# reducer takes every one of them as an injected, per-camera-per-class value
+# (AD-3, FR-8) and bakes none of them in.
+#
+# [ASSUMPTION] All three are provisional (PRD Open Q5). No measurement in the
+# protocol research establishes them; they are starting points chosen to be
+# defensible, not values verified against a real installation. Treat a consumer
+# that needs different behaviour as expected, not as a misconfiguration.
+
+#: Minimum confidence percentage a `CLASSIFY` signal must carry to count
+#: towards opening an episode. **[ASSUMPTION]**, see above.
+DEFAULT_DETECTION_THRESHOLD: Final = 70.0
+
+#: Consecutive at-or-above-threshold signals required before an episode opens.
+#: Guards against the single stray high-confidence frame that §3.5's sequence
+#: shows is routine. **[ASSUMPTION]**, see above.
+DEFAULT_DETECTION_DEBOUNCE: Final = 3
+
+#: Silence after the last qualifying signal before an episode is considered
+#: ended. Inactivity is the only usable end signal: `MOTION_END` is unreliable
+#: (467 `MOTION` records and 0 ends on camera 10, §3.5). A `timedelta` rather
+#: than a bare number of seconds, so that passing this constant straight into
+#: the field it is the default for is the thing that works, not the thing that
+#: raises. **[ASSUMPTION]**, see above.
+DEFAULT_DETECTION_GAP: Final = timedelta(seconds=30)
 
 # `++caplist?filter=` values (research §4.2, from the web client's `capFilter`
 # control). The server does the class filtering itself, so "when was a human

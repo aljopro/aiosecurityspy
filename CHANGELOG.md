@@ -9,6 +9,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `EpisodeReducer`: the detection-episode reducer, turning the per-frame `CLASSIFY`
+  inference stream into `EpisodeOpened` / `EpisodeClosed` emissions. Research §3.5's
+  reference burst — 191 signals on one camera in 95 s with confidence swinging 8 → 97
+  between adjacent frames — reduces to exactly one episode with a peak confidence of 99,
+  which is asserted rather than assumed: the ~190:1 ratio is a correctness requirement.
+  The component is **pure**: no I/O, no network, no `asyncio`, no timer, and no clock read
+  anywhere. Every instant comes from the caller, so the whole edge-case matrix is
+  exercisable from synthetic signals with no session, no server, and no event loop.
+- Threshold, debounce and inactivity gap are injected **per camera per object class** via
+  `ReducerConfig` and an overrides mapping resolving `(camera, class)` → `(camera, None)`
+  → `(None, class)` → the default; nothing in the reduction reads a module constant.
+  `config_for()` exposes the resolution.
+- **The three defaults are provisional.** `DEFAULT_DETECTION_THRESHOLD` (70 %),
+  `DEFAULT_DETECTION_DEBOUNCE` (3 consecutive signals) and `DEFAULT_DETECTION_GAP` (30 s)
+  are marked `[ASSUMPTION]` in `const.py`: no measurement in the protocol research
+  establishes them, and a consumer needing different values is expected, not misconfigured.
+- Episode semantics: an episode opens only after `debounce` *consecutive* at-or-above-
+  threshold signals, and closes only on **inactivity** — never on `MOTION_END` (467
+  `MOTION` records and 0 ends on camera 10) and never on a run of below-threshold frames,
+  which are mid-episode rather than the end of one. `peak_confidence` spans the whole
+  episode, including the debounce signals that opened it and any below-threshold frame
+  inside it, so it is never the value at the threshold crossing. Exactly one open and one
+  close per episode; signals in between are absorbed silently.
+- The caller owns the clock: `tick(now)` closes what has lapsed, and `add()` runs the same
+  inactivity check against the incoming signal's timestamp through the same helper, so a
+  boundary computed by a tick and one computed by an arrival are the same instant. `end`
+  is `last_signal + gap` — when the episode actually lapsed — so a late tick does not
+  stretch it. `close_all(now)` ends everything open at a disconnect; `reset()` discards
+  state and deliberately emits nothing, because resetting is not a claim that anything
+  ended.
+- `feed(stream_event)` fans a `StreamEvent` into one signal per object class at the
+  event's timestamp. A non-`CLASSIFY` event, a missing or wrong payload, a missing
+  timestamp or camera, a blank label, and a non-finite confidence are all ignored rather
+  than raised on: one record must not kill a live stream. Two raw labels that slug the
+  same are one episode (the higher confidence wins, as `ClassificationPayload.slugged()`
+  already resolves them) and both raw labels are recorded. An out-of-order signal is
+  counted and can raise the peak, but never rewinds the inactivity deadline; a backwards
+  `tick` closes nothing. The class vocabulary stays open — no enumeration, no validation.
+- An override **replaces** the matched configuration outright rather than merging into the
+  `default`, which `config_for()` and the README both now state explicitly, since a
+  partially-specified override otherwise appears to inherit and does not. Two override
+  keys that normalize to the same `(camera, class)` pair are a `ValueError` rather than a
+  silent last-one-wins.
+- `add()` applies its inactivity check to the incoming signal's own camera and class only.
+  A signal's timestamp is evidence about the camera that produced it, and camera clocks
+  disagree; sweeping every track from it would let one fast camera close every other
+  camera's live episode at an `end` in their future. `tick(now)` still sweeps everything,
+  because there `now` is the caller's single authoritative clock.
+- Caller mistakes are `ValueError` at construction, naming the field and quoting no value:
+  a threshold outside 0–100 or non-finite, a debounce below 1, a non-positive gap, a
+  `default` or override value that is not a `ReducerConfig`, a non-integer camera, an empty
+  object class, a naive timestamp, or an override key that is not a `(camera, class)` pair
+  — including `(None, None)`, which would silently never be consulted.
+- `DEFAULT_DETECTION_GAP` is a `timedelta`, so passing the public constant into the field
+  it is the default for works rather than raising.
+- Degradation hardening: an episode's `start` moves back to accommodate an out-of-order
+  signal older than the span, so `start <= last_signal` always holds; `close_all(now)`
+  raises `end` to the episode's own last signal when `now` predates it, so no episode ends
+  before it started; a deadline that would overflow near `datetime.max` leaves the track
+  open instead of raising out of `tick()`; and a hand-built `ClassificationPayload`
+  carrying a non-numeric confidence is skipped rather than raising out of `feed()`. A
+  multi-class frame emits in slug order, matching every other method here.
+- Labels containing no `[a-z0-9_]` characters at all — a class named only in a non-Latin
+  script — all slug to `"unknown"` and therefore share one episode per camera. This is the
+  accepted cost of having a single normalizer on the path to a permanent key; the raw
+  labels remain distinguishable in `DetectionEpisode.raw_labels`. Documented on the model
+  and pinned by a test.
 - `SecuritySpyClient.async_get_captures(...)`: batched capture-history queries against
   `++caplist`. One request covers every requested camera — the `cams` parameter is the
   sorted, de-duplicated camera list with the trailing comma the server's own client sends
