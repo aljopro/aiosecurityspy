@@ -331,6 +331,107 @@ Worth knowing:
   enumeration; use `is_movie` or `capture_type_name`, and an unknown future value carries
   through rather than being rejected.
 
+### Read and change camera settings, and arm a camera
+
+```python
+import asyncio
+
+import aiohttp
+
+from aiosecurityspy import (
+    ARM_OVERRIDE_ARMED_2_HOURS,
+    CameraSettingsPatch,
+    CaptureModes,
+    SecuritySpyClient,
+    SecuritySpyPermissionError,
+    arm_override,
+    require_permission,
+)
+
+
+async def main() -> None:
+    async with aiohttp.ClientSession() as session:
+        client = SecuritySpyClient(session, "nvr.example.com", username="viewer", password="secret")
+
+        # `require_permission` is a pure guard: it costs no round trip, so run
+        # it before touching a plane, and guard each call with the permission
+        # that call actually needs. `"camera_control"` covers the settings page
+        # -- both reading it and writing it; `"schedule"` covers arming. They
+        # are separate grants, so holding one says nothing about the other.
+        info = await client.async_get_server_info()
+        camera = info.cameras.get(3)
+        if camera is None:
+            print("camera 3 is not on this server")
+            return
+        try:
+            require_permission(camera, "camera_control")
+        except SecuritySpyPermissionError as err:
+            print(err)
+            return
+
+        # Read: the returned model carries only curated, credential-free fields.
+        settings = await client.async_get_camera_settings(3)
+        print(settings.name, settings.overlay_text, settings.motion_sensitivity)
+        print(settings.motion_capture_triggers_human)  # a real bool, not 1/0
+
+        # Write: partial. Only the fields you set are sent; everything else on
+        # the ~120-key settings page keeps its value. No read-modify-write.
+        await client.async_set_camera_settings(
+            3,
+            CameraSettingsPatch(
+                overlay_text="Front Gate",
+                motion_capture_triggers_human=True,
+                motion_capture_triggers_vehicle=False,
+            ),
+        )
+
+        # Arming: three independent booleans, so all eight combinations are
+        # expressible -- including all-false, which disarms all three.
+        try:
+            require_permission(camera, "schedule")
+        except SecuritySpyPermissionError as err:
+            print(err)
+            return
+
+        override = arm_override(ARM_OVERRIDE_ARMED_2_HOURS)
+        print(override.label, override.duration)  # Armed For 2 Hours 2:00:00
+        await client.async_set_camera_arming(
+            3,
+            CaptureModes(continuous=False, motion=True, actions=True),
+            override=ARM_OVERRIDE_ARMED_2_HOURS,
+        )
+
+        # The camera's arm state comes back off ++systemInfo. `Camera` is
+        # frozen, so re-read it: the object fetched above still holds the
+        # pre-write state.
+        info = await client.async_get_server_info()
+        camera = info.cameras[3]
+        print(camera.capture_modes.mode_string, camera.schedules.motion_schedule_id)
+
+
+asyncio.run(main())
+```
+
+Three things about this surface are worth stating plainly:
+
+- **The override is transient and bounded.** It suspends the camera's schedule for the
+  stated duration and then the schedule resumes; it is not a permanent arm or disarm.
+  `ARM_OVERRIDE_UNCHANGED` (the default) leaves any existing override alone,
+  `ARM_OVERRIDE_NONE` clears it, and the "until next scheduled event" values report
+  `duration is None` with `until_next_scheduled` true. `arm_override()` rejects any value
+  outside the published `-1`..`14` table rather than guessing.
+- **Schedules are read-only.** `Camera.schedules` reports the ids SecuritySpy assigned,
+  and no method in this library reassigns one: the arming request sends `cameraNum`,
+  `mode` and `override`, and never `schedule=`.
+- **A settings payload contains the camera's device credentials in plaintext.**
+  `CameraSettings` therefore keeps only a declared, curated set of non-credential fields —
+  the raw payload is dropped at decode, never retained, and never logged at any level
+  including debug. Its `repr` is deliberately just the camera number.
+
+Booleans read back from SecuritySpy as JSON `true`/`false` but must be *written* as
+`1`/`0`. That asymmetry is absorbed inside the library, so a call site only ever sees
+`bool`.
+
 ### Use a least-privileged SecuritySpy account
 
 Create a dedicated SecuritySpy user for this library rather than reusing an administrator
@@ -354,9 +455,10 @@ traceback.
 ## Status
 
 Early development. The client, typed models, protocol constants, exception hierarchy, the
-event stream, capture history, and the detection-episode reducer are in place; settings
-writes and the anonymizer land in subsequent releases. The public API is not yet stable,
-and the reducer's three defaults are explicitly provisional.
+event stream, capture history, the detection-episode reducer, and the settings, arming and
+permission surface are in place; the credential anonymizer lands in a subsequent release.
+The public API is not yet stable, and the reducer's three defaults are explicitly
+provisional.
 
 ## Development
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import pathlib
 import re
 from importlib.metadata import version as metadata_version
 
@@ -39,3 +40,50 @@ def test_public_surface() -> None:
 def test_home_assistant_is_not_installed() -> None:
     """The library must be usable with no Home Assistant anywhere on the system."""
     assert importlib.util.find_spec("homeassistant") is None
+
+
+#: Endpoints and settings keys AD-2 excludes from this library entirely:
+#: capture deletion and remote execution. They are absent, not wrapped and not
+#: private-but-present, so absence is an enumerable property -- enumerate it.
+EXCLUDED_TOKENS = (
+    "doShell",
+    "doShortcut",
+    "deleteclip",
+    "++delete",
+    "aScript",
+    "aShellCommand",
+    "setTags",
+)
+
+#: Substrings that would betray a deletion or execution method on the public API.
+EXCLUDED_NAME_FRAGMENTS = ("delete", "remove", "shell", "shortcut", "applescript", "exec")
+
+SOURCE_ROOT = pathlib.Path(aiosecurityspy.__file__).parent
+
+
+def test_public_api_has_no_deletion_or_execution_name() -> None:
+    for name in aiosecurityspy.__all__:
+        assert not any(fragment in name.lower() for fragment in EXCLUDED_NAME_FRAGMENTS), name
+
+
+def test_client_exposes_no_deletion_or_execution_method() -> None:
+    for name in dir(aiosecurityspy.SecuritySpyClient):
+        # Private-but-present counts as present (AD-2), so dunders are the only
+        # exemption and `file_delete` -- a *permission name*, not a method -- is
+        # not on this object at all.
+        if name.startswith("__"):
+            continue
+        assert not any(fragment in name.lower() for fragment in EXCLUDED_NAME_FRAGMENTS), name
+
+
+def test_no_source_file_names_an_excluded_endpoint_or_key() -> None:
+    offenders: list[str] = []
+    for path in sorted(SOURCE_ROOT.rglob("*.py")):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if line.lstrip().startswith("#"):
+                # A comment recording the exclusion is explicitly allowed.
+                continue
+            offenders.extend(
+                f"{path.name}:{number}: {token}" for token in EXCLUDED_TOKENS if token in line
+            )
+    assert offenders == []

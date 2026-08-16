@@ -16,6 +16,22 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 __all__ = [
+    "ARM_OVERRIDE_ARMED_1_HOUR",
+    "ARM_OVERRIDE_ARMED_2_HOURS",
+    "ARM_OVERRIDE_ARMED_3_HOURS",
+    "ARM_OVERRIDE_ARMED_4_HOURS",
+    "ARM_OVERRIDE_ARMED_5_HOURS",
+    "ARM_OVERRIDE_ARMED_6_HOURS",
+    "ARM_OVERRIDE_ARMED_UNTIL_NEXT",
+    "ARM_OVERRIDE_DISARMED_1_HOUR",
+    "ARM_OVERRIDE_DISARMED_2_HOURS",
+    "ARM_OVERRIDE_DISARMED_3_HOURS",
+    "ARM_OVERRIDE_DISARMED_4_HOURS",
+    "ARM_OVERRIDE_DISARMED_5_HOURS",
+    "ARM_OVERRIDE_DISARMED_6_HOURS",
+    "ARM_OVERRIDE_DISARMED_UNTIL_NEXT",
+    "ARM_OVERRIDE_NONE",
+    "ARM_OVERRIDE_UNCHANGED",
     "BACKOFF_INITIAL",
     "BACKOFF_JITTER",
     "BACKOFF_MAX",
@@ -43,6 +59,8 @@ __all__ = [
     "ENDPOINT_CAPTURE_LIST",
     "ENDPOINT_EVENT_STREAM",
     "ENDPOINT_PREFIX",
+    "ENDPOINT_SETTINGS_CAMERAS",
+    "ENDPOINT_SET_SCHEDULE",
     "ENDPOINT_SYSTEM_INFO",
     "EVENT_ARM_A",
     "EVENT_ARM_C",
@@ -66,6 +84,9 @@ __all__ = [
     "HEARTBEAT_MISSES_BEFORE_LOSS",
     "MIN_SERVER_VERSION",
     "MIN_SERVER_VERSION_TEXT",
+    "MODE_ACTIONS",
+    "MODE_CONTINUOUS",
+    "MODE_MOTION",
     "OBJECT_CLASS_BITS",
     "PERMISSION_NAMES",
     "PERM_AUDIORCV",
@@ -77,6 +98,7 @@ __all__ = [
     "PERM_PTZSET",
     "PERM_SCHED",
     "PERM_TRIGGER",
+    "SETTINGS_FORM_SENTINEL",
     "STREAM_MAX_RECORD_BYTES",
     "TRIGGER_REASON_NAMES",
     "capture_filter_for_class",
@@ -106,6 +128,54 @@ ENDPOINT_EVENT_STREAM: Final = f"{ENDPOINT_PREFIX}eventStream"
 
 #: Capture-history endpoint (research §4). One request covers many cameras.
 ENDPOINT_CAPTURE_LIST: Final = f"{ENDPOINT_PREFIX}caplist"
+
+#: Per-camera settings page (research §8.0). Read with ``?cameraNum=N&format=json``;
+#: written with a ``POST`` to the **bare** path -- the query form returns 404.
+ENDPOINT_SETTINGS_CAMERAS: Final = f"{ENDPOINT_PREFIX}settings-cameras"
+
+#: Arming endpoint (research §5). Named for a schedule assignment it is never
+#: asked to make here: this library sends ``mode`` and ``override`` only (AD-7).
+#:
+#: ⚠️ SecuritySpy makes this state-changing write a ``GET``, so the camera
+#: number and the arm state travel in a URL that reverse proxies, ``Referer``
+#: headers and access logs record. That is the server's protocol, not a choice
+#: this library can make differently; it is noted so a deployment behind a
+#: logging proxy is a known exposure rather than a surprise.
+ENDPOINT_SET_SCHEDULE: Final = f"{ENDPOINT_PREFIX}ssSetSchedule"
+
+#: Literal first token of every ``settings-*`` POST body (research §8.0 rule 2).
+#: The server's own client builds the body as
+#: ``let str='formData'; for(pair of formData.entries()) str+='&'+k+'='+v``, so
+#: the sentinel is *ordering* as much as content: it must come first, which is
+#: why the body is assembled as a string rather than handed to aiohttp as a dict.
+SETTINGS_FORM_SENTINEL: Final = "formData"
+
+# `++ssSetSchedule?mode=` letters (research §5.1). The three capture modes are
+# independent booleans concatenated in this order, so `mode=CMA` sets all three
+# and `mode=` (empty) disarms all three -- both are legal instructions.
+MODE_CONTINUOUS: Final = "C"  # continuous capture
+MODE_MOTION: Final = "M"  # motion capture
+MODE_ACTIONS: Final = "A"  # actions
+
+# `++ssSetSchedule?override=` values (research §5.2). The published table lists
+# exactly -1..14; there is no documented value 15, so this library neither
+# defines nor accepts one rather than guessing at what the server would do.
+ARM_OVERRIDE_UNCHANGED: Final = -1  # research §5.2 -- client sentinel: leave as-is
+ARM_OVERRIDE_NONE: Final = 0  # research §5.2 -- no override; the schedule rules
+ARM_OVERRIDE_DISARMED_UNTIL_NEXT: Final = 1  # research §5.2
+ARM_OVERRIDE_ARMED_UNTIL_NEXT: Final = 2  # research §5.2
+ARM_OVERRIDE_DISARMED_1_HOUR: Final = 3  # research §5.2
+ARM_OVERRIDE_ARMED_1_HOUR: Final = 4  # research §5.2
+ARM_OVERRIDE_DISARMED_2_HOURS: Final = 5  # research §5.2
+ARM_OVERRIDE_ARMED_2_HOURS: Final = 6  # research §5.2
+ARM_OVERRIDE_DISARMED_3_HOURS: Final = 7  # research §5.2
+ARM_OVERRIDE_ARMED_3_HOURS: Final = 8  # research §5.2
+ARM_OVERRIDE_DISARMED_4_HOURS: Final = 9  # research §5.2
+ARM_OVERRIDE_ARMED_4_HOURS: Final = 10  # research §5.2
+ARM_OVERRIDE_DISARMED_5_HOURS: Final = 11  # research §5.2
+ARM_OVERRIDE_ARMED_5_HOURS: Final = 12  # research §5.2
+ARM_OVERRIDE_DISARMED_6_HOURS: Final = 13  # research §5.2
+ARM_OVERRIDE_ARMED_6_HOURS: Final = 14  # research §5.2 -- the highest documented value
 
 #: The event-stream protocol version this library speaks. Sent as the
 #: ``version`` query parameter; version 3 is the record format of research §3.2.

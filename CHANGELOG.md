@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Settings, arming and permission decoding.** `async_get_camera_settings()` reads a
+  camera's settings page into a curated, credential-free `CameraSettings`;
+  `async_set_camera_settings()` writes a `CameraSettingsPatch` as a *partial* form POST;
+  `async_set_camera_arming()` sets the three independent capture modes plus a transient
+  override.
+- The settings write's three traps live in the library, not at a call site: the POST goes
+  to the **bare** `++settings-cameras` path (the query form 404s), `cameraNum` travels in
+  the **body**, and the body is assembled as an ordered string opening with the literal
+  `formData` sentinel. Booleans read back as JSON `true`/`false` but are written as
+  `1`/`0`; `CameraSettingsPatch.form_fields()` is the single home of that asymmetry.
+- Writes are partial and verified as such: only the fields you set are posted, and every
+  other key on the ~120-key page keeps its value. There is no read-modify-write.
+- `CameraSettings` retains only a declared allowlist of non-credential fields. The raw
+  payload — which carries the camera's device `username` and `password` in plaintext —
+  is dropped at decode, never stored, and never logged at any level including debug. Its
+  `repr` is just the camera number.
+- `CaptureModes` (three independent booleans with a `C`/`M`/`A`-ordered `mode_string`),
+  `CameraScheduleAssignment` (read-only schedule ids and overrides), `ArmOverride` with
+  the `ARM_OVERRIDES` table and `arm_override()` lookup, and `require_permission()` — the
+  first caller of the previously-unused `SecuritySpyPermissionError`.
+- `Camera` now decodes its arm state: `capture_modes` and `schedules` come off
+  `++systemInfo`'s `*-mode`, `*-schedule-id` and `*-schedule-override` fields.
+- The arming override is **transient and bounded** and its duration is typed data;
+  the undocumented override value `15` is rejected rather than invented. **Schedules are
+  read-only**: `schedule=` is never sent, and a test asserts its absence rather than
+  leaving it as a convention.
+- One transport seam serves GET-JSON, GET-text and POST-form: URL building, BasicAuth, the
+  SSL flag, the timeout, redirect handling, status mapping, the 8 MiB body cap and the
+  never-echo-the-body rule have exactly one implementation.
+
 - `EpisodeReducer`: the detection-episode reducer, turning the per-frame `CLASSIFY`
   inference stream into `EpisodeOpened` / `EpisodeClosed` emissions. Research §3.5's
   reference burst — 191 signals on one camera in 95 s with confidence swinging 8 → 97

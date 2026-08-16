@@ -21,7 +21,14 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer as AiohttpTestServer  # aliased: pytest collects `Test*`
 
-from aiosecurityspy import SecuritySpyAuthError, SecuritySpyClient, SecuritySpyConnectError
+from aiosecurityspy import (
+    ARM_OVERRIDE_ARMED_2_HOURS,
+    CameraSettingsPatch,
+    CaptureModes,
+    SecuritySpyAuthError,
+    SecuritySpyClient,
+    SecuritySpyConnectError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -259,3 +266,219 @@ async def test_real_response_without_a_charset_maps_to_connect_error() -> None:
                 await make_client(session, plain).async_get_server_info()
     finally:
         await plain.close()
+
+
+@pytest.mark.asyncio
+async def test_real_settings_write_reaches_the_bare_path_with_the_sentinel_body() -> None:
+    """The stub cannot prove aiohttp honours a bare-path POST with a string body.
+
+    Three things are only true if the real client library cooperates: the path
+    stays bare (research §8.0 -- the query form 404s), the content type is the
+    urlencoded one, and the body arrives byte-for-byte with ``formData`` first.
+    """
+    seen: dict[str, str] = {}
+
+    async def handle(request: web.Request) -> web.Response:
+        seen["path"] = request.path
+        seen["query"] = request.query_string
+        seen["content_type"] = request.headers.get("Content-Type", "")
+        seen["body"] = (await request.read()).decode()
+        # Decoded by the *server's* own form parser, not ours: the point of this
+        # case is that a real form decoder recovers the original value from the
+        # percent-encoded body -- `%20` is a space under a form decoder and under
+        # a URI decoder alike, which `+` is not.
+        form = await request.post()
+        seen["camera_num"] = str(form["cameraNum"])
+        seen["overlay_text"] = str(form["overlayText"])
+        return web.json_response({"camUpdate": {"num": "3"}})
+
+    app = web.Application()
+    app.router.add_post("/++settings-cameras", handle)
+    settings_server = AiohttpTestServer(app)
+    await settings_server.start_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            await make_client(session, settings_server).async_set_camera_settings(
+                3, CameraSettingsPatch(overlay_text="Front Gate")
+            )
+    finally:
+        await settings_server.close()
+
+    assert seen["path"] == "/++settings-cameras"
+    assert seen["query"] == "", "the query form of this endpoint returns 404"
+    assert seen["content_type"] == "application/x-www-form-urlencoded"
+    assert seen["body"] == "formData&cameraNum=3&overlayText=Front%20Gate"
+    assert seen["body"].startswith("formData")
+    assert seen["camera_num"] == "3", "cameraNum travels in the body, not the query string"
+    assert seen["overlay_text"] == "Front Gate", "the server's own form parser recovers the value"
+
+
+@pytest.mark.asyncio
+async def test_real_reserved_characters_survive_a_real_form_parser() -> None:
+    """A value full of reserved bytes round-trips through a real form decoder.
+
+    ``&`` and ``=`` must not forge a field separator, non-ASCII must arrive as
+    percent-encoded UTF-8, and a literal ``+`` must come back as a ``+`` -- which
+    it only does because the value was sent as ``%2B`` rather than plus-encoded.
+    """
+    hostile = "Front & Back = 100% Grüße+more"
+    seen: dict[str, str] = {}
+
+    async def handle(request: web.Request) -> web.Response:
+        seen["body"] = (await request.read()).decode()
+        form = await request.post()
+        seen["keys"] = ",".join(sorted(form))
+        seen["name"] = str(form["name"])
+        return web.json_response({"camUpdate": {"num": "3"}})
+
+    app = web.Application()
+    app.router.add_post("/++settings-cameras", handle)
+    settings_server = AiohttpTestServer(app)
+    await settings_server.start_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            await make_client(session, settings_server).async_set_camera_settings(
+                3, CameraSettingsPatch(name=hostile)
+            )
+    finally:
+        await settings_server.close()
+
+    assert seen["body"].isascii(), "no raw non-ASCII byte reaches the wire"
+    assert seen["keys"] == "cameraNum,formData,name", "no reserved byte forged an extra field"
+    assert seen["name"] == hostile
+
+
+@pytest.mark.asyncio
+async def test_real_arming_carries_mode_and_override_and_never_a_schedule() -> None:
+    """``++ssSetSchedule`` is misleadingly named: no schedule is ever assigned."""
+    seen: dict[str, dict[str, str]] = {}
+
+    async def handle(request: web.Request) -> web.Response:
+        seen["query"] = dict(request.query)
+        return web.Response(text="OK")
+
+    app = web.Application()
+    app.router.add_get("/++ssSetSchedule", handle)
+    arming_server = AiohttpTestServer(app)
+    await arming_server.start_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            await make_client(session, arming_server).async_set_camera_arming(
+                3,
+                CaptureModes(continuous=True, motion=True, actions=True),
+                override=ARM_OVERRIDE_ARMED_2_HOURS,
+            )
+    finally:
+        await arming_server.close()
+
+    assert seen["query"] == {"cameraNum": "3", "mode": "CMA", "override": "6"}
+    assert "schedule" not in seen["query"]
+
+
+@pytest.mark.asyncio
+async def test_real_disarming_all_three_sends_a_present_but_empty_mode() -> None:
+    """All-false is an instruction, not a missing value.
+
+    It is the library's one semantic that differs from every other client. The
+    stub cannot prove it survives yarl's query encoding to a real socket, and a
+    dropped ``mode=`` would silently leave the camera armed.
+    """
+    seen: dict[str, str] = {}
+
+    async def handle(request: web.Request) -> web.Response:
+        seen["query_string"] = request.query_string
+        seen["mode"] = request.query["mode"]
+        return web.Response(text="OK")
+
+    app = web.Application()
+    app.router.add_get("/++ssSetSchedule", handle)
+    arming_server = AiohttpTestServer(app)
+    await arming_server.start_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            await make_client(session, arming_server).async_set_camera_arming(
+                3,
+                CaptureModes(continuous=False, motion=False, actions=False),
+            )
+    finally:
+        await arming_server.close()
+
+    assert seen["mode"] == ""
+    assert "mode=" in seen["query_string"]
+
+
+@pytest.mark.asyncio
+async def test_real_charsetless_write_receipt_does_not_fail_a_successful_write() -> None:
+    """A write that the server accepted must not be reported as a failure.
+
+    A charset-less, non-JSON receipt makes aiohttp's ``get_encoding()`` raise;
+    for a body this library never parses, that must not become an error.
+    """
+
+    async def handle(_: web.Request) -> web.Response:
+        return web.Response(body=b"OK", content_type="text/plain")
+
+    app = web.Application()
+    app.router.add_get("/++ssSetSchedule", handle)
+    arming_server = AiohttpTestServer(app)
+    await arming_server.start_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            await make_client(session, arming_server).async_set_camera_arming(
+                3, CaptureModes(motion=True)
+            )
+    finally:
+        await arming_server.close()
+
+
+@pytest.mark.asyncio
+async def test_real_settings_read_sends_the_required_camera_number() -> None:
+    """Omitting ``cameraNum`` returns HTTP 500 from a real server (research §8.0)."""
+    seen: dict[str, dict[str, str]] = {}
+
+    async def handle(request: web.Request) -> web.Response:
+        seen["query"] = dict(request.query)
+        if "cameraNum" not in request.query:
+            return web.Response(status=500)
+        # A representative slice of the real ~120-key page: enough curated keys
+        # to clear `SETTINGS_PAGE_KEY_QUORUM`, which a two-key stub would not.
+        return web.json_response(
+            {
+                "name": "Gate",
+                "overlayText": "Front Gate",
+                "motionSensitivity": 50,
+                "mcTriggerMotionH": True,
+            }
+        )
+
+    app = web.Application()
+    app.router.add_get("/++settings-cameras", handle)
+    settings_server = AiohttpTestServer(app)
+    await settings_server.start_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            settings = await make_client(session, settings_server).async_get_camera_settings(3)
+    finally:
+        await settings_server.close()
+
+    assert seen["query"] == {"cameraNum": "3", "format": "json"}
+    assert settings.overlay_text == "Front Gate"
+
+
+@pytest.mark.asyncio
+async def test_real_write_rejection_maps_to_a_typed_error() -> None:
+    async def handle(_: web.Request) -> web.Response:
+        return web.Response(status=401)
+
+    app = web.Application()
+    app.router.add_post("/++settings-cameras", handle)
+    settings_server = AiohttpTestServer(app)
+    await settings_server.start_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            with pytest.raises(SecuritySpyAuthError):
+                await make_client(session, settings_server).async_set_camera_settings(
+                    3, CameraSettingsPatch(brightness=100)
+                )
+    finally:
+        await settings_server.close()

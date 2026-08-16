@@ -20,6 +20,7 @@ from aiosecurityspy import (
     CAPTURE_FILTER_HUMAN,
     CAPTURE_FILTER_MOVIES,
     CAPTURE_FILTER_VEHICLE,
+    CameraSettingsPatch,
     SecuritySpyAuthError,
     SecuritySpyClient,
     SecuritySpyConnectError,
@@ -146,10 +147,26 @@ class FakeSession:
         self._error = error
         self.closed = False
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        #: The verb of each recorded call, positionally aligned with ``calls``.
+        self.methods: list[str] = []
         self.response_factory: type[FakeResponse] = FakeResponse
 
     def get(self, url: str, **kwargs: Any) -> Any:  # noqa: ANN401 - mirrors aiohttp's own signature
         """Record the call and return an async context manager."""
+        return self._record("GET", url, kwargs)
+
+    def post(self, url: str, **kwargs: Any) -> Any:  # noqa: ANN401 - mirrors aiohttp's own signature
+        """Record a POST and return an async context manager.
+
+        The settings write is the library's first non-GET request, and a stub
+        that cannot observe the verb would let a POST reach an undefined
+        attribute instead of being recorded. Both verbs land in ``calls``.
+        """
+        return self._record("POST", url, kwargs)
+
+    def _record(self, method: str, url: str, kwargs: dict[str, Any]) -> Any:  # noqa: ANN401 - mirrors aiohttp's own signature
+        """Append the call and build the canned response or error."""
+        self.methods.append(method)
         self.calls.append((url, kwargs))
         if self._error is not None:
             return RaisingContext(self._error)
@@ -943,3 +960,19 @@ async def test_ties_the_camera_and_filename_cannot_separate_stay_deterministic()
     forward = FakeSession(200, json.dumps(entries))
     backward = FakeSession(200, json.dumps(list(reversed(entries))))
     assert await get_captures(forward, [1]) == await get_captures(backward, [1])
+
+
+@pytest.mark.asyncio
+async def test_the_stub_records_a_post_alongside_its_gets() -> None:
+    """The settings write is the first non-GET verb this stub has ever seen.
+
+    Both verbs land in the same ``calls`` list, so an assertion written against
+    a GET keeps working and a POST is no longer invisible to it.
+    """
+    session = FakeSession(200, "{}")
+    client = make_client(session)
+    await client.async_set_camera_settings(3, CameraSettingsPatch(brightness=10))
+
+    assert session.methods == ["POST"]
+    assert len(session.calls) == 1
+    assert session.calls[0][0].endswith("/++settings-cameras")

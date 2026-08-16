@@ -10,28 +10,42 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
+from urllib.parse import quote
 
 import aiohttp
 
 from .connection import ConnectionSettings
 from .const import (
+    ARM_OVERRIDE_UNCHANGED,
     CAPTURE_FILTER_ALL,
     CAPTURE_FILTERS,
     DEFAULT_PORT,
     DEFAULT_TIMEOUT,
     ENDPOINT_CAPTURE_LIST,
+    ENDPOINT_SET_SCHEDULE,
+    ENDPOINT_SETTINGS_CAMERAS,
     ENDPOINT_SYSTEM_INFO,
+    SETTINGS_FORM_SENTINEL,
     capture_filter_for_class,
 )
 from .exceptions import SecuritySpyAuthError, SecuritySpyConnectError
-from .models import Capture, ServerInfo
+from .models import (
+    SETTINGS_PAGE_KEY_QUORUM,
+    SETTINGS_PAGE_KEYS,
+    ArmOverride,
+    CameraSettings,
+    Capture,
+    ServerInfo,
+    arm_override,
+)
 from .stream import SecuritySpyEventStream
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
     from datetime import tzinfo
 
+    from .models import CameraSettingsPatch, CaptureModes
     from .stream import EventCallback, LifecycleCallback
 
 __all__ = ["SecuritySpyClient"]
@@ -64,6 +78,29 @@ _SORT_FLOOR: Final = datetime.min.replace(tzinfo=UTC)
 #: win by ordering.
 _CAPTURE_LIST_KEYS: Final = ("captures", "caplist", "files", "file")
 
+#: Content type every ``settings-*`` write carries (research §8.0).
+_FORM_CONTENT_TYPE: Final = "application/x-www-form-urlencoded"
+
+
+def _validated_camera_number(camera: int) -> int:
+    """Return one validated camera number.
+
+    The single camera-number rule for the whole client: the plural
+    :func:`_validated_camera_numbers` is built from it.
+
+    Raises:
+        ValueError: The camera number is not a non-negative integer. The static
+            type says ``int``, but this is a public entry point and a ``bool``
+            or a string would otherwise address something else entirely on a
+            *write*. The cast widens the static type so the runtime check is not
+            eliminated as dead. No message quotes the offending value.
+
+    """
+    if not isinstance(cast("object", camera), int) or isinstance(camera, bool) or camera < 0:
+        message = "camera numbers must be non-negative integers"
+        raise ValueError(message)
+    return camera
+
 
 def _validated_camera_numbers(cameras: Iterable[int]) -> tuple[int, ...]:
     """Return the requested camera numbers, sorted and de-duplicated.
@@ -77,17 +114,11 @@ def _validated_camera_numbers(cameras: Iterable[int]) -> tuple[int, ...]:
             quotes the offending value.
 
     """
-    numbers: set[int] = set()
-    for camera in cameras:
-        # The static type says `int`, but this is a public entry point and a
-        # `bool` or a string camera number would otherwise reach the wire as a
-        # query for something else entirely. The cast widens the static type so
-        # the runtime check is not eliminated as dead.
-        if not isinstance(cast("object", camera), int) or isinstance(camera, bool) or camera < 0:
-            message = "camera numbers must be non-negative integers"
-            raise ValueError(message)
-        numbers.add(camera)
-    return tuple(sorted(numbers))
+    # One validation rule, in one place: `_validated_camera_number` carries the
+    # runtime `bool`/negative check and the reason it has to survive the static
+    # type. Two copies could drift into disagreeing about what a camera number
+    # is on the read path and the write path.
+    return tuple(sorted({_validated_camera_number(camera) for camera in cameras}))
 
 
 def _are_plain_dates(*values: date) -> bool:
@@ -470,35 +501,256 @@ class SecuritySpyClient:
                 captures.append(capture)
         return _ordered_newest_first(captures)
 
+    async def async_get_camera_settings(self, camera_number: int) -> CameraSettings:
+        """Read one camera's settings page (research §8.0).
+
+        ⚠️ The raw payload contains the camera's device ``username`` and
+        ``password`` in plaintext (research §8.3). It is dropped at decode and
+        never logged at any level, including debug: the returned
+        :class:`~aiosecurityspy.CameraSettings` carries only the curated,
+        credential-free fields this library declares.
+
+        Args:
+            camera_number: The camera to read. ``cameraNum`` is *required* by
+                this endpoint -- omitting it returns HTTP 500.
+
+        Raises:
+            ValueError: ``camera_number`` is not a non-negative integer. Raised
+                before any request is issued.
+            SecuritySpyConnectError: The server was unreachable, timed out,
+                answered with an unexpected status, or sent a body that was not
+                a settings object.
+            SecuritySpyAuthError: The credentials were rejected (401/403).
+
+        Returns:
+            The decoded, credential-free settings.
+
+        """
+        number = _validated_camera_number(camera_number)
+        payload = await self._request_json(
+            ENDPOINT_SETTINGS_CAMERAS, {"cameraNum": str(number), "format": "json"}
+        )
+        # The body is deliberately not echoed, and no local may still be holding
+        # it on *any* exit: this endpoint's payload carries the camera's device
+        # password in plaintext (research §8.3), and a traceback frame is
+        # rendered verbatim by Sentry, `cgitb` and `pytest --showlocals`.
+        # Dropping the raw dict from the returned model is not enough on its
+        # own, and neither is dropping it on the branches we happen to expect --
+        # a raise from inside `from_api` would leave the payload in the frame.
+        # `finally` is what makes the guarantee unconditional.
+        mapping: dict[str, object] = {}
+        try:
+            if isinstance(payload, dict):
+                mapping = {str(key): value for key, value in payload.items()}  # pyright: ignore[reportUnknownVariableType]
+            # A single overlapping key is not evidence that this is a settings
+            # page; see `SETTINGS_PAGE_KEY_QUORUM`.
+            if len(SETTINGS_PAGE_KEYS & mapping.keys()) < SETTINGS_PAGE_KEY_QUORUM:
+                raise SecuritySpyConnectError(
+                    self._connection.host,
+                    self._connection.port,
+                    "server response was not a settings object",
+                )
+            return CameraSettings.from_api(mapping, camera_number=number)
+        finally:
+            payload = None
+            mapping = {}
+            del payload, mapping
+
+    async def async_set_camera_settings(
+        self, camera_number: int, patch: CameraSettingsPatch
+    ) -> None:
+        """Write **only** the fields set on ``patch`` (research §8.0).
+
+        The write is partial and verified safe as such: every untouched key on
+        the ~120-key page keeps its value, so there is no read-modify-write and
+        no race window. Three rules make this request work, and all three live
+        here rather than at a call site:
+
+        1. The request goes to the **bare** path -- the query form returns 404.
+        2. ``cameraNum`` travels in the *body*, not the query string.
+        3. The body opens with the literal ``formData`` sentinel, and booleans
+           are written as ``1``/``0`` even though they read back as JSON
+           ``true``/``false``.
+
+        Args:
+            camera_number: The camera to write.
+            patch: The fields to change. ``None`` means "leave alone".
+
+        Raises:
+            ValueError: ``camera_number`` is not a non-negative integer, or the
+                patch is empty. Raised before any request is issued.
+            SecuritySpyConnectError: The server was unreachable, timed out, or
+                answered with an unexpected status.
+            SecuritySpyAuthError: The credentials were rejected (401/403).
+
+        """
+        number = _validated_camera_number(camera_number)
+        fields = patch.form_fields()
+        # Assembled as an ordered string, never handed to aiohttp as a dict:
+        # the sentinel must come first and aiohttp would choose its own order.
+        parts = [SETTINGS_FORM_SENTINEL, f"cameraNum={number}"]
+        # `quote(..., safe="")`, i.e. `encodeURIComponent`, and deliberately *not*
+        # plus-encoding: research §8.0's observed body is `overlayText=Front%20Gate`, so
+        # the reference client percent-encodes a space. `%20` decodes to a space under a
+        # URI decoder *and* a form decoder, while `+` only does under the latter -- and
+        # which one the server uses is unknown.
+        # `safe=""` leaves nothing unescaped, so `&`, `=`, `+` and `%` in a value cannot
+        # forge a field separator, and a literal `+` round-trips as `%2B`.
+        parts.extend(f"{key}={quote(value, safe='')}" for key, value in fields.items())
+        # The patch itself is not logged: it can carry a camera name or an
+        # overlay string, and settings payloads are never logged (research §8.3).
+        _LOGGER.debug("Writing %s settings field(s) to camera %s", len(fields), number)
+        await self._post_form(ENDPOINT_SETTINGS_CAMERAS, "&".join(parts))
+
+    async def async_set_camera_arming(
+        self,
+        camera_number: int,
+        modes: CaptureModes,
+        *,
+        override: ArmOverride | int = ARM_OVERRIDE_UNCHANGED,
+    ) -> None:
+        """Arm or disarm a camera's three capture modes (research §5).
+
+        The three modes are independent booleans, so all eight combinations are
+        expressible -- including all-false, which sends an empty ``mode`` and is
+        the legal instruction "disarm all three", not a missing value.
+
+        The ``schedule`` query parameter is **never sent** (AD-7).
+        ``++ssSetSchedule`` accepts one that permanently reassigns the camera's
+        schedule; this library has no method that does that, and schedule ids
+        read back from ``++systemInfo`` are read-only data. The override is
+        *transient and bounded*: it suspends the schedule for a stated duration,
+        after which the schedule resumes.
+
+        Args:
+            camera_number: The camera to arm or disarm.
+            modes: The three capture modes to set.
+            override: A transient schedule override. Defaults to
+                ``ARM_OVERRIDE_UNCHANGED``, which leaves any existing override
+                alone. Accepts an ``ARM_OVERRIDE_*`` value or the typed
+                :class:`~aiosecurityspy.ArmOverride` record.
+
+        Raises:
+            ValueError: ``camera_number`` is not a non-negative integer, or the
+                override is not a value research §5.2 publishes. Raised before
+                any request is issued.
+            SecuritySpyConnectError: The server was unreachable, timed out, or
+                answered with an unexpected status.
+            SecuritySpyAuthError: The credentials were rejected (401/403).
+
+        """
+        number = _validated_camera_number(camera_number)
+        # Every override goes through `arm_override`, whichever branch it
+        # arrived on. `ArmOverride` is public and freely constructible, so a
+        # hand-built `ArmOverride(value=15, ...)` would otherwise reach the wire
+        # unvalidated -- exactly the undocumented value this method promises to
+        # reject, arriving through the typed door rather than the int one.
+        record = arm_override(override.value if isinstance(override, ArmOverride) else override)
+        await self._request_text(
+            ENDPOINT_SET_SCHEDULE,
+            {
+                "cameraNum": str(number),
+                "mode": modes.mode_string,
+                "override": str(record.value),
+            },
+        )
+
     async def _request_json(self, path: str, params: Mapping[str, str] | None = None) -> object:
         """Issue one authenticated GET and return its parsed JSON body.
 
-        This is the single transport seam: URL construction, BasicAuth, the
-        per-request SSL flag, the timeout, status-to-exception mapping and JSON
-        parsing all happen exactly once, here.
+        A thin wrapper over :meth:`_request`; the only thing it adds is the
+        JSON parse.
+        """
+        body = await self._request(path, params=params)
+        try:
+            return json.loads(body)
+        except ValueError as err:
+            # The body is deliberately not echoed *and* not left in the frame:
+            # it can contain device credentials (research §8.3), and a
+            # traceback renderer that prints locals would publish them.
+            del body
+            raise SecuritySpyConnectError(
+                self._connection.host, self._connection.port, "server response was not valid JSON"
+            ) from err
+
+    async def _request_text(self, path: str, params: Mapping[str, str] | None = None) -> str:
+        """Issue one authenticated GET whose body is not JSON, and return it.
+
+        Used by endpoints that acknowledge a write without a documented body
+        shape. The response still goes through the shared status mapping and
+        byte cap; only the JSON parse is skipped.
+        """
+        return await self._request(path, params=params, strict_encoding=False)
+
+    async def _post_form(self, path: str, body: str) -> str:
+        """POST an already-assembled ``application/x-www-form-urlencoded`` body.
+
+        ``body`` is a string, never a mapping: SecuritySpy's settings pages
+        require the literal ``formData`` sentinel *first* (research §8.0), and
+        handing aiohttp a dict would let it choose its own ordering.
+        """
+        return await self._request(path, form_body=body, strict_encoding=False)
+
+    async def _request(
+        self,
+        path: str,
+        *,
+        params: Mapping[str, str] | None = None,
+        form_body: str | None = None,
+        strict_encoding: bool = True,
+    ) -> str:
+        """Issue one authenticated request and return its decoded body text.
+
+        This is the single transport seam. URL construction, BasicAuth, the
+        per-request SSL flag, the timeout, redirect handling, status-to-exception
+        mapping, the response byte cap and the never-echo-the-body rule all
+        happen exactly once, here, for every verb this library speaks.
+
+        Args:
+            path: The endpoint path, without a leading slash.
+            params: Query parameters. A settings write passes none: the query
+                form of ``++settings-cameras`` returns 404.
+            form_body: When given, the request is a ``POST`` carrying this
+                pre-assembled form-urlencoded body. Otherwise it is a ``GET``.
+            strict_encoding: Whether an undeterminable response charset is a
+                failure. It is for JSON, where the body has to be parsed. For a
+                write acknowledgement the body is not interpreted at all, so a
+                charset-less ``text/plain`` receipt must not turn a successful
+                write into a reported failure.
+
         """
         url = self._connection.build_url(path)
         _LOGGER.debug(
             "Requesting %s from %s:%s", path, self._connection.host, self._connection.port
         )
+        # Shared kwargs, so no verb can drift on credentials, TLS or timeout.
+        # `allow_redirects=False`: SecuritySpy 301-redirects plain HTTP to its
+        # HTTPS *port*, and a different port is a different origin, so aiohttp
+        # strips the Authorization header when following it (verified against
+        # aiohttp 3.12). Following the redirect therefore cannot succeed -- it
+        # just turns a "wrong scheme" mistake into a 401 that blames the user's
+        # password. Surface the redirect instead. Note that not following it is
+        # no credential safeguard either: over plain HTTP the Basic credential
+        # is already on the wire, which is why the README recommends HTTPS.
+        shared: dict[str, Any] = {
+            "params": dict(params or {}),
+            "auth": self._connection.auth,
+            "ssl": self._connection.verify_ssl,
+            "timeout": self._connection.request_timeout(),
+            "allow_redirects": False,
+        }
         try:
-            async with self._connection.session.get(
-                url,
-                params=dict(params or {}),
-                auth=self._connection.auth,
-                ssl=self._connection.verify_ssl,
-                timeout=self._connection.request_timeout(),
-                # SecuritySpy 301-redirects plain HTTP to its HTTPS *port*, and
-                # a different port is a different origin, so aiohttp strips the
-                # Authorization header when following it (verified against
-                # aiohttp 3.12). Following the redirect therefore cannot
-                # succeed -- it just turns a "wrong scheme" mistake into a 401
-                # that blames the user's password. Surface the redirect instead.
-                # Note that not following it is no credential safeguard either:
-                # over plain HTTP the Basic credential is already on the wire,
-                # which is why the README recommends HTTPS.
-                allow_redirects=False,
-            ) as response:
+            context = (
+                self._connection.session.get(url, **shared)
+                if form_body is None
+                else self._connection.session.post(
+                    url,
+                    data=form_body.encode("utf-8"),
+                    headers={"Content-Type": _FORM_CONTENT_TYPE},
+                    **shared,
+                )
+            )
+            async with context as response:
                 status = response.status
                 if status in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
                     raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
@@ -530,18 +782,38 @@ class SecuritySpyClient:
                 # one buffer fill. Reading one byte past the cap is what enforces
                 # it -- a chunked response declares no Content-Length at all.
                 chunks: list[bytes] = []
+                raw = b""
+                # Bound up front so the `finally` can clear it unconditionally:
+                # the walrus below binds a *chunk* of the payload in this frame
+                # too, and one uncleared local is the whole leak.
+                chunk = b""
                 total = 0
-                while chunk := await response.content.read(_MAX_BODY_BYTES + 1 - total):
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total > _MAX_BODY_BYTES:
-                        raise SecuritySpyConnectError(
-                            self._connection.host,
-                            self._connection.port,
-                            "server response body was too large",
-                        )
-                raw = b"".join(chunks)
-                body = raw.decode(response.get_encoding())
+                try:
+                    while chunk := await response.content.read(_MAX_BODY_BYTES + 1 - total):
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        if total > _MAX_BODY_BYTES:
+                            raise SecuritySpyConnectError(
+                                self._connection.host,
+                                self._connection.port,
+                                "server response body was too large",
+                            )
+                    raw = b"".join(chunks)
+                    body = self._decode_body(raw, response, strict_encoding=strict_encoding)
+                finally:
+                    # A `++settings-cameras` body carries the camera's device
+                    # password in plaintext (research §8.3). Every failure exit
+                    # from the read -- the byte cap, an undecodable body, a
+                    # dropped connection mid-stream -- raises from inside *this*
+                    # frame, so `chunks` and `raw` would stay bound as frame
+                    # locals holding the whole payload for any traceback handler
+                    # that captures them. The scrub in `async_get_camera_settings`
+                    # runs a frame away and cannot reach these. Unconditional,
+                    # for the same reason that scrub is: a branch-local clear is
+                    # one new exit path away from being no clear at all.
+                    chunks.clear()
+                    raw = b""
+                    chunk = b""
         except RuntimeError as err:
             # aiohttp's get_encoding() raises RuntimeError when the response
             # declares no charset and is not application/json, because we read
@@ -579,11 +851,25 @@ class SecuritySpyClient:
                 f"connection failure ({type(err).__name__})",
             ) from err
 
+        return body
+
+    @staticmethod
+    def _decode_body(raw: bytes, response: Any, *, strict_encoding: bool) -> str:  # noqa: ANN401 - the stubbed session in the tests supplies its own response object
+        """Decode a response body using the charset the response declares.
+
+        When ``strict_encoding`` is false and aiohttp cannot determine a
+        charset, the body is decoded as UTF-8 with replacement rather than
+        failing: that path is only taken for bodies this library does not
+        parse, and a write that succeeded must not be reported as a failure
+        because its receipt lacked a ``charset`` parameter.
+        """
+        if strict_encoding:
+            return raw.decode(response.get_encoding())
         try:
-            return json.loads(body)
-        except ValueError as err:
-            # The body is deliberately not echoed: it can contain device
-            # credentials (research §8.3).
-            raise SecuritySpyConnectError(
-                self._connection.host, self._connection.port, "server response was not valid JSON"
-            ) from err
+            encoding = response.get_encoding()
+        except RuntimeError, LookupError:
+            return raw.decode("utf-8", errors="replace")
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError, LookupError:
+            return raw.decode("utf-8", errors="replace")
