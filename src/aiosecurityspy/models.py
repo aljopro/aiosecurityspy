@@ -67,6 +67,15 @@ _LOGGER: Final = logging.getLogger(__name__)
 _TRUE_TOKENS: Final = frozenset({"1", "true", "yes", "on", "y"})
 _FALSE_TOKENS: Final = frozenset({"0", "false", "no", "off", "n", ""})
 
+#: Stand-in title for a server that publishes no usable name. The name is
+#: cosmetic and user-editable downstream, so a generic fallback is safer than
+#: leaving a consumer to invent one -- unlike the uuid, which is permanent.
+_DEFAULT_SERVER_NAME: Final = "SecuritySpy"
+
+#: Bonjour suffix carried by ``bonjour-name`` (``"nvr.local"``). Stripping it
+#: yields the Mac's sharing name, which is what a user recognises.
+_BONJOUR_SUFFIX: Final = ".local"
+
 
 def _as_str(value: object) -> str | None:
     """Coerce an API value to a non-empty string, or ``None``."""
@@ -600,6 +609,38 @@ class Camera:
         )
 
 
+def _decode_server_name(server: dict[str, object]) -> str:
+    """Decode the server's display name from its block of ``++systemInfo``.
+
+    ``++systemInfo`` carries no dedicated server-name field; ``bonjour-name``
+    (``"nvr.local"``) is the only human-chosen identifier the server publishes.
+    The suffix is stripped here, in the library, because it is a wire-format
+    fact and no consumer may hold one (AD-2).
+
+    Args:
+        server: The decoded ``server`` block.
+
+    Returns:
+        The trimmed name with any trailing ``.local`` removed, or
+        ``"SecuritySpy"`` when the server publishes nothing usable.
+
+    """
+    raw = _as_str(server.get("bonjour-name"))
+    if raw is None:
+        return _DEFAULT_SERVER_NAME
+    # Trailing dots make the Bonjour name fully qualified ("nvr.local.") and are
+    # not part of the name a user reads. All of them go: a name ending in dots
+    # is malformed either way, and a display title should not end in one.
+    name = raw.strip().rstrip(".")
+    if name.lower().endswith(_BONJOUR_SUFFIX):
+        # Strip once, not repeatedly: a host genuinely named "local" publishes
+        # "local.local", and only the suffix is ours to remove. Re-trim after,
+        # because "Basement NVR .local" leaves a trailing space behind.
+        name = name[: -len(_BONJOUR_SUFFIX)].strip()
+    # A name of exactly ".local" -- or of whitespace -- leaves nothing behind.
+    return name or _DEFAULT_SERVER_NAME
+
+
 @dataclass(frozen=True, slots=True)
 class ServerInfo:
     """The SecuritySpy server and its camera inventory.
@@ -608,6 +649,10 @@ class ServerInfo:
     """
 
     uuid: str
+    #: Human-facing server name, already stripped of its Bonjour ``.local``
+    #: suffix. Never empty: ``"SecuritySpy"`` stands in when the server
+    #: publishes nothing usable.
+    name: str
     version: str
     version_info: tuple[int, ...]
     camera_count: int
@@ -661,6 +706,7 @@ class ServerInfo:
             _LOGGER.debug("Server reports %s cameras but %s decoded", camera_count, len(cameras))
         return cls(
             uuid=_as_str(server.get("uuid")) or "",
+            name=_decode_server_name(server),
             version=version,
             version_info=version_info,
             camera_count=camera_count if camera_count is not None else len(cameras),
@@ -698,7 +744,7 @@ class ServerInfo:
     def __repr__(self) -> str:
         """Return a representation that cannot carry credentials."""
         return (
-            f"ServerInfo(uuid={self.uuid!r}, version={self.version!r}, "
+            f"ServerInfo(uuid={self.uuid!r}, name={self.name!r}, version={self.version!r}, "
             f"camera_count={self.camera_count}, cameras={len(self.cameras)})"
         )
 

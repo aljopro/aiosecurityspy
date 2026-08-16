@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-16
+
+### Changed
+
+- **Breaking (positional construction):** `ServerInfo.name` is inserted as the second
+  field, shifting `version`, `version_info` and `camera_count` one position right. Code
+  building a `ServerInfo` positionally must be updated; keyword construction and every
+  attribute read are unaffected, as is `ServerInfo.from_api()`, which is how the model is
+  meant to be built.
+
 ### Added
 
+- `ServerInfo.name`: the server's display name, decoded from the `server` block's
+  `bonjour-name` with a trailing `.local` stripped and falling back to `"SecuritySpy"`
+  when the server publishes nothing usable. `++systemInfo` carries no dedicated
+  server-name field, so this is the only human-chosen identifier available; the
+  suffix-stripping lives here because it is a wire-format fact and no consumer may
+  hold one (AD-2).
 - **Settings, arming and permission decoding.** `async_get_camera_settings()` reads a
   camera's settings page into a curated, credential-free `CameraSettings`;
   `async_set_camera_settings()` writes a `CameraSettingsPatch` as a *partial* form POST;
@@ -247,5 +263,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ruff (lint + format) and `mypy --strict` gates, plus a pytest suite.
 - GitHub Actions CI and a PyPI trusted-publisher (OIDC) release workflow.
 
-[Unreleased]: https://github.com/aljopro/aiosecurityspy/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aljopro/aiosecurityspy/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/aljopro/aiosecurityspy/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aljopro/aiosecurityspy/releases/tag/v0.1.0

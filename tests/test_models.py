@@ -64,6 +64,37 @@ def test_fixture_decodes_to_server_info() -> None:
     assert info.camera_count == FIXTURE_CAMERA_COUNT
     assert set(info.cameras) == {0, 1, 7}
     assert all(isinstance(number, int) for number in info.cameras)
+    assert info.name == "nvr"
+
+
+@pytest.mark.parametrize(
+    ("bonjour_name", "expected"),
+    [
+        ("nvr.local", "nvr"),
+        ("nvr.local.", "nvr"),
+        # Every trailing dot goes, not just the one that qualifies the name.
+        ("nvr.local...", "nvr"),
+        ("Attic...", "Attic"),
+        ("NVR.LOCAL", "NVR"),
+        ("  nvr.local  ", "nvr"),
+        ("Basement NVR", "Basement NVR"),
+        # A space before the suffix must not survive into the display name.
+        ("Basement NVR .local", "Basement NVR"),
+        # Only one suffix is ours to strip: a host named "local" is legitimate.
+        ("local.local", "local"),
+        ("nvr.local.local", "nvr.local"),
+        ("", "SecuritySpy"),
+        ("   ", "SecuritySpy"),
+        (".local", "SecuritySpy"),
+        ("  .local  ", "SecuritySpy"),
+        (None, "SecuritySpy"),
+    ],
+)
+def test_server_name_decoding(bonjour_name: str | None, expected: str) -> None:
+    server = dict(SERVER)
+    if bonjour_name is not None:
+        server["bonjour-name"] = bonjour_name
+    assert ServerInfo.from_api(wrap(server, [])).name == expected
 
 
 def test_camera_fields_decode() -> None:
