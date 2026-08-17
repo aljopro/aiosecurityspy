@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling>=1.27"] # >=1.27 for PEP 639 license/license-files metadata
+build-backend = "hatchling.build"
+
+[project]
+name = "aiosecurityspy"
+version = "0.2.0"
+description = "Async, fully-typed Python client library for the Ben Software SecuritySpy HTTP/event API."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Jensen Chappell", email = "aljopro@gmail.com" }]
+keywords = ["securityspy", "async", "aiohttp", "camera", "nvr"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Home Automation",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = ["aiohttp>=3.12,<4"]
+
+[project.urls]
+Homepage = "https://github.com/aljopro/aiosecurityspy"
+Repository = "https://github.com/aljopro/aiosecurityspy"
+Issues = "https://github.com/aljopro/aiosecurityspy/issues"
+Changelog = "https://github.com/aljopro/aiosecurityspy/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.11",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aiosecurityspy"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "A", "ANN", "ARG", "ASYNC", "B", "BLE", "C4", "D", "DTZ", "E", "EM", "ERA",
+    "F", "FA", "FBT", "G", "I", "ICN", "INP", "ISC", "LOG", "N", "PERF", "PGH",
+    "PIE", "PL", "PT", "PTH", "RET", "RSE", "RUF", "S", "SIM", "SLF", "T20",
+    "TC", "TID", "TRY", "UP", "W",
+]
+ignore = ["D203", "D213", "COM812", "ISC001"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "D100", "D103"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+warn_unused_configs = true
+disallow_any_generics = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"

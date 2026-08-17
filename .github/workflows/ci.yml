@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, type-check, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Mypy (strict)
+        run: uv run mypy --strict src tests
+
+      - name: Pytest
+        run: uv run pytest -q
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Verify the wheel ships py.typed
+        run: |
+          set -euo pipefail
+          wheel="$(ls dist/*.whl)"
+          unzip -l "$wheel" | grep -q 'aiosecurityspy/py.typed'
+          echo "py.typed present in ${wheel}"
+
+      - name: Import from a bare environment with no Home Assistant
+        run: |
+          set -euo pipefail
+          uv venv --python 3.14 "${RUNNER_TEMP}/bare"
+          VIRTUAL_ENV="${RUNNER_TEMP}/bare" uv pip install dist/*.whl
+          "${RUNNER_TEMP}/bare/bin/python" - <<'PY'
+          import importlib.util
+
+          import aiosecurityspy
+
+          assert importlib.util.find_spec("homeassistant") is None, "Home Assistant is installed"
+          print(aiosecurityspy.__version__)
+          PY

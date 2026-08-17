@@ -1,0 +1,82 @@
+{
+  "system": {
+    "server": {
+      "version": "6.20",
+      "uuid": "1D3A5C7E-9B21-4F60-8A44-0C2E6F1B7D93",
+      "bonjour-name": "nvr.local",
+      "camera-count": "3",
+      "cpu-usage": "17",
+      "memory-pressure": "22",
+      "archive-status": "0",
+      "new-version": "",
+      "cert-expiry-days": "61",
+      "http-enabled": "yes",
+      "http-port": "8000",
+      "https-enabled": "yes",
+      "https-port": "8001",
+      "ddns-name": "example.viewcam.me",
+      "wan-address": "203.0.113.14",
+      "ip1": "192.168.1.20",
+      "current-local-time": "1754870400",
+      "seconds-from-gmt": "-18000"
+    },
+    "cameralist": {
+      "camera": [
+        {
+          "number": "0",
+          "name": "Front Door",
+          "connected": "yes",
+          "enabled": "yes",
+          "permissions": "10207",
+          "cc-mode": "active",
+          "mc-mode": "active",
+          "a-mode": "active",
+          "current-fps": "15.0",
+          "video-width": "2560",
+          "video-height": "1920",
+          "has-audio": "yes",
+          "custom-model": "no",
+          "ptz-features": "0",
+          "address": "192.168.1.41",
+          "port-rtsp": "554"
+        },
+        {
+          "number": "1",
+          "name": "Driveway",
+          "connected": "yes",
+          "enabled": "yes",
+          "permissions": "5",
+          "cc-mode": "passive",
+          "mc-mode": "active",
+          "a-mode": "passive",
+          "current-fps": "10.0",
+          "video-width": "1920",
+          "video-height": "1080",
+          "has-audio": "no",
+          "custom-model": "yes",
+          "ptz-features": "0",
+          "address": "192.168.1.42",
+          "port-rtsp": "554"
+        },
+        {
+          "number": "7",
+          "name": "Back Garden",
+          "connected": "no",
+          "enabled": "no",
+          "permissions": "1",
+          "cc-mode": "passive",
+          "mc-mode": "passive",
+          "a-mode": "passive",
+          "current-fps": "0.0",
+          "video-width": "1280",
+          "video-height": "720",
+          "has-audio": "no",
+          "custom-model": "no",
+          "ptz-features": "3",
+          "address": "192.168.1.47",
+          "port-rtsp": "554"
+        }
+      ]
+    }
+  }
+}
