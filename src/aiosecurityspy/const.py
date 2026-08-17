@@ -51,6 +51,7 @@ __all__ = [
     "CLASS_ANIMAL",
     "CLASS_HUMAN",
     "CLASS_VEHICLE",
+    "CREDENTIAL_KEYS",
     "DEFAULT_DETECTION_DEBOUNCE",
     "DEFAULT_DETECTION_GAP",
     "DEFAULT_DETECTION_THRESHOLD",
@@ -98,6 +99,7 @@ __all__ = [
     "PERM_PTZSET",
     "PERM_SCHED",
     "PERM_TRIGGER",
+    "REDACTED",
     "SETTINGS_FORM_SENTINEL",
     "STREAM_MAX_RECORD_BYTES",
     "TRIGGER_REASON_NAMES",
@@ -392,6 +394,49 @@ OBJECT_CLASS_BITS: Final[Mapping[int, str]] = MappingProxyType(
         1: CLASS_HUMAN,
         2: CLASS_VEHICLE,
         4: CLASS_ANIMAL,
+    }
+)
+
+#: What every redaction substitutes for a credential. A fixed marker rather than
+#: an empty string or a length-preserving mask: a diagnostics reader has to be
+#: able to tell "this was removed" from "this was blank", and a mask that echoes
+#: the length of a password is still a fact about the password.
+REDACTED: Final[str] = "**REDACTED**"
+
+#: Every credential-shaped key name, already normalized the way
+#: :func:`~aiosecurityspy.is_credential_key` normalizes a key it is asked about:
+#: lowercased with every non-alphanumeric character removed, so ``authToken``,
+#: ``auth_token`` and ``AUTH-TOKEN`` all reduce to ``authtoken``.
+#:
+#: This is the **one** place the vocabulary lives. Both the anonymizer and the
+#: URL redactor read it at call time, so adding a name here is the whole change
+#: needed when a future SecuritySpy version grows a credential-shaped key --
+#: there is deliberately no second list and no inline key literal at a call site.
+#:
+#: Membership is tested exactly, never as a substring: ``passwordProtected``
+#: normalizes to ``passwordprotected``, which is not in this set, and stays
+#: readable because whether a camera uses authentication at all is exactly the
+#: kind of thing a maintainer reads a diagnostics dump to find out.
+CREDENTIAL_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "username",  # research §8.3 -- SecuritySpy's own plaintext device credential
+        "password",  # research §8.3 -- SecuritySpy's own plaintext device credential
+        "passwd",  # the abbreviated spelling, so a variant page cannot slip through
+        "pass",  # ditto; also the `pass` a consumer's own config may use
+        "auth",  # research §7 -- the `auth` query parameter of a stream URL
+        "authtoken",  # covers `authToken`, `auth_token` and `AUTH-TOKEN`
+        "token",  # the bare spelling of the same thing
+        "secret",  # generic, and the spelling a consumer's own config tends to use
+        "apikey",  # covers `apiKey` and `api_key`
+        "authorization",  # the HTTP header name, when headers are dumped as a mapping
+        "xapikey",  # covers `X-Api-Key`; normalization strips the `-`, not the `x`
+        "cookie",  # a header mapping is one of the two shapes this set is read for
+        "setcookie",  # covers `Set-Cookie` on a dumped response
+        "bearer",  # the token's own name, when a dump splits the header value out
+        "sessionid",  # covers `sessionId` and `session_id` -- a session is a credential
+        "passphrase",  # the spelling a key or certificate config uses
+        "privatekey",  # covers `privateKey` and `private_key`
+        "credentials",  # generic, and the plural form a consumer's config tends to use
     }
 )
 

@@ -432,6 +432,80 @@ Booleans read back from SecuritySpy as JSON `true`/`false` but must be *written*
 `1`/`0`. That asymmetry is absorbed inside the library, so a call site only ever sees
 `bool`.
 
+### Anonymize a diagnostics dump before you publish it
+
+The library keeps credentials out of its own models, logs, URLs and exceptions. What it
+cannot do is see the object *you* are about to write to a diagnostics file, a bug report
+or a log line. `anonymize()` is that tool, and `redact_url()` is the one you need before a
+credential-bearing stream URL reaches a log or a subprocess argument — that exact leak has
+been observed in the wild, where an external tool echoed an `rtsp://user:pass@host/…` URL
+back verbatim.
+
+```python
+from aiosecurityspy import CREDENTIAL_KEYS, anonymize, redact_url
+
+# A raw ++settings-cameras page carries the camera's device credentials in
+# plaintext. Structure survives; only the credential-shaped values go.
+raw = {
+    "name": "Driveway",
+    "overlayText": "Front Gate",
+    "motionSensitivity": 55,
+    "passwordProtected": True,  # not a credential — a fact worth keeping
+    "username": "camera-admin",
+    "password": "hunter2",
+}
+print(anonymize(raw))
+# {'name': 'Driveway', 'overlayText': 'Front Gate', 'motionSensitivity': 55,
+#  'passwordProtected': True, 'username': '**REDACTED**', 'password': '**REDACTED**'}
+
+# Anything at all: a library model, an aiohttp.BasicAuth, a config mapping, a
+# list of URLs. Pass your own known secrets when you have them — key matching
+# cannot see a password embedded in a free-text field, but you know yours.
+print(anonymize({"note": "login failed for hunter2"}, secrets=["hunter2"]))
+# {'note': 'login failed for **REDACTED**'}
+
+# A URL embedded in an ordinary message is redacted where it sits.
+print(anonymize({"note": "connecting to rtsp://bob:hunter2@nvr.example.com/x"}))
+# {'note': 'connecting to rtsp://**REDACTED**:**REDACTED**@nvr.example.com/x'}
+
+# Before a URL is logged, printed, or handed to ffmpeg as an argument:
+print(redact_url("rtsp://bob:hunter2@nvr.example.com:8000/++stream?auth=Ym9i&cameraNum=3"))
+# rtsp://**REDACTED**:**REDACTED**@nvr.example.com:8000/++stream?auth=**REDACTED**&cameraNum=3
+
+# One declared vocabulary, and it is the only place to extend.
+print(sorted(CREDENTIAL_KEYS))
+# ['apikey', 'auth', 'authorization', 'authtoken', 'bearer', 'cookie',
+#  'credentials', 'pass', 'passphrase', 'passwd', 'password', 'privatekey',
+#  'secret', 'sessionid', 'setcookie', 'token', 'username', 'xapikey']
+```
+
+Three things worth knowing about it:
+
+- **`aiosecurityspy.const.CREDENTIAL_KEYS` is the single place to extend.** Every redaction
+  decision — in `anonymize()` and in `redact_url()` alike — routes through
+  `is_credential_key()`, which tests the key lowercased with non-alphanumerics stripped for
+  *exact* membership in that one set. So `authToken`, `auth_token` and `AUTH-TOKEN` all
+  match, while `passwordProtected` does not: it is a boolean telling you whether the camera
+  uses authentication at all, and a substring test would have thrown it away. If a future
+  SecuritySpy version grows a credential-shaped key, add it to
+  `aiosecurityspy.const.CREDENTIAL_KEYS` and both redactors pick it up — they read that
+  module attribute at call time, so the addition needs no other change.
+- **It is fail-closed on shapes and fail-open on structure.** Mappings, `NamedTuple`s (by
+  field name — `aiohttp.BasicAuth` walked positionally would yield `["bob", "hunter2"]`
+  with no key to match on), dataclasses, lists, tuples, sets, strings and scalars are
+  walked and preserved (a sequence that is neither a list nor a tuple, such as a `deque`,
+  is not — like any other unrecognised shape it becomes its bare type name); a timestamp,
+  duration, `Decimal`, `UUID`, `PurePath` or `Enum` renders through `str()` so a capture
+  dump keeps its times, and an exception is walked argument by argument rather than
+  through `str()`, which on a multi-argument exception is the `repr` of its arguments and
+  would publish a credential-bearing one; bytes become `<bytes: 27>`;
+  anything else becomes its bare type name such as `<ClientSession>`, never its `repr`.
+  Cycles and runaway nesting stop at `<recursive>`/`<truncated>`, a container that refuses
+  to be walked becomes `<unwalkable TypeName>`, and `anonymize()` never raises.
+- **There is no diagnostics-dump builder here, deliberately.** The library supplies the
+  anonymizer; you decide what belongs in your own diagnostics. `anonymize()` is pure — no
+  network, no I/O, no logging, no Home Assistant — so it can never be the thing that fails.
+
 ### Use a least-privileged SecuritySpy account
 
 Create a dedicated SecuritySpy user for this library rather than reusing an administrator
@@ -455,10 +529,9 @@ traceback.
 ## Status
 
 Early development. The client, typed models, protocol constants, exception hierarchy, the
-event stream, capture history, the detection-episode reducer, and the settings, arming and
-permission surface are in place; the credential anonymizer lands in a subsequent release.
-The public API is not yet stable, and the reducer's three defaults are explicitly
-provisional.
+event stream, capture history, the detection-episode reducer, the settings, arming and
+permission surface, and the credential anonymizer are all in place. The public API is not
+yet stable, and the reducer's three defaults are explicitly provisional.
 
 ## Development
 
