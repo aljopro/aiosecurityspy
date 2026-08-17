@@ -124,6 +124,7 @@ from .events import (
 )
 from .exceptions import (
     SecuritySpyAuthError,
+    SecuritySpyCertificateError,
     SecuritySpyConnectError,
     SecuritySpyError,
     SecuritySpyPermissionError,
@@ -259,6 +260,7 @@ __all__ = [
     "OverrideKey",
     "ReducerConfig",
     "SecuritySpyAuthError",
+    "SecuritySpyCertificateError",
     "SecuritySpyClient",
     "SecuritySpyConnectError",
     "SecuritySpyError",

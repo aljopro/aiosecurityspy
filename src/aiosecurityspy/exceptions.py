@@ -17,6 +17,7 @@ from __future__ import annotations
 
 __all__ = [
     "SecuritySpyAuthError",
+    "SecuritySpyCertificateError",
     "SecuritySpyConnectError",
     "SecuritySpyError",
     "SecuritySpyPermissionError",
@@ -44,6 +45,44 @@ class SecuritySpyConnectError(SecuritySpyError):
         self.port = port
         self.reason = reason
         super().__init__(f"Cannot reach SecuritySpy at {host}:{port}: {reason}")
+
+
+class SecuritySpyCertificateError(SecuritySpyConnectError):
+    """TLS was spoken, and the server's certificate failed *verification*.
+
+    Deliberately a *subclass* of :class:`SecuritySpyConnectError` rather than a
+    sibling: every consumer that already catches a connect error keeps working
+    unchanged, while a consumer that wants to name the certificate specifically
+    opts in by testing this type **first**. Any ``except`` or ``isinstance``
+    chain handling both must therefore put this one ahead of its parent.
+
+    Raised only for a genuine certificate-validation failure -- an expired
+    certificate, an unknown issuer, a name that does not match the address
+    used. Every other TLS failure stays a plain :class:`SecuritySpyConnectError`
+    (see :mod:`aiosecurityspy.client`), because this error's whole value is that
+    turning verification off is a real remedy for it, and for a handshake that
+    failed for some other reason it is not.
+    """
+
+    def __init__(self, host: str, port: int, reason: str) -> None:
+        """Record the endpoint and a credential-free description of the failure.
+
+        Args:
+            host: The host that was contacted.
+            port: The port that was contacted.
+            reason: A short, credential-free OpenSSL reason such as
+                ``CERTIFICATE_VERIFY_FAILED``, or the exception's type name when
+                no reason is available.
+
+        """
+        super().__init__(
+            host,
+            port,
+            f"the server's TLS certificate could not be verified ({reason}); it may "
+            "have expired, been issued by an unknown authority, or been issued for a "
+            "different name than the address used to connect -- certificate "
+            "verification can be disabled to accept it anyway",
+        )
 
 
 class SecuritySpyAuthError(SecuritySpyError):

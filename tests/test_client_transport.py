@@ -26,6 +26,7 @@ from aiosecurityspy import (
     CameraSettingsPatch,
     CaptureModes,
     SecuritySpyAuthError,
+    SecuritySpyCertificateError,
     SecuritySpyClient,
     SecuritySpyConnectError,
 )
@@ -148,6 +149,39 @@ async def test_real_timeout_bounds_a_slow_server(server: AiohttpTestServer) -> N
         with pytest.raises(SecuritySpyConnectError) as err:
             await client._request_json("++slow")  # noqa: SLF001 - the seam under test
     assert "timed out" in str(err.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verify_ssl", [True, False], ids=["verify-on", "verify-off"])
+async def test_real_tls_against_a_plain_http_port_is_not_a_certificate_problem(
+    server: AiohttpTestServer, *, verify_ssl: bool
+) -> None:
+    """TLS spoken to a plain-HTTP listener must not be reported as a bad certificate.
+
+    This is the likeliest mistake once a UI grows an HTTPS toggle beside a port
+    field that still defaults to the HTTP port. Real aiohttp raises
+    `ClientConnectorSSLError` (`WRONG_VERSION_NUMBER`) here with verification on
+    *and* off, so advising the user to turn verification off would send them to
+    a setting that cannot help. Only a real handshake proves which exception
+    aiohttp raises, which is why this lives beside the other transport tests.
+    """
+    async with aiohttp.ClientSession() as session:
+        client = SecuritySpyClient(
+            session,
+            "127.0.0.1",
+            server.port or 0,
+            username=USERNAME,
+            password=PASSWORD,
+            use_https=True,
+            verify_ssl=verify_ssl,
+            timeout=5.0,
+        )
+        with pytest.raises(SecuritySpyConnectError) as err:
+            await client.async_get_server_info()
+
+    assert not isinstance(err.value, SecuritySpyCertificateError)
+    assert "WRONG_VERSION_NUMBER" in str(err.value)
+    assert "plain HTTP" in str(err.value)
 
 
 @pytest.mark.asyncio

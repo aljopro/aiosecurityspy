@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-16
+
+### Added
+
+- `SecuritySpyCertificateError`, raised **only** when the server's TLS certificate fails
+  verification (`aiohttp.ClientConnectorCertificateError` or
+  `ssl.SSLCertVerificationError`): an expired certificate, an unknown issuer, or a name
+  that does not match the address used. It is a **subclass** of
+  `SecuritySpyConnectError`, so every existing consumer that catches connect errors keeps
+  catching it unchanged; a consumer that wants to name the certificate specifically opts
+  in by testing the subclass **first**. The message says verification can be disabled,
+  which is a real remedy for this class of failure and only for this class.
+- Every *other* TLS failure now reports as a `SecuritySpyConnectError` naming the
+  OpenSSL reason and the likeliest cause. Speaking TLS to a plain-HTTP listener raises
+  `WRONG_VERSION_NUMBER` with verification on and off alike, so it must not be reported
+  as a certificate problem.
+- Both clauses precede `_request()`'s `TimeoutError`/`ClientError`/`OSError` handling,
+  which would otherwise swallow a TLS failure whole: `ClientSSLError` subclasses
+  `ClientError` *and* `OSError`, and `ssl.SSLError` subclasses `OSError`.
+
 ## [0.2.0] - 2026-08-16
 
 ### Changed
@@ -263,6 +283,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ruff (lint + format) and `mypy --strict` gates, plus a pytest suite.
 - GitHub Actions CI and a PyPI trusted-publisher (OIDC) release workflow.
 
-[Unreleased]: https://github.com/aljopro/aiosecurityspy/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/aljopro/aiosecurityspy/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/aljopro/aiosecurityspy/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aljopro/aiosecurityspy/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aljopro/aiosecurityspy/releases/tag/v0.1.0
