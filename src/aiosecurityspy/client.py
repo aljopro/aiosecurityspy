@@ -253,9 +253,9 @@ def _ordered_newest_first(captures: list[Capture]) -> tuple[Capture, ...]:
 class SecuritySpyClient:
     """An async client for the SecuritySpy HTTP API.
 
-    Credentials are held once, on the client, and are sent only as
-    :class:`aiohttp.BasicAuth`. They never appear in a URL, a log line, an
-    exception message, a ``repr`` or a traceback (AD-13).
+    Credentials are held once, on the client, and are sent only as a
+    pre-encoded ``Authorization: Basic`` header. They never appear in a URL,
+    a log line, an exception message, a ``repr`` or a traceback (AD-13).
 
     Example:
         >>> import aiohttp, asyncio
@@ -732,8 +732,8 @@ class SecuritySpyClient:
     ) -> str:
         """Issue one authenticated request and return its decoded body text.
 
-        This is the single transport seam. URL construction, BasicAuth, the
-        per-request SSL flag, the timeout, redirect handling, status-to-exception
+        This is the single transport seam. URL construction, the Authorization
+        header, the per-request SSL flag, the timeout, redirect handling, status-to-exception
         mapping, the response byte cap and the never-echo-the-body rule all
         happen exactly once, here, for every verb this library speaks.
 
@@ -765,19 +765,23 @@ class SecuritySpyClient:
         # is already on the wire, which is why the README recommends HTTPS.
         shared: dict[str, Any] = {
             "params": dict(params or {}),
-            "auth": self._connection.auth,
             "ssl": self._connection.verify_ssl,
             "timeout": self._connection.request_timeout(),
             "allow_redirects": False,
         }
         try:
             context = (
-                self._connection.session.get(url, **shared)
+                self._connection.session.get(
+                    url, headers={"Authorization": self._connection.auth_header}, **shared
+                )
                 if form_body is None
                 else self._connection.session.post(
                     url,
                     data=form_body.encode("utf-8"),
-                    headers={"Content-Type": _FORM_CONTENT_TYPE},
+                    headers={
+                        "Authorization": self._connection.auth_header,
+                        "Content-Type": _FORM_CONTENT_TYPE,
+                    },
                     **shared,
                 )
             )
