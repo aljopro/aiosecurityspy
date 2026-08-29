@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import ssl
 import traceback
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from aiosecurityspy import (
     CAPTURE_FILTER_VEHICLE,
     CameraSettingsPatch,
     SecuritySpyAuthError,
+    SecuritySpyCertificateError,
     SecuritySpyClient,
     SecuritySpyConnectError,
     SecuritySpyError,
@@ -200,21 +202,80 @@ def connector_error() -> aiohttp.ClientError:
     return aiohttp.ClientConnectionError(f"cannot connect to host {HOST}:{PORT}")
 
 
-class FakeCertificateError(aiohttp.ClientSSLError):
-    """A real `aiohttp.ClientSSLError` subclass, minus the private ConnectionKey.
+class FakeCertificateError(aiohttp.ClientConnectorCertificateError):
+    """A real `ClientConnectorCertificateError`, minus the private ConnectionKey.
 
-    `aiohttp.ClientConnectorCertificateError` can only be built from aiohttp's
-    internal `ConnectionKey`, so this stands in for the family the client must
-    catch without reaching into private plumbing.
+    aiohttp's own constructor reads `connection_key.host`, so building one
+    outside a connector means reaching into private plumbing. Subclassing gives
+    the genuine type -- which is what the client's `except` clause matches on --
+    with the `certificate_error` attribute production carries.
     """
 
-    def __init__(self, message: str) -> None:
-        """Build the error with a plain message."""
+    def __init__(self, message: str, reason: str = "CERTIFICATE_VERIFY_FAILED") -> None:
+        """Build the error, carrying an inner `ssl` error like the real one."""
         Exception.__init__(self, message)
+        inner = ssl.SSLCertVerificationError(1, message)
+        inner.reason = reason
+        # `certificate_error` is a read-only property over this attribute.
+        self._certificate_error = inner
+        # Kept separately from `args`: aiohttp's own `__init__` re-assigns
+        # `args` to `(ConnectionKey, Exception)`, so the declared element type
+        # there is not `str`.
+        self._message = message
+
+    def __str__(self) -> str:
+        """Render from the message, not from aiohttp's unset `_conn_key`.
+
+        aiohttp's own `__str__` formats the private `ConnectionKey` this fake
+        deliberately does not build, so without this override any *failing*
+        assertion below would blow up in pytest's traceback rendering -- an
+        `AttributeError` in place of the real failure.
+        """
+        return self._message
 
 
 def certificate_error() -> aiohttp.ClientError:
     return FakeCertificateError(f"certificate verify failed for {HOST}")
+
+
+def bare_certificate_error() -> ssl.SSLCertVerificationError:
+    """Build a certificate rejection raised outside aiohttp's connector wrapper.
+
+    `ssl.SSLCertVerificationError` is an `OSError` but not an
+    `aiohttp.ClientError`, so it reaches the client through a different door
+    than the aiohttp family and has to be caught explicitly to land on the same
+    error type.
+    """
+    err = ssl.SSLCertVerificationError(1, f"certificate verify failed for {HOST}")
+    err.reason = "CERTIFICATE_VERIFY_FAILED"
+    return err
+
+
+class FakeHandshakeError(aiohttp.ClientConnectorSSLError):
+    """A TLS failure that is *not* a certificate rejection.
+
+    This is what speaking TLS to SecuritySpy's plain-HTTP port raises -- the
+    likeliest mistake once the form grows an HTTPS toggle, since the port field
+    still defaults to the HTTP listener. Built the same way as
+    `FakeCertificateError`, and for the same reason.
+    """
+
+    def __init__(self, message: str) -> None:
+        """Build the error, carrying the inner `ssl` error under `os_error`."""
+        Exception.__init__(self, message)
+        inner = ssl.SSLError(1, message)
+        inner.reason = "WRONG_VERSION_NUMBER"
+        # `os_error` is a read-only property over this attribute.
+        self._os_error = inner
+        self._message = message
+
+    def __str__(self) -> str:
+        """Render from the message; see `FakeCertificateError.__str__`."""
+        return self._message
+
+
+def handshake_error() -> aiohttp.ClientError:
+    return FakeHandshakeError("[SSL: WRONG_VERSION_NUMBER] wrong version number")
 
 
 # --- happy path -------------------------------------------------------------
@@ -347,10 +408,70 @@ async def test_timeout_maps_to_connect_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_certificate_error_maps_to_connect_error() -> None:
-    with pytest.raises(SecuritySpyConnectError) as err:
-        await make_client(FakeSession(error=certificate_error())).async_get_server_info()
+@pytest.mark.parametrize(
+    "factory",
+    [certificate_error, bare_certificate_error],
+    ids=["aiohttp-certificate-error", "bare-certificate-error"],
+)
+async def test_certificate_error_maps_to_certificate_error(
+    factory: Callable[[], BaseException],
+) -> None:
+    """A rejected certificate is its own type, and still a connect error.
+
+    The subclass relationship is the whole compatibility story: a consumer that
+    only knows `SecuritySpyConnectError` keeps catching this, while one that
+    wants to name the certificate tests the subclass first.
+    """
+    original = factory()
+    with pytest.raises(SecuritySpyCertificateError) as err:
+        await make_client(FakeSession(error=original)).async_get_server_info()
+
+    assert isinstance(err.value, SecuritySpyConnectError)
+    assert err.value.__cause__ is original
+    assert err.value.host == HOST
+    assert err.value.port == PORT
     assert f"{HOST}:{PORT}" in str(err.value)
+    # The message must send the user to the certificate, not to their password:
+    # a mismatch reported as an auth or network fault is the failure this type
+    # exists to prevent.
+    assert "certificate" in str(err.value)
+    assert "CERTIFICATE_VERIFY_FAILED" in str(err.value)
+    assert "credential" not in str(err.value)
+    assert "password" not in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_handshake_failure_is_not_reported_as_a_certificate_problem() -> None:
+    """A non-certificate TLS failure must not advise disabling verification.
+
+    Speaking TLS to a plain-HTTP listener raises `WRONG_VERSION_NUMBER` with
+    verification on *and* off, so reporting it as a rejected certificate sends
+    the user to a setting that cannot fix it.
+    """
+    original = handshake_error()
+    with pytest.raises(SecuritySpyConnectError) as err:
+        await make_client(FakeSession(error=original)).async_get_server_info()
+
+    assert not isinstance(err.value, SecuritySpyCertificateError)
+    assert err.value.__cause__ is original
+    assert "WRONG_VERSION_NUMBER" in str(err.value)
+    assert "plain HTTP" in str(err.value)
+    assert "certificate" not in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_tls_failure_without_a_reason_falls_back_to_the_type_name() -> None:
+    """A TLS error carrying no OpenSSL reason still names something usable.
+
+    A bare `ssl.SSLError` is not a certificate rejection, so it must stay on the
+    handshake branch: `"SSLError" in ...` alone would also be satisfied by the
+    string `SSLCertVerificationError`, which is exactly the misrouting this
+    asserts against.
+    """
+    with pytest.raises(SecuritySpyConnectError) as err:
+        await make_client(FakeSession(error=ssl.SSLError("no reason here"))).async_get_server_info()
+    assert not isinstance(err.value, SecuritySpyCertificateError)
+    assert "(SSLError)" in str(err.value)
 
 
 @pytest.mark.asyncio
@@ -394,6 +515,8 @@ def failure_rows() -> list[tuple[str, Callable[[], FakeSession]]]:
         ("connector-error", lambda: FakeSession(error=connector_error())),
         ("timeout", lambda: FakeSession(error=TimeoutError())),
         ("certificate-error", lambda: FakeSession(error=certificate_error())),
+        ("bare-certificate-error", lambda: FakeSession(error=bare_certificate_error())),
+        ("handshake-error", lambda: FakeSession(error=handshake_error())),
         ("os-error", lambda: FakeSession(error=OSError("boom"))),
     ]
 

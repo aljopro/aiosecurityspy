@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Credential-safe diagnostics.** `anonymize()` returns a credential-free copy of any
+  structure — a raw settings payload, a library model, an `aiohttp.BasicAuth`, a config
+  mapping, a list of URLs — so a consumer can point its diagnostics dump at one function
+  instead of scrubbing by hand. Structure survives: mappings stay mappings, keys stay
+  keys, lists and tuples keep their order and container type, and every non-credential
+  value is returned unchanged, because a dump that redaction flattened would be safe and
+  useless. A URL embedded in an ordinary free-text message is redacted where it sits —
+  including a protocol-relative `//user:pass@host/…` one — and a timestamp, duration,
+  `Decimal`, `UUID`, `PurePath` or `Enum` is rendered rather than flattened to a type
+  marker, so a capture dump keeps the times it is read for. An exception is walked
+  argument by argument rather than rendered through `str()`, which on a multi-argument
+  exception is the `repr` of its arguments and would publish a credential-bearing one.
+  A number a caller declares in `secrets=` is matched on its rendered form, so a numeric
+  passcode is caught as readily as a string one; booleans and `None` are exempt from that
+  match, so declaring a config's values wholesale cannot destroy every flag in the dump.
+- `redact_url()`: replaces a URL's userinfo — including on a protocol-relative
+  `//user:pass@host/…` reference, and without inventing a password on a `//user@host/…`
+  one that never carried a second field — and every credential-shaped parameter in the
+  query, the fragment and an RFC 3986 `;`-delimited path segment alike, whether the query
+  is separated by `&` or the legacy `;`. A URL nested inside another one — in a parameter
+  value, percent-encoded or not, or in the path of a redirect or proxy endpoint — is
+  redacted too. The scheme in its original case, the host, port, path and every other
+  parameter come back byte for byte.
+  This is what a consumer **must** call before a credential-bearing stream URL reaches a
+  log line or a subprocess argument — an external tool has been observed echoing an
+  `rtsp://user:pass@host/…` URL back verbatim.
+- `CREDENTIAL_KEYS` and `is_credential_key()`: one declared vocabulary and one predicate
+  that every redaction decision routes through. Matching is on the key lowercased with
+  non-alphanumerics stripped, tested for **exact** membership — so `authToken`,
+  `auth_token` and `AUTH-TOKEN` all match while `passwordProtected` is preserved.
+  `aiosecurityspy.const.CREDENTIAL_KEYS` is the single place to extend when a future
+  SecuritySpy version grows a credential-shaped key; both redactors read that module
+  attribute at call time, so adding a name there is the whole change.
+- `REDACTED`, the marker every redaction substitutes.
+- The anonymizer is fail-closed on shapes: a `NamedTuple` is walked by `_fields` rather
+  than positionally (`aiohttp.BasicAuth("bob", "s3cret")` as a sequence would be
+  `["bob", "s3cret"]`, with no key left to match the password on), bytes become a length
+  marker, cycles and runaway nesting stop at `<recursive>`/`<truncated>`, and an
+  unrecognised object becomes its bare type name — never its `repr`. It never raises: a
+  container that refuses to be walked, or a member whose getter throws, degrades to
+  `<unwalkable TypeName>`, so `anonymize()` is safe to call from an exception handler.
+- `anonymize(..., secrets=[...])` substitutes literal secrets the *caller* knows inside
+  every string it produces, which is the only thing that catches a credential embedded in
+  a free-text field where no key names it. Blank secrets are ignored rather than honoured.
+- `aiosecurityspy.diagnostics` is pure: it imports the standard library and the protocol
+  vocabulary and nothing else — no `aiohttp`, no network, no I/O, no logger. There is
+  deliberately **no** diagnostics-dump builder and no `async_get_diagnostics()`: the
+  library supplies the anonymizer, the consumer supplies the dump.
+- Your credential never appears in a URL the library builds or sends, and neither it nor a
+  camera's device credential nor any settings-payload value ever reaches a log line, an
+  exception message or a traceback — on any request path, at any log level. Both claims are
+  now enforced by the test suite rather than stated in prose.
+
+## [0.3.0] - 2026-08-16
+
+### Added
+
+- `SecuritySpyCertificateError`, raised **only** when the server's TLS certificate fails
+  verification (`aiohttp.ClientConnectorCertificateError` or
+  `ssl.SSLCertVerificationError`): an expired certificate, an unknown issuer, or a name
+  that does not match the address used. It is a **subclass** of
+  `SecuritySpyConnectError`, so every existing consumer that catches connect errors keeps
+  catching it unchanged; a consumer that wants to name the certificate specifically opts
+  in by testing the subclass **first**. The message says verification can be disabled,
+  which is a real remedy for this class of failure and only for this class.
+- Every *other* TLS failure now reports as a `SecuritySpyConnectError` naming the
+  OpenSSL reason and the likeliest cause. Speaking TLS to a plain-HTTP listener raises
+  `WRONG_VERSION_NUMBER` with verification on and off alike, so it must not be reported
+  as a certificate problem.
+- Both clauses precede `_request()`'s `TimeoutError`/`ClientError`/`OSError` handling,
+  which would otherwise swallow a TLS failure whole: `ClientSSLError` subclasses
+  `ClientError` *and* `OSError`, and `ssl.SSLError` subclasses `OSError`.
+
 ## [0.2.0] - 2026-08-16
 
 ### Changed
@@ -263,6 +338,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ruff (lint + format) and `mypy --strict` gates, plus a pytest suite.
 - GitHub Actions CI and a PyPI trusted-publisher (OIDC) release workflow.
 
-[Unreleased]: https://github.com/aljopro/aiosecurityspy/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/aljopro/aiosecurityspy/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/aljopro/aiosecurityspy/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aljopro/aiosecurityspy/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aljopro/aiosecurityspy/releases/tag/v0.1.0

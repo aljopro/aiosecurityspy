@@ -46,6 +46,7 @@ from .const import (
     CLASS_ANIMAL,
     CLASS_HUMAN,
     CLASS_VEHICLE,
+    CREDENTIAL_KEYS,
     DEFAULT_DETECTION_DEBOUNCE,
     DEFAULT_DETECTION_GAP,
     DEFAULT_DETECTION_THRESHOLD,
@@ -93,6 +94,7 @@ from .const import (
     PERM_SCHED,
     PERM_TRIGGER,
     PERMISSION_NAMES,
+    REDACTED,
     SETTINGS_FORM_SENTINEL,
     STREAM_MAX_RECORD_BYTES,
     TRIGGER_REASON_NAMES,
@@ -102,6 +104,7 @@ from .const import (
     decode_permissions,
     decode_trigger_reasons,
 )
+from .diagnostics import anonymize, is_credential_key, redact_url
 from .episodes import (
     ClassificationSignal,
     DetectionEpisode,
@@ -124,6 +127,7 @@ from .events import (
 )
 from .exceptions import (
     SecuritySpyAuthError,
+    SecuritySpyCertificateError,
     SecuritySpyConnectError,
     SecuritySpyError,
     SecuritySpyPermissionError,
@@ -186,6 +190,7 @@ __all__ = [
     "CLASS_ANIMAL",
     "CLASS_HUMAN",
     "CLASS_VEHICLE",
+    "CREDENTIAL_KEYS",
     "DEFAULT_DETECTION_DEBOUNCE",
     "DEFAULT_DETECTION_GAP",
     "DEFAULT_DETECTION_THRESHOLD",
@@ -233,6 +238,7 @@ __all__ = [
     "PERM_PTZSET",
     "PERM_SCHED",
     "PERM_TRIGGER",
+    "REDACTED",
     "SETTINGS_FORM_SENTINEL",
     "STREAM_MAX_RECORD_BYTES",
     "TRIGGER_REASON_NAMES",
@@ -259,6 +265,7 @@ __all__ = [
     "OverrideKey",
     "ReducerConfig",
     "SecuritySpyAuthError",
+    "SecuritySpyCertificateError",
     "SecuritySpyClient",
     "SecuritySpyConnectError",
     "SecuritySpyError",
@@ -269,12 +276,15 @@ __all__ = [
     "StreamEvent",
     "TriggerPayload",
     "__version__",
+    "anonymize",
     "arm_override",
     "capture_filter_for_class",
     "class_slug",
     "decode_object_classes",
     "decode_permissions",
     "decode_trigger_reasons",
+    "is_credential_key",
     "parse_event_line",
+    "redact_url",
     "require_permission",
 ]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import ssl
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import quote
@@ -29,7 +30,7 @@ from .const import (
     SETTINGS_FORM_SENTINEL,
     capture_filter_for_class,
 )
-from .exceptions import SecuritySpyAuthError, SecuritySpyConnectError
+from .exceptions import SecuritySpyAuthError, SecuritySpyCertificateError, SecuritySpyConnectError
 from .models import (
     SETTINGS_PAGE_KEY_QUORUM,
     SETTINGS_PAGE_KEYS,
@@ -80,6 +81,36 @@ _CAPTURE_LIST_KEYS: Final = ("captures", "caplist", "files", "file")
 
 #: Content type every ``settings-*`` write carries (research §8.0).
 _FORM_CONTENT_TYPE: Final = "application/x-www-form-urlencoded"
+
+
+def _tls_reason(err: BaseException) -> str:
+    """Return a short, credential-free description of a TLS failure.
+
+    OpenSSL's own reason -- ``CERTIFICATE_VERIFY_FAILED``,
+    ``CERTIFICATE_HAS_EXPIRED``, ``WRONG_VERSION_NUMBER`` -- is the one detail
+    that tells an expired certificate apart from a hostname mismatch or from
+    TLS spoken to a plain-HTTP port, and it is a fixed OpenSSL constant, so it
+    carries nothing user-supplied. aiohttp wraps the underlying
+    :class:`ssl.SSLError` rather than carrying the reason itself, under
+    ``certificate_error`` for a certificate rejection and ``os_error`` for every
+    other connector failure, so both are unwrapped before giving up.
+
+    Args:
+        err: The exception raised by the transport.
+
+    Returns:
+        The OpenSSL reason, or the exception's type name when there is none.
+
+    """
+    for attribute in ("certificate_error", "os_error"):
+        inner = getattr(err, attribute, None)
+        reason = getattr(inner, "reason", None)
+        if isinstance(reason, str) and reason:
+            return reason
+    reason = getattr(err, "reason", None)
+    if isinstance(reason, str) and reason:
+        return reason
+    return type(err).__name__
 
 
 def _validated_camera_number(camera: int) -> int:
@@ -691,7 +722,7 @@ class SecuritySpyClient:
         """
         return await self._request(path, form_body=body, strict_encoding=False)
 
-    async def _request(
+    async def _request(  # noqa: PLR0912 - the branches are the transport seam itself; splitting them would give a second place to decide what a status or a TLS failure means
         self,
         path: str,
         *,
@@ -833,6 +864,32 @@ class SecuritySpyClient:
                 self._connection.host,
                 self._connection.port,
                 "server response was not decodable text",
+            ) from err
+        except (aiohttp.ClientConnectorCertificateError, ssl.SSLCertVerificationError) as err:
+            # Deliberately narrow: only a failed *verification* is a certificate
+            # problem the caller can answer by turning verification off. Both
+            # forms are caught because a TLS failure raised outside aiohttp's
+            # connector wrapper arrives as the bare `ssl` exception.
+            raise SecuritySpyCertificateError(
+                self._connection.host, self._connection.port, _tls_reason(err)
+            ) from err
+        except (aiohttp.ClientSSLError, ssl.SSLError) as err:
+            # Every other TLS failure. Reported separately from the certificate
+            # case because the advice differs: speaking TLS to a plain-HTTP
+            # listener raises `WRONG_VERSION_NUMBER` here, and disabling
+            # certificate verification does not help it -- verified against a
+            # live aiohttp server with `ssl=True` and `ssl=False` alike.
+            #
+            # This clause and the one above must both precede `TimeoutError`,
+            # `aiohttp.ClientError` and `OSError` below: `aiohttp.ClientSSLError`
+            # is a subclass of the latter two, and `ssl.SSLError` is an `OSError`
+            # too, so any of them would swallow a TLS failure whole.
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"the TLS handshake failed ({_tls_reason(err)}); if the server speaks "
+                "plain HTTP on this port, connect without TLS or use the server's "
+                "HTTPS port",
             ) from err
         except TimeoutError as err:
             raise SecuritySpyConnectError(
