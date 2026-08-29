@@ -89,6 +89,7 @@ raises is logged and swallowed rather than killing the stream.
 
 ```python
 import asyncio
+from datetime import UTC, timezone
 
 import aiohttp
 
@@ -106,6 +107,12 @@ async def main() -> None:
             use_https=True,
         )
 
+        # server_timezone is required: SecuritySpy's event-stream records carry a
+        # bare local wall clock with no offset, so the library will not guess.
+        # Decode it from the server's own published offset (see "Timezones" below).
+        info = await client.async_get_server_info()
+        server_timezone = timezone(info.utc_offset) if info.utc_offset is not None else UTC
+
         def on_event(event: StreamEvent) -> None:
             if isinstance(event.payload, ClassificationPayload):
                 print(f"camera {event.camera}: {dict(event.payload.classes)}")
@@ -116,6 +123,7 @@ async def main() -> None:
             on_disconnected=lambda: print("stream lost; reconnecting"),
             on_reconnected=lambda: print("stream back; reconcile state"),
             on_auth_failed=lambda: print("credentials rejected; call resume() to retry"),
+            server_timezone=server_timezone,
         )
         await stream.connect()
         try:
@@ -151,6 +159,52 @@ A few things the protocol makes non-obvious:
 `disconnect()` is idempotent, is safe to call from inside a callback, and leaves no task,
 timer, or socket behind. Your session is untouched either way.
 
+### Timezones
+
+Every decode entry point that turns a SecuritySpy wall clock into a `datetime` --
+`event_stream()`, `async_get_captures()`, and the lower-level `parse_event_line()` and
+`SecuritySpyEventStream()` -- takes a **required** `server_timezone` keyword argument.
+There is no default, and passing none is a `mypy --strict` failure as well as a runtime
+`TypeError`: the wire format sends a bare local wall clock (`YYYYMMDDHHMMSS`, or a folder
+date plus seconds-since-midnight) with no offset, and the library will not silently guess
+UTC.
+
+`ServerInfo.utc_offset` decodes the server's own answer, `seconds-from-gmt` off
+`++systemInfo`, as a `timedelta`:
+
+```python
+from datetime import UTC, timezone
+
+info = await client.async_get_server_info()
+server_timezone = timezone(info.utc_offset) if info.utc_offset is not None else UTC
+```
+
+`utc_offset` is `None` — never coerced to zero — when the server did not publish a usable
+value; zero itself is a legitimate real offset (the server is on UTC) and stays
+distinguishable from "unknown". The library never fetches `++systemInfo` on your behalf to
+fill this in: caching or auto-fetching a timezone behind your back would be hidden state
+with an ordering dependency, so it is you who reads `ServerInfo.utc_offset` and passes it
+along.
+
+**An offset is not a timezone.** `seconds-from-gmt` is only the offset in force when it
+was read — it does not encode daylight-saving rules, and SecuritySpy never publishes an
+IANA zone name. A fixed offset built from it is exact for events decoded around the same
+time, but a `caplist` window spanning weeks or months can cross a DST transition, and a
+fixed offset silently keeps assuming whichever side of the transition it started on. If
+you know the server's real IANA zone — Home Assistant callers usually do, via
+`hass.config.time_zone` — pass a `zoneinfo.ZoneInfo` instead of a fixed offset for
+DST-correct historical decoding:
+
+```python
+from zoneinfo import ZoneInfo
+
+server_timezone = ZoneInfo("America/Chicago")
+```
+
+**Breaking change:** prior releases defaulted `server_timezone` to `UTC` on these four
+entry points, which silently produced the wrong instant on any server that is not
+actually on UTC. Every call site must now state a zone explicitly.
+
 ### Reduce `CLASSIFY` frames into detection episodes
 
 `CLASSIFY` is a per-frame inference stream, not a detection event: 191 records on one
@@ -165,7 +219,7 @@ forever. This is the one obligation that fails silently if you skip it.
 
 ```python
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import aiohttp
 
@@ -212,7 +266,11 @@ async def main() -> None:
                     f"peak={episode.peak_confidence:.0f} signals={episode.signal_count}"
                 )
 
-        stream = client.event_stream(on_event=lambda event: report(reducer.feed(event)))
+        info = await client.async_get_server_info()
+        server_timezone = timezone(info.utc_offset) if info.utc_offset is not None else UTC
+        stream = client.event_stream(
+            on_event=lambda event: report(reducer.feed(event)), server_timezone=server_timezone
+        )
         await stream.connect()
         try:
             while True:
@@ -271,7 +329,7 @@ cameras × classes.
 
 ```python
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import aiohttp
 
@@ -289,6 +347,14 @@ async def main() -> None:
             use_https=True,
         )
 
+        # server_timezone is required: `caplist` folder dates plus seconds-since-
+        # midnight are a local wall clock, so the library will not guess the offset.
+        # For DST-correct historical decoding, pass the server's real IANA zone
+        # (e.g. `ZoneInfo("America/Chicago")`) if you know it -- a fixed offset is
+        # only exact for the instant it was read at.
+        info = await client.async_get_server_info()
+        server_timezone = timezone(info.utc_offset) if info.utc_offset is not None else UTC
+
         today = datetime.now(UTC).date()
         try:
             captures = await client.async_get_captures(
@@ -296,6 +362,7 @@ async def main() -> None:
                 start_date=today - timedelta(days=1),
                 end_date=today,
                 object_class="human",
+                server_timezone=server_timezone,
             )
         except SecuritySpyError as err:
             print(f"could not read capture history: {err}")
@@ -331,8 +398,8 @@ Worth knowing:
   A wide window over many cameras with no filter can exceed the cap and fail; narrowing
   the window or the filter is the fix.
 - **`Capture.start` is a timezone-aware UTC instant** reconstructed from the folder date
-  plus seconds-since-midnight, because the wire format carries no absolute time. Pass
-  `server_timezone=` if your server does not run in UTC. An unreconstructable time is
+  plus seconds-since-midnight, because the wire format carries no absolute time.
+  `server_timezone=` is required (see "Timezones" below). An unreconstructable time is
   `None` — never epoch, never zero — and those captures sort last. The wire format sends
   a wall-clock second-of-day with no fold bit, so on the one ambiguous local hour of a
   DST fall-back the earlier instant is chosen, and on a spring-forward day two captures

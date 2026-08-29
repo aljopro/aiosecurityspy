@@ -834,6 +834,33 @@ def _decode_server_name(server: dict[str, object]) -> str:
     return name or _DEFAULT_SERVER_NAME
 
 
+#: The plausible range for a real UTC offset: +/-24h, expressed in seconds.
+#: SecuritySpy's own offsets never exceed +/-14h, but the check is
+#: deliberately generous -- it exists to catch garbage, not to police the
+#: IANA database. Exclusive of exactly 24h: `datetime.timezone` itself
+#: rejects an offset that is not strictly between -24h and +24h, and the
+#: documented caller pattern (`timezone(info.utc_offset)`) would otherwise
+#: raise `ValueError` on a value this decode function called usable.
+_MAX_UTC_OFFSET_SECONDS: Final = 24 * 60 * 60 - 1
+
+
+def _decode_utc_offset(seconds_from_gmt: object) -> timedelta | None:
+    """Decode ``seconds-from-gmt`` into a UTC offset, or ``None`` when unusable.
+
+    ``None`` is returned -- never a coerced ``0`` -- when the value is absent,
+    non-integral, or outside the range a real offset can take. Zero is a
+    legitimate real offset (the server is on UTC) and must stay
+    distinguishable from "the server did not publish anything usable".
+    """
+    offset = _as_int(seconds_from_gmt)
+    if offset is None:
+        return None
+    if abs(offset) > _MAX_UTC_OFFSET_SECONDS:
+        _LOGGER.debug("Server published an unusable seconds-from-gmt value: %r", seconds_from_gmt)
+        return None
+    return timedelta(seconds=offset)
+
+
 @dataclass(frozen=True, slots=True)
 class ServerInfo:
     """The SecuritySpy server and its camera inventory.
@@ -880,6 +907,19 @@ class ServerInfo:
     #: alone would show a spurious "update available", and the comparison this
     #: field deliberately omits would have to be reinstated.
     update_version: str | None = None
+    #: The server's UTC offset (research §5.7), decoded from
+    #: ``seconds-from-gmt``. ``None`` when the field is absent, non-integral,
+    #: or outside the range a real offset can take (at or beyond +/-24h --
+    #: excluding exactly 24h, since :class:`datetime.timezone` rejects that
+    #: boundary) -- never coerced to zero, which is a valid real offset (UTC)
+    #: and must stay
+    #: distinguishable from "unknown". This is an *offset in force when the
+    #: reading was taken*, not a timezone: it is correct for events decoded
+    #: around the same time, but not necessarily for historical records that
+    #: may fall on the other side of a daylight-saving transition. A caller
+    #: who knows the server's real IANA zone should pass a :class:`~zoneinfo.ZoneInfo`
+    #: to the decode entry points instead, for DST-correct historical decoding.
+    utc_offset: timedelta | None = None
 
     @classmethod
     def from_api(cls, payload: object) -> ServerInfo:
@@ -943,6 +983,7 @@ class ServerInfo:
 
         cpu_usage = _as_float(server.get("cpu-usage"))
         memory_pressure = _as_float(server.get("memory-pressure"))
+        utc_offset = _decode_utc_offset(server.get("seconds-from-gmt"))
         return cls(
             uuid=_as_str(server.get("uuid")) or "",
             name=_decode_server_name(server),
@@ -961,6 +1002,7 @@ class ServerInfo:
             # signal, and a whitespace-only one is that same signal padded --
             # `_as_str` keeps it because it is truthy.
             update_version=(_as_str(server.get("new-version")) or "").strip() or None,
+            utc_offset=utc_offset,
         )
 
     @staticmethod

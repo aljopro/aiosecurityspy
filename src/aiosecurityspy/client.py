@@ -484,7 +484,7 @@ class SecuritySpyClient:
         on_disconnected: LifecycleCallback | None = None,
         on_reconnected: LifecycleCallback | None = None,
         on_auth_failed: LifecycleCallback | None = None,
-        server_timezone: tzinfo = UTC,
+        server_timezone: tzinfo,
     ) -> SecuritySpyEventStream:
         """Create an event-stream reader bound to this client's server.
 
@@ -502,8 +502,9 @@ class SecuritySpyClient:
             on_auth_failed: Called on 401/403, after which reconnection pauses
                 until ``resume()`` is called.
             server_timezone: Timezone of the server's wall-clock timestamps.
-                **[ASSUMPTION]** No SecuritySpy endpoint exposes it, so this
-                defaults to UTC.
+                ``systemInfo.server`` publishes this as ``seconds-from-gmt``
+                (see :attr:`ServerInfo.utc_offset`); there is no correct
+                default, so it must be supplied.
 
         Returns:
             A stopped :class:`~aiosecurityspy.SecuritySpyEventStream`.
@@ -613,7 +614,7 @@ class SecuritySpyClient:
         end_date: date,
         object_class: str | None = None,
         capture_filter: int | None = None,
-        server_timezone: tzinfo = UTC,
+        server_timezone: tzinfo,
     ) -> tuple[Capture, ...]:
         """Read capture history for many cameras in **one** request.
 
@@ -651,8 +652,9 @@ class SecuritySpyClient:
                 so on). Mutually exclusive with ``object_class``.
             server_timezone: Timezone of the server's wall clock, used to turn
                 ``f`` plus seconds-since-midnight into a UTC instant.
-                **[ASSUMPTION]** No SecuritySpy endpoint exposes it, so this
-                defaults to UTC.
+                ``systemInfo.server`` publishes this as ``seconds-from-gmt``
+                (see :attr:`ServerInfo.utc_offset`); there is no correct
+                default, so it must be supplied.
 
         Raises:
             ValueError: A caller mistake -- a non-integer or negative camera

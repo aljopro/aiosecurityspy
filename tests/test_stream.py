@@ -13,6 +13,7 @@ whole module runs in well under a second.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC
 from typing import TYPE_CHECKING, Final, Self, cast
 
 import aiohttp
@@ -143,6 +144,7 @@ def make_stream(  # noqa: PLR0913 - one keyword per lifecycle callback, mirrorin
         backoff_initial=TICK,
         backoff_max=TICK,
         max_record_bytes=max_record_bytes,
+        server_timezone=UTC,
     )
 
 
@@ -488,6 +490,7 @@ async def test_async_callbacks_are_awaited() -> None:
         heartbeat_interval=TICK,
         backoff_initial=TICK,
         backoff_max=TICK,
+        server_timezone=UTC,
     )
 
     await stream.connect()
@@ -574,7 +577,12 @@ def test_non_positive_tuning_is_rejected_at_construction(kwargs: dict[str, float
         password=PASSWORD,
     )
     with pytest.raises(ValueError, match="must be a positive, finite number"):
-        SecuritySpyEventStream(connection, on_event=lambda _event: None, **kwargs)  # type: ignore[arg-type]  # one bad value per case
+        SecuritySpyEventStream(
+            connection,
+            on_event=lambda _event: None,
+            server_timezone=UTC,
+            **kwargs,  # type: ignore[arg-type]  # one bad value per case
+        )
 
 
 # --- Review regressions ----------------------------------------------------
@@ -606,6 +614,7 @@ def make_tuned_stream(
         backoff_max=backoff_max,
         backoff_multiplier=backoff_multiplier,
         backoff_jitter=0.0,  # deterministic: the sequence is the assertion
+        server_timezone=UTC,
     )
 
 
@@ -741,6 +750,7 @@ async def test_a_slow_auth_handler_cannot_be_raced_into_a_second_reader() -> Non
         heartbeat_interval=TICK,
         backoff_initial=TICK,
         backoff_max=TICK,
+        server_timezone=UTC,
     )
 
     await stream.connect()
@@ -855,7 +865,12 @@ def test_non_finite_tuning_is_rejected_at_construction(kwargs: dict[str, float])
         password=PASSWORD,
     )
     with pytest.raises(ValueError, match="must be a positive, finite number"):
-        SecuritySpyEventStream(connection, on_event=lambda _event: None, **kwargs)  # type: ignore[arg-type]  # one bad value per case
+        SecuritySpyEventStream(
+            connection,
+            on_event=lambda _event: None,
+            server_timezone=UTC,
+            **kwargs,  # type: ignore[arg-type]  # one bad value per case
+        )
 
 
 @pytest.mark.parametrize("jitter", [1.0, -0.1, float("nan")])
@@ -869,7 +884,9 @@ def test_an_out_of_range_jitter_fraction_is_rejected(jitter: float) -> None:
         password=PASSWORD,
     )
     with pytest.raises(ValueError, match="finite fraction"):
-        SecuritySpyEventStream(connection, on_event=lambda _event: None, backoff_jitter=jitter)
+        SecuritySpyEventStream(
+            connection, on_event=lambda _event: None, backoff_jitter=jitter, server_timezone=UTC
+        )
 
 
 @pytest.mark.asyncio
@@ -890,6 +907,7 @@ async def test_jitter_only_ever_shortens_a_delay() -> None:
         backoff_initial=1.0,
         backoff_max=1.0,
         backoff_jitter=0.25,
+        server_timezone=UTC,
     )
     record_delays(stream, delays)
 
@@ -900,3 +918,17 @@ async def test_jitter_only_ever_shortens_a_delay() -> None:
     floor = 1.0 - 0.25  # backoff_initial less the full jitter fraction
     assert all(floor <= delay <= 1.0 for delay in delays)
     assert len(set(delays)) > 1, "a fixed delay would mean the jitter is not applied"
+
+
+def test_server_timezone_is_a_required_keyword_argument() -> None:
+    """No default exists: omitting it is a runtime `TypeError`, not a wrong instant."""
+    session = FakeSession([])
+    connection = ConnectionSettings.create(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    with pytest.raises(TypeError):
+        SecuritySpyEventStream(connection, on_event=lambda _event: None)  # type: ignore[call-arg]

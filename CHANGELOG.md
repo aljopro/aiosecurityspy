@@ -7,8 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ServerInfo.utc_offset`** decodes the server's own UTC offset from
+  `seconds-from-gmt` on `++systemInfo` (research §5.7), exposed as a `timedelta`.
+  `None` when the field is absent, non-integral, or beyond +/-24h -- never coerced
+  to zero, which is a legitimate real offset (the server is on UTC) and must stay
+  distinguishable from "unknown". This is the value the four entry points below
+  now require you to supply.
+
 ### Changed
 
+- **BREAKING: `server_timezone` is now a required keyword argument, with no
+  default, on `parse_event_line()`, `SecuritySpyEventStream.__init__()`,
+  `SecuritySpyClient.event_stream()` and `SecuritySpyClient.async_get_captures()`.**
+  All four previously defaulted to `UTC`, which silently produced the wrong
+  instant on any server that is not actually on UTC -- verified live: the
+  6.21 heartbeat `20260829062049` decoded as `06:20:49Z` when the server's own
+  published offset (`seconds-from-gmt: -18000`, UTC-5) makes the true instant
+  `11:20:49Z`, five hours off (research §5.7). `Capture.from_api()` already
+  required this argument; the outer layers now agree with the layer they wrap.
+  Every call site must pass a zone explicitly -- decode `ServerInfo.utc_offset`
+  and wrap it in `datetime.timezone(...)`, or pass a `zoneinfo.ZoneInfo` if you
+  know the server's real IANA zone (recommended for DST-correct historical
+  decoding of `caplist` windows that can span a transition -- an offset alone
+  cannot express that). See the README's "Timezones" section for both patterns.
+  The library still never fetches `++systemInfo` on your behalf to fill this in;
+  that would be hidden state with an ordering dependency.
 - **BREAKING: HTTP `403` no longer raises `SecuritySpyAuthError` -- it raises
   `SecuritySpyPermissionError`.** Verified against a live 6.21 server (research
   §4.1, §5.2, §7.1), `403` means the credentials were *accepted* and the account

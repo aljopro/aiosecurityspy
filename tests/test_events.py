@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -53,7 +54,7 @@ def fixture_events() -> list[StreamEvent]:
     for record in records:
         if not record:
             continue
-        event = parse_event_line(record.decode("utf-8"))
+        event = parse_event_line(record.decode("utf-8"), server_timezone=UTC)
         if event is not None:
             parsed.append(event)
     return parsed
@@ -103,7 +104,7 @@ def test_fixture_event_types_cover_the_protocol_table() -> None:
 
 
 def test_motion_decodes_a_bounding_box() -> None:
-    event = parse_event_line("20260809175335 0 7 MOTION 10 20 30 40")
+    event = parse_event_line("20260809175335 0 7 MOTION 10 20 30 40", server_timezone=UTC)
     assert event is not None
     assert event.camera == FIXTURE_CAMERA
     assert event.event_type == "MOTION"
@@ -113,7 +114,7 @@ def test_motion_decodes_a_bounding_box() -> None:
 
 def test_motion_with_an_unparseable_box_still_delivers_the_event() -> None:
     """A payload that will not decode must never cost the event itself."""
-    event = parse_event_line("20260809175335 0 7 MOTION 10 20 wide 40")
+    event = parse_event_line("20260809175335 0 7 MOTION 10 20 wide 40", server_timezone=UTC)
     assert event is not None
     assert event.event_type == "MOTION"
     assert event.payload is None
@@ -122,13 +123,13 @@ def test_motion_with_an_unparseable_box_still_delivers_the_event() -> None:
 
 @pytest.mark.parametrize("info", ["10 20 30", "10 20 30 40 50", ""])
 def test_motion_with_the_wrong_field_count_yields_no_payload(info: str) -> None:
-    event = parse_event_line(f"20260809175335 0 7 MOTION {info}".rstrip())
+    event = parse_event_line(f"20260809175335 0 7 MOTION {info}".rstrip(), server_timezone=UTC)
     assert event is not None
     assert event.payload is None
 
 
 def test_classify_decodes_built_in_classes() -> None:
-    event = parse_event_line("20260809175335 1 7 CLASSIFY HUMAN 88 VEHICLE 3")
+    event = parse_event_line("20260809175335 1 7 CLASSIFY HUMAN 88 VEHICLE 3", server_timezone=UTC)
     assert event is not None
     assert isinstance(event.payload, ClassificationPayload)
     assert dict(event.payload.classes) == {"HUMAN": 88.0, "VEHICLE": 3.0}
@@ -136,28 +137,32 @@ def test_classify_decodes_built_in_classes() -> None:
 
 def test_classify_carries_an_unknown_custom_model_class_unchanged() -> None:
     """AD-9: the vocabulary is open. Nothing may reject a label (research §11)."""
-    event = parse_event_line("20260809175337 6 10 CLASSIFY DELIVERY_VAN 61")
+    event = parse_event_line("20260809175337 6 10 CLASSIFY DELIVERY_VAN 61", server_timezone=UTC)
     assert event is not None
     assert isinstance(event.payload, ClassificationPayload)
     assert dict(event.payload.classes) == {"DELIVERY_VAN": 61.0}
 
 
 def test_classify_built_in_handling_is_unaffected_by_an_unknown_class() -> None:
-    event = parse_event_line("20260809175335 1 7 CLASSIFY HUMAN 88 DELIVERY_VAN 61")
+    event = parse_event_line(
+        "20260809175335 1 7 CLASSIFY HUMAN 88 DELIVERY_VAN 61", server_timezone=UTC
+    )
     assert event is not None
     assert isinstance(event.payload, ClassificationPayload)
     assert dict(event.payload.classes) == {"HUMAN": 88.0, "DELIVERY_VAN": 61.0}
 
 
 def test_classify_skips_an_unpaired_or_unparseable_confidence() -> None:
-    event = parse_event_line("20260809175335 1 7 CLASSIFY HUMAN 88 VEHICLE nope ANIMAL")
+    event = parse_event_line(
+        "20260809175335 1 7 CLASSIFY HUMAN 88 VEHICLE nope ANIMAL", server_timezone=UTC
+    )
     assert event is not None
     assert isinstance(event.payload, ClassificationPayload)
     assert dict(event.payload.classes) == {"HUMAN": 88.0}
 
 
 def test_classify_with_no_usable_pair_yields_no_payload() -> None:
-    event = parse_event_line("20260809175335 1 7 CLASSIFY HUMAN")
+    event = parse_event_line("20260809175335 1 7 CLASSIFY HUMAN", server_timezone=UTC)
     assert event is not None
     assert event.payload is None
 
@@ -176,7 +181,7 @@ def test_classification_slugged_is_read_only() -> None:
 
 
 def test_trigger_decodes_the_reason_bitmask() -> None:
-    event = parse_event_line("20260809175335 2 7 TRIGGER_M 129")
+    event = parse_event_line("20260809175335 2 7 TRIGGER_M 129", server_timezone=UTC)
     assert event is not None
     assert event.payload == TriggerPayload(
         mask=129, reasons=frozenset({"video_motion", "human_movement"})
@@ -184,14 +189,14 @@ def test_trigger_decodes_the_reason_bitmask() -> None:
 
 
 def test_trigger_a_uses_the_same_bitmask() -> None:
-    event = parse_event_line("20260809175336 3 7 TRIGGER_A 1")
+    event = parse_event_line("20260809175336 3 7 TRIGGER_A 1", server_timezone=UTC)
     assert event is not None
     assert isinstance(event.payload, TriggerPayload)
     assert event.payload.reasons == frozenset({"video_motion"})
 
 
 def test_trigger_with_a_non_numeric_mask_yields_no_payload() -> None:
-    event = parse_event_line("20260809175335 2 7 TRIGGER_M motion")
+    event = parse_event_line("20260809175335 2 7 TRIGGER_M motion", server_timezone=UTC)
     assert event is not None
     assert event.event_type == "TRIGGER_M"
     assert event.payload is None
@@ -230,14 +235,14 @@ def test_error_splits_a_leading_numeric_code() -> None:
 
 
 def test_error_without_a_numeric_code_keeps_the_whole_description() -> None:
-    event = parse_event_line("20260809175339 10 7 ERROR camera unreachable")
+    event = parse_event_line("20260809175339 10 7 ERROR camera unreachable", server_timezone=UTC)
     assert event is not None
     assert event.payload == ErrorPayload(code=None, description="camera unreachable")
 
 
 def test_non_camera_specific_records_are_delivered_with_no_camera() -> None:
     """`X` means "not camera-specific", never "invalid" (research §3.2)."""
-    event = parse_event_line("20260809175336 3 X NULL")
+    event = parse_event_line("20260809175336 3 X NULL", server_timezone=UTC)
     assert event is not None
     assert event.camera is None
     assert event.event_type == "NULL"
@@ -245,13 +250,13 @@ def test_non_camera_specific_records_are_delivered_with_no_camera() -> None:
 
 
 def test_a_non_numeric_camera_field_is_also_not_camera_specific() -> None:
-    event = parse_event_line("20260809175336 3 ?? NULL")
+    event = parse_event_line("20260809175336 3 ?? NULL", server_timezone=UTC)
     assert event is not None
     assert event.camera is None
 
 
 def test_unknown_event_type_is_delivered_with_its_info_verbatim() -> None:
-    event = parse_event_line("20260809175336 3 7 SOMETHING_NEW 1 2")
+    event = parse_event_line("20260809175336 3 7 SOMETHING_NEW 1 2", server_timezone=UTC)
     assert event is not None
     assert event.event_type == "SOMETHING_NEW"
     assert event.payload is None
@@ -271,12 +276,12 @@ def test_unknown_event_type_is_delivered_with_its_info_verbatim() -> None:
     ],
 )
 def test_malformed_records_are_skipped_rather_than_raised(line: str) -> None:
-    assert parse_event_line(line) is None
+    assert parse_event_line(line, server_timezone=UTC) is None
 
 
 def test_a_14_character_but_impossible_timestamp_still_delivers_the_event() -> None:
     """Structure is intact, so the event is real; only the instant is unknown."""
-    event = parse_event_line("20269909175336 3 7 NULL")
+    event = parse_event_line("20269909175336 3 7 NULL", server_timezone=UTC)
     assert event is not None
     assert event.timestamp is None
     assert event.raw_timestamp == "20269909175336"
@@ -292,28 +297,83 @@ def test_timestamps_are_converted_to_timezone_aware_utc() -> None:
     assert event.raw_timestamp == "20260809175335"
 
 
-def test_the_default_timezone_assumption_is_utc() -> None:
-    event = parse_event_line("20260809175335 0 7 MOTION_END")
+def test_an_explicit_utc_timezone_decodes_the_wall_clock_verbatim() -> None:
+    """`server_timezone` is now required -- this pins the explicit-UTC case."""
+    event = parse_event_line("20260809175335 0 7 MOTION_END", server_timezone=UTC)
     assert event is not None
     assert event.timestamp == datetime(2026, 8, 9, 17, 53, 35, tzinfo=UTC)
 
 
+def test_the_live_heartbeat_decodes_correctly_under_the_servers_published_offset() -> None:
+    """Research §5.7: the live heartbeat `20260829062049` with the server's UTC-5 offset."""
+    server_offset = timezone(timedelta(seconds=-18000), "server")
+    event = parse_event_line("20260829062049 3 X NULL", server_timezone=server_offset)
+    assert event is not None
+    assert event.timestamp == datetime(2026, 8, 29, 11, 20, 49, tzinfo=UTC)
+
+
+def test_a_real_zoneinfo_produces_the_same_instant_as_the_matching_fixed_offset() -> None:
+    """The caller's zone wins, and for the same reading it agrees with the fixed offset."""
+    server_offset = timezone(timedelta(seconds=-18000), "server")
+    fixed = parse_event_line("20260829062049 3 X NULL", server_timezone=server_offset)
+    zoned = parse_event_line("20260829062049 3 X NULL", server_timezone=ZoneInfo("America/Chicago"))
+    assert fixed is not None
+    assert zoned is not None
+    assert fixed.timestamp == zoned.timestamp == datetime(2026, 8, 29, 11, 20, 49, tzinfo=UTC)
+
+
+def test_a_fixed_offset_disagrees_with_a_real_zone_across_a_dst_boundary() -> None:
+    """An offset is not a timezone: a January record under a fixed UTC-5 is wrong by an hour.
+
+    `research §5.7`: `20260829062049` (August, CDT) matches a fixed UTC-5, but
+    `20260115062049` (January, CST) does not -- the fixed offset silently keeps
+    assuming daylight time it is not in.
+    """
+    fixed_offset = timezone(timedelta(seconds=-18000), "server")
+    real_zone = ZoneInfo("America/Chicago")
+
+    august_fixed = parse_event_line("20260829062049 0 X NULL", server_timezone=fixed_offset)
+    august_real = parse_event_line("20260829062049 0 X NULL", server_timezone=real_zone)
+    assert august_fixed is not None
+    assert august_real is not None
+    assert august_fixed.timestamp == august_real.timestamp
+
+    january_fixed = parse_event_line("20260115062049 0 X NULL", server_timezone=fixed_offset)
+    january_real = parse_event_line("20260115062049 0 X NULL", server_timezone=real_zone)
+    assert january_fixed is not None
+    assert january_real is not None
+    assert january_fixed.timestamp is not None
+    assert january_real.timestamp is not None
+    assert january_fixed.timestamp != january_real.timestamp
+    assert abs(january_fixed.timestamp - january_real.timestamp) == timedelta(hours=1)
+
+
+def test_server_timezone_is_a_required_keyword_argument() -> None:
+    """No default exists: omitting it is a `mypy --strict` failure at every call site.
+
+    Because it is a required keyword-only parameter with no default, it is
+    also a runtime `TypeError`, not merely a discouraged pattern.
+    """
+    with pytest.raises(TypeError):
+        parse_event_line("20260809175335 0 7 MOTION_END")  # type: ignore[call-arg]
+
+
 def test_a_stray_line_feed_around_a_record_does_not_corrupt_it() -> None:
     """Defensive: a future server build emitting CRLF must not break decoding."""
-    event = parse_event_line("\n20260809175335 0 7 MOTION 10 20 30 40\n")
+    event = parse_event_line("\n20260809175335 0 7 MOTION 10 20 30 40\n", server_timezone=UTC)
     assert event is not None
     assert event.payload == MotionPayload(x=10, y=20, width=30, height=40)
 
 
 def test_event_number_is_recorded_but_is_not_an_identifier() -> None:
     """It restarts at 0 on every reconnect, so it is data, not a key."""
-    first = parse_event_line("20260809175335 0 7 MOTION_END")
+    first = parse_event_line("20260809175335 0 7 MOTION_END", server_timezone=UTC)
     assert first is not None
     assert first.event_number == 0
 
 
 def test_stream_events_are_frozen() -> None:
-    event = parse_event_line("20260809175335 0 7 MOTION_END")
+    event = parse_event_line("20260809175335 0 7 MOTION_END", server_timezone=UTC)
     assert event is not None
     with pytest.raises(AttributeError):
         event.camera = 9  # type: ignore[misc]  # proving the model is frozen
@@ -342,13 +402,15 @@ def test_classify_rejects_values_the_wire_format_cannot_mean(confidence: str) ->
     A NaN is the dangerous one: it compares False against everything, so it
     silently wins comparisons it should lose.
     """
-    event = parse_event_line(f"20260809175335 1 7 CLASSIFY HUMAN {confidence}")
+    event = parse_event_line(f"20260809175335 1 7 CLASSIFY HUMAN {confidence}", server_timezone=UTC)
     assert event is not None
     assert event.payload is None
 
 
 def test_classify_keeps_the_good_pairs_beside_a_rejected_one() -> None:
-    event = parse_event_line("20260809175335 1 7 CLASSIFY HUMAN nan VEHICLE 50")
+    event = parse_event_line(
+        "20260809175335 1 7 CLASSIFY HUMAN nan VEHICLE 50", server_timezone=UTC
+    )
     assert event is not None
     assert isinstance(event.payload, ClassificationPayload)
     assert dict(event.payload.classes) == {"VEHICLE": 50.0}
@@ -374,14 +436,16 @@ def test_an_absurdly_long_integer_field_skips_the_record_rather_than_raising() -
     One mis-framed or hostile record must not tear down a live connection.
     """
     huge = "9" * 5000
-    assert parse_event_line(f"20260809175335 {huge} 7 MOTION_END") is None
-    event = parse_event_line(f"20260809175335 0 {huge} MOTION_END")
+    assert parse_event_line(f"20260809175335 {huge} 7 MOTION_END", server_timezone=UTC) is None
+    event = parse_event_line(f"20260809175335 0 {huge} MOTION_END", server_timezone=UTC)
     assert event is not None
     assert event.camera is None  # unparseable camera field: not camera-specific
 
 
 def test_an_absurdly_long_motion_field_yields_no_payload_rather_than_raising() -> None:
-    event = parse_event_line(f"20260809175335 0 7 MOTION {'9' * 5000} 20 30 40")
+    event = parse_event_line(
+        f"20260809175335 0 7 MOTION {'9' * 5000} 20 30 40", server_timezone=UTC
+    )
     assert event is not None
     assert event.payload is None
 
@@ -403,6 +467,6 @@ def test_a_timestamp_at_the_edge_of_the_calendar_does_not_raise() -> None:
 def test_the_unknown_type_log_damper_is_bounded() -> None:
     """A process-global set fed from the wire must not grow without bound."""
     for index in range(_MAX_REPORTED_TYPES * 4):
-        event = parse_event_line(f"20260809175335 0 7 SYNTHETIC_TYPE_{index}")
+        event = parse_event_line(f"20260809175335 0 7 SYNTHETIC_TYPE_{index}", server_timezone=UTC)
         assert event is not None
     assert len(_REPORTED_UNKNOWN_TYPES) <= _MAX_REPORTED_TYPES

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo
@@ -1025,6 +1025,75 @@ def test_oversized_integer_health_field_does_not_raise() -> None:
     """
     info = ServerInfo.from_api(wrap({**SERVER, "cpu-usage": 10**400}, []))
     assert info.cpu_usage is None
+
+
+# --- server UTC offset decoding (spec 1.13) ----------------------------------
+# I/O & Edge-Case Matrix rows: offset decoded, positive offset, offset absent,
+# offset unusable, zero offset.
+
+FIXTURE_UTC_MINUS_FIVE_SECONDS = -18000
+FIXTURE_UTC_PLUS_NINE_THIRTY_SECONDS = 34200
+
+
+def test_negative_seconds_from_gmt_decodes_to_utc_minus_five() -> None:
+    """Live value from research §5.7: `-18000` is UTC-5."""
+    info = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": -18000}, []))
+    assert info.utc_offset == timedelta(hours=-5)
+
+
+def test_positive_non_hour_offset_decodes_ordinarily() -> None:
+    """`34200` is UTC+9:30 -- a non-hour offset is not special-cased."""
+    info = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": 34200}, []))
+    assert info.utc_offset == timedelta(hours=9, minutes=30)
+
+
+def test_seconds_from_gmt_absent_is_none() -> None:
+    """Absent means unknown, and the rest of `systemInfo` still decodes."""
+    info = ServerInfo.from_api(wrap(dict(SERVER), []))
+    assert info.utc_offset is None
+    assert info.uuid == "abc"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "not-a-number",
+        86400,  # exactly +24h -- `datetime.timezone` itself rejects this boundary
+        -86400,  # exactly -24h -- same
+        86401,  # one second beyond +24h
+        -86401,  # one second beyond -24h
+    ],
+)
+def test_seconds_from_gmt_unusable_is_none(value: object) -> None:
+    """Non-numeric or beyond +/-24h: `None`, never coerced to zero."""
+    info = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": value}, []))
+    assert info.utc_offset is None
+
+
+def test_zero_seconds_from_gmt_is_a_real_utc_offset_not_unknown() -> None:
+    """Zero is a legitimate real offset (the server is on UTC) -- distinct from `None`."""
+    info = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": 0}, []))
+    assert info.utc_offset == timedelta(0)
+    assert info.utc_offset is not None
+
+
+def test_boundary_offsets_one_second_inside_24h_are_usable() -> None:
+    """+/-86399 is the true boundary: one second inside what `datetime.timezone` allows."""
+    positive = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": 86399}, []))
+    negative = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": -86399}, []))
+    assert positive.utc_offset == timedelta(hours=23, minutes=59, seconds=59)
+    assert negative.utc_offset == timedelta(hours=-23, minutes=-59, seconds=-59)
+    # And the whole point: the documented caller pattern must not raise here.
+    timezone(positive.utc_offset)
+    timezone(negative.utc_offset)
+
+
+def test_boundary_offsets_at_exactly_24h_are_rejected() -> None:
+    """+/-86400 is exactly 24h, which `datetime.timezone` itself refuses to construct."""
+    positive = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": 86400}, []))
+    negative = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": -86400}, []))
+    assert positive.utc_offset is None
+    assert negative.utc_offset is None
 
 
 # --- CameraStatus decoding (spec 1.8) ----------------------------------------

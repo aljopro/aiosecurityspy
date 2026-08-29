@@ -843,6 +843,7 @@ async def get_captures(
     **kwargs: Any,  # noqa: ANN401 - passthrough to the method's own signature
 ) -> tuple[Any, ...]:
     client = make_client(session)
+    kwargs.setdefault("server_timezone", UTC)
     return await client.async_get_captures(
         [1] if cameras is None else cameras,
         start_date=kwargs.pop("start_date", START_DATE),
@@ -2262,3 +2263,22 @@ async def test_file_rejects_a_non_bandwidth_selector(bandwidth: object) -> None:
     with pytest.raises(ValueError, match="CAPTURE_FILE_BANDWIDTH"):
         await client.async_get_capture_file(make_capture(), bandwidth=cast("Any", bandwidth))
     assert session.calls == []
+
+
+def test_event_stream_server_timezone_is_a_required_keyword_argument() -> None:
+    """No default exists: omitting it is a runtime `TypeError`, not a wrong instant."""
+    session = FakeSession()
+    client = make_client(session)
+    with pytest.raises(TypeError):
+        client.event_stream(on_event=lambda _event: None)  # type: ignore[call-arg]
+
+
+@pytest.mark.asyncio
+async def test_async_get_captures_server_timezone_is_a_required_keyword_argument() -> None:
+    """No default exists: omitting it is a runtime `TypeError`, not a wrong instant."""
+    session = FakeSession()
+    client = make_client(session)
+    with pytest.raises(TypeError):
+        await client.async_get_captures(  # type: ignore[call-arg]
+            [1], start_date=START_DATE, end_date=END_DATE
+        )

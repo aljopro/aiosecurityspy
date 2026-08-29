@@ -19,7 +19,7 @@ import json
 import logging
 import traceback
 from base64 import b64encode
-from datetime import date
+from datetime import UTC, date
 from typing import TYPE_CHECKING, Any, Final, Self, cast
 from urllib.parse import parse_qsl, quote, urlsplit
 
@@ -291,7 +291,9 @@ async def drive_every_path(server: FakeServer) -> list[SecuritySpyError]:
         lambda: client.async_set_camera_arming(
             CAMERA, CaptureModes(motion=True), override=ARM_OVERRIDE_ARMED_2_HOURS
         ),
-        lambda: client.async_get_captures([CAMERA], start_date=DAY, end_date=DAY),
+        lambda: client.async_get_captures(
+            [CAMERA], start_date=DAY, end_date=DAY, server_timezone=UTC
+        ),
     )
     for call in calls:
         try:
@@ -301,7 +303,9 @@ async def drive_every_path(server: FakeServer) -> list[SecuritySpyError]:
 
     events: list[object] = []
     auth_failed = asyncio.Event()
-    stream = client.event_stream(on_event=events.append, on_auth_failed=auth_failed.set)
+    stream = client.event_stream(
+        on_event=events.append, on_auth_failed=auth_failed.set, server_timezone=UTC
+    )
     await stream.connect()
     # Either outcome ends the wait: a healthy server delivers the MOTION record,
     # a rejecting one pauses the reader through `on_auth_failed`.
