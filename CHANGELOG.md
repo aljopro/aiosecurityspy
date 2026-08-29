@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: `Capture.file_size` is renamed `Capture.file_size_mb` and is now
+  decoded as a fractional count of megabytes (a `float`), exactly as the wire
+  sends it.** `caplist.m` is a float in megabytes — verified live across 10,476
+  captures in the observed range 0.04–9129.763 (research §5.6), with
+  SecuritySpy's own client naming the parameter `mb`. The old `int | None`
+  decode ran the deliberately strict `_as_int` over it, so 10,468 of 10,476
+  captures silently decoded to `None` — the 8 that survived were megabyte counts
+  under a name that read as bytes. Values still decode to `None` exactly as
+  before when the key is absent, negative, non-finite, or malformed. No
+  conversion to bytes is applied: the field carries the decimal megabytes as
+  transmitted, so a consumer that needs bytes must choose its multiplier
+  deliberately rather than inherit a guessed one. `_tiebreak` still orders on
+  the size, with `-1` staying unreachable by a real value, so capture ordering
+  is unchanged.
 - **BREAKING: `server_timezone` is now a required keyword argument, with no
   default, on `parse_event_line()`, `SecuritySpyEventStream.__init__()`,
   `SecuritySpyClient.event_stream()` and `SecuritySpyClient.async_get_captures()`.**

@@ -359,7 +359,7 @@ def _camera_status_entries(payload: object) -> list[object] | None:
     return None
 
 
-def _tiebreak(capture: Capture) -> tuple[int, str, str, int, int]:
+def _tiebreak(capture: Capture) -> tuple[int, str, str, int, float]:
     """Total ordering key for captures the primary key cannot separate.
 
     Every field a caller can observe participates, so two entries share a key
@@ -371,7 +371,7 @@ def _tiebreak(capture: Capture) -> tuple[int, str, str, int, int]:
         capture.filename,
         capture.folder_date,
         capture.capture_type if capture.capture_type is not None else -1,
-        capture.file_size if capture.file_size is not None else -1,
+        capture.file_size_mb if capture.file_size_mb is not None else -1,
     )
 
 

@@ -550,7 +550,7 @@ CHICAGO = ZoneInfo("America/Chicago")
 
 #: Research §4.1's worked example: 63319 seconds since local midnight -> 17:35:19.
 SECONDS_1735 = 63319
-FIXTURE_MOVIE_SIZE = 10485760
+FIXTURE_MOVIE_SIZE_MB = 0.945
 FIXTURE_DURATION_SECONDS = 42
 FIXTURE_TAG_ID = 2
 UNKNOWN_CAPTURE_TYPE = 7
@@ -738,7 +738,7 @@ def test_fixture_movie_entry_decodes_every_field() -> None:
     assert capture.object_classes == frozenset({"human", "animal"})
     assert capture.filename == "09-08-2026 17-35-19 M Front Door.m4v"
     assert capture.folder_date == "2026-08-09"
-    assert capture.file_size == FIXTURE_MOVIE_SIZE
+    assert capture.file_size_mb == FIXTURE_MOVIE_SIZE_MB
     assert capture.tag_id == 0
     assert capture.archived is False
     assert capture.unread is True
@@ -763,9 +763,29 @@ def test_unusable_duration_is_none(overrides: dict[str, Any]) -> None:
     assert decode(entry).duration is None
 
 
-@pytest.mark.parametrize("value", [-1, "big", None])
-def test_unusable_file_size_is_none(value: object) -> None:
-    assert decode(base_entry(m=value)).file_size is None
+@pytest.mark.parametrize(
+    ("m", "expected"),
+    [
+        (0.945, 0.945),
+        (9129.763, 9129.763),
+        (24, 24.0),
+        ("0.945", 0.945),
+        (0, 0.0),
+    ],
+)
+def test_file_size_mb_decodes_as_a_fractional_megabyte_count(m: object, expected: float) -> None:
+    assert decode(base_entry(m=m)).file_size_mb == expected
+
+
+def test_file_size_mb_is_none_when_the_m_key_is_absent() -> None:
+    assert decode(base_entry()).file_size_mb is None
+
+
+@pytest.mark.parametrize(
+    "value", [-1, float("nan"), float("inf"), "nan", "inf", True, {}, [], "big", None]
+)
+def test_unusable_file_size_mb_is_none(value: object) -> None:
+    assert decode(base_entry(m=value)).file_size_mb is None
 
 
 def test_entry_with_no_usable_camera_is_skipped() -> None:

@@ -1021,6 +1021,21 @@ async def test_captures_come_back_newest_first_with_undated_last() -> None:
     assert captures[-1].start is None
 
 
+#: The movie fixture entry's `m` (research §5.6): a fractional megabyte count.
+FIXTURE_MOVIE_SIZE_MB = 0.945
+
+
+@pytest.mark.asyncio
+async def test_client_path_preserves_the_fractional_size() -> None:
+    # The movie fixture entry carries `m: 0.945`; the full client path must
+    # decode it, not drop or reinterpret it. The fixture is the load-bearing
+    # part of this story, and only a client-path assertion proves it survives.
+    session = FakeSession(200, caplist_body())
+    captures = await get_captures(session, [1, 4, 7])
+    movie = next(c for c in captures if c.filename.startswith("09-08-2026 17-35-19"))
+    assert movie.file_size_mb == FIXTURE_MOVIE_SIZE_MB
+
+
 @pytest.mark.asyncio
 async def test_ordering_is_independent_of_server_ordering() -> None:
     entries = json.loads(caplist_body())
@@ -1130,6 +1145,30 @@ async def test_an_undefined_capture_filter_is_rejected(raw_filter: int) -> None:
 async def test_ties_the_camera_and_filename_cannot_separate_stay_deterministic() -> None:
     same = {"f": "2026-08-09", "s": 10, "c": 1, "n": "a.m4v"}
     entries = [{**same, "m": 20}, {**same, "m": 10}]
+    forward = FakeSession(200, json.dumps(entries))
+    backward = FakeSession(200, json.dumps(list(reversed(entries))))
+    assert await get_captures(forward, [1]) == await get_captures(backward, [1])
+
+
+@pytest.mark.asyncio
+async def test_fractional_sizes_still_separate_ties_deterministically() -> None:
+    # Sizes sharing an integer part: a `_tiebreak` that truncated floats to ints
+    # would collapse both keys to 20 and break the determinism assertion below.
+    same = {"f": "2026-08-09", "s": 10, "c": 1, "n": "a.m4v"}
+    entries = [{**same, "m": 20.5}, {**same, "m": 20.25}]
+    forward = FakeSession(200, json.dumps(entries))
+    backward = FakeSession(200, json.dumps(list(reversed(entries))))
+    assert await get_captures(forward, [1]) == await get_captures(backward, [1])
+
+
+@pytest.mark.asyncio
+async def test_unsized_capture_keeps_a_distinct_ordering_key() -> None:
+    # The `-1` sentinel for a missing size must stay out of range of every real
+    # value, including a genuine zero-size capture: if it were `0`, the unsized
+    # capture and the zero-size one would share a key and the server's ordering
+    # would decide the result.
+    same = {"f": "2026-08-09", "s": 10, "c": 1, "n": "a.m4v"}
+    entries = [{**same, "m": 0}, {**same}]
     forward = FakeSession(200, json.dumps(entries))
     backward = FakeSession(200, json.dumps(list(reversed(entries))))
     assert await get_captures(forward, [1]) == await get_captures(backward, [1])
@@ -1286,7 +1325,7 @@ def make_capture(
         object_classes=frozenset(),
         filename=filename,
         folder_date=folder_date,
-        file_size=1024,
+        file_size_mb=1024.0,
         tag_id=0,
         archived=archived,
         unread=False,
@@ -1554,7 +1593,7 @@ async def test_preview_empty_path_raises() -> None:
         object_classes=frozenset(),
         filename="",
         folder_date="2026-08-09",
-        file_size=None,
+        file_size_mb=None,
         tag_id=None,
         archived=False,
         unread=False,
@@ -1765,7 +1804,7 @@ async def test_file_empty_path_raises() -> None:
         object_classes=frozenset(),
         filename="",
         folder_date="2026-08-09",
-        file_size=None,
+        file_size_mb=None,
         tag_id=None,
         archived=False,
         unread=False,

@@ -1137,7 +1137,7 @@ class Capture:
     object_classes: frozenset[str]
     filename: str
     folder_date: str
-    file_size: int | None
+    file_size_mb: float | None
     tag_id: int | None
     archived: bool
     unread: bool
@@ -1173,7 +1173,7 @@ class Capture:
             _LOGGER.debug("Capture on camera %s has no reconstructable start time", camera)
 
         duration_seconds = _as_int(payload.get("d"))
-        file_size = _as_int(payload.get("m"))
+        file_size_mb = _as_float(payload.get("m"))
         return cls(
             camera=camera,
             start=start,
@@ -1187,7 +1187,7 @@ class Capture:
             object_classes=decode_object_classes(_as_int(payload.get("o")) or 0),
             filename=filename,
             folder_date=folder_date,
-            file_size=file_size if file_size is not None and file_size >= 0 else None,
+            file_size_mb=file_size_mb if file_size_mb is not None and file_size_mb >= 0 else None,
             tag_id=_as_int(payload.get("g")),
             archived=_as_bool(payload.get("a")),
             unread=_as_bool(payload.get("u")),
