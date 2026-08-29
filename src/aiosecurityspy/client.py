@@ -30,6 +30,7 @@ from .const import (
     ENDPOINT_SET_SCHEDULE,
     ENDPOINT_SETTINGS_CAMERAS,
     ENDPOINT_SYSTEM_INFO,
+    PERM_FILES,
     PERM_SCHED,
     PERM_SETTINGS,
     PERMISSION_NAMES,
@@ -533,6 +534,19 @@ class SecuritySpyClient:
     async def async_get_server_info(self) -> ServerInfo:
         """Read the server and camera inventory from ``++systemInfo``.
 
+        This is also the disambiguating probe :meth:`_map_status` issues on a
+        `401` from another endpoint (research §5.9): the account is known to
+        be able to reach this endpoint whenever its credentials are valid at
+        all, so a clean success here on the heels of someone else's `401`
+        means that `401` was a permission denial, not rejected credentials.
+
+        A `401` from *this* call is never itself disambiguated: probing
+        ``++systemInfo`` with another read of ``++systemInfo`` would answer
+        nothing new and could recurse, so this call always passes
+        ``disambiguate=False`` down to the shared status mapping. That also
+        means calling this method directly issues exactly one request even
+        when it 401s.
+
         Raises:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 failed TLS, answered with an unexpected status, or sent a body
@@ -548,7 +562,9 @@ class SecuritySpyClient:
             number.
 
         """
-        payload = await self._request_json(ENDPOINT_SYSTEM_INFO, {"format": "json"})
+        payload = await self._request_json(
+            ENDPOINT_SYSTEM_INFO, {"format": "json"}, disambiguate=False
+        )
         return ServerInfo.from_api(payload)
 
     async def async_get_camera_status(self) -> tuple[CameraStatus, ...]:
@@ -573,9 +589,13 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 answered with an unexpected status, or sent a body that was not
                 a JSON array.
-            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
             SecuritySpyPermissionError: The credentials were accepted but the
-                account lacks a required permission (403).
+                account lacks a required permission (403), or a `401` that a
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
 
         Returns:
             The decoded per-camera status, one entry per camera the server
@@ -666,9 +686,13 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 answered with an unexpected status, or sent a body that was
                 neither a list of captures nor a mapping containing one.
-            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
             SecuritySpyPermissionError: The credentials were accepted but the
-                account lacks a required permission (403).
+                account lacks a required permission (403), or a `401` that a
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
 
         Returns:
             The decoded captures, newest first. Empty when nothing matched.
@@ -748,9 +772,14 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 answered with an unexpected status, or sent a body exceeding
                 the 8 MiB preview cap.
-            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- ``++getpreview`` answers a
+                missing 'files' permission with 401, not 403).
             SecuritySpyPermissionError: The credentials were accepted but the
-                account lacks a required permission (403).
+                account lacks a required permission (403), or a `401` that a
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
 
         Returns:
             The JPEG thumbnail bytes and content type.
@@ -768,7 +797,9 @@ class SecuritySpyClient:
         # The filename is percent-encoded per the existing precedent in client.py.
         encoded_path = "/".join(quote(part, safe="") for part in capture.path.split("/", 2))
         path = f"{ENDPOINT_GET_PREVIEW}?/{encoded_path}?archive={archive}"
-        body, content_type = await self._request_bytes(path)
+        body, content_type = await self._request_bytes(
+            path, permission=PERMISSION_NAMES[PERM_FILES], camera_number=capture.camera
+        )
         return CapturePreview(data=body, content_type=content_type)
 
     async def async_get_capture_file(
@@ -804,9 +835,15 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 answered with an unexpected status, or the connection dropped
                 mid-stream.
-            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- ``++getfile``/``++getfilehb``/
+                ``++getfilelb`` answer a missing 'files' permission with 401,
+                not 403).
             SecuritySpyPermissionError: The credentials were accepted but the
-                account lacks a required permission (403).
+                account lacks a required permission (403), or a `401` that a
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
 
         Returns:
             An async-iterable stream whose ``content_type`` is the media type
@@ -826,7 +863,13 @@ class SecuritySpyClient:
         )
         archive_flag = capture.archived if archive is None else archive
         params = {"archive": "1" if archive_flag else "0"}
-        return await self._stream_bytes(bw.endpoint, params, path_suffix=capture.path)
+        return await self._stream_bytes(
+            bw.endpoint,
+            params,
+            path_suffix=capture.path,
+            permission=PERMISSION_NAMES[PERM_FILES],
+            camera_number=capture.camera,
+        )
 
     def _request_kwargs(self, timeout: aiohttp.ClientTimeout) -> dict[str, Any]:
         """Return the shared per-request kwargs, so no verb can drift.
@@ -844,12 +887,13 @@ class SecuritySpyClient:
             "allow_redirects": False,
         }
 
-    def _map_status(
+    async def _map_status(
         self,
         status: int,
         *,
         permission: str | None = None,
         camera_number: int | None = None,
+        disambiguate: bool = True,
     ) -> None:
         """Map an HTTP status to this library's typed exceptions.
 
@@ -858,13 +902,28 @@ class SecuritySpyClient:
         401 or a stray redirect cannot come to mean different things depending
         on which accessor the caller reached for.
 
-        `401` and `403` are deliberately not both mapped to the same error:
-        verified against a live 6.21 server (research §4.1, §5.2), `403` means
-        the credentials were *accepted* and the account merely lacks a
-        permission bit, while `401` means they were rejected outright. Neither
-        the response body (a fixed string, no permission named in it) nor the
-        reason phrase (unreliable -- a `403` arrives as `403 OK`) is consulted;
-        the status code alone decides (research §7.1).
+        `401` is **endpoint-dependent** and is not reliably "credentials
+        rejected". Verified against a live 6.21 server (research §5.9): an
+        account with a valid password but a missing permission gets `401` --
+        not `403` -- from ``++getfile``, ``++getfilehb``, ``++getfilelb``,
+        ``++getpreview`` and ``++ssSetSchedule``, byte-identical to what a
+        genuinely wrong password produces on the same endpoints. `403` remains
+        reliable: verified for the settings pages (research §4.1, §5.2), it
+        means the credentials were *accepted* and the account merely lacks a
+        permission bit. Neither the response body (a fixed string, no
+        permission named in it) nor the reason phrase (unreliable -- a `403`
+        arrives as `403 OK`) is consulted; the status code alone decides
+        (research §7.1).
+
+        Because a `401` cannot be told apart from its response alone, a `401`
+        (unless ``disambiguate`` is ``False``) triggers one follow-up read of
+        ``++systemInfo`` -- an endpoint the account is known to be allowed to
+        reach if its credentials are valid at all. A clean success there means
+        the credentials are fine and this was a permission denial, reclassified
+        as :class:`SecuritySpyPermissionError`. Any other outcome -- another
+        `401`, or the probe itself failing to give a clean answer -- leaves the
+        original :class:`SecuritySpyAuthError` verdict unchanged; an
+        inconclusive probe must never upgrade or downgrade the verdict.
 
         Args:
             status: The HTTP status code the server answered with.
@@ -872,16 +931,31 @@ class SecuritySpyClient:
                 called, when the caller knows one (e.g. `"settings"` for a
                 `settings-*` write). ``None`` when it does not.
             camera_number: The camera the request targeted, when known.
+            disambiguate: Whether a `401` may trigger the ``++systemInfo``
+                probe described above. ``True`` for every endpoint except
+                ``++systemInfo`` itself, which always passes ``False``:
+                probing ``++systemInfo`` with another read of ``++systemInfo``
+                would answer nothing new, so this is what stops the probe
+                from ever triggering a second probe of itself.
 
         Raises:
-            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyAuthError: The credentials were rejected (401), or the
+                401 was ambiguous and the disambiguating probe could not
+                confirm it was a permission denial.
             SecuritySpyPermissionError: The credentials were accepted but the
-                account lacks a required permission (403).
+                account lacks a required permission (403), or a `401` that the
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
             SecuritySpyConnectError: The server redirected, or answered with a
                 status outside the 2xx range.
 
         """
         if status == _HTTP_UNAUTHORIZED:
+            if disambiguate and await self._probe_confirms_permission_denial():
+                raise SecuritySpyPermissionError(
+                    permission if permission is not None else _PERMISSION_UNKNOWN,
+                    camera_number,
+                )
             raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
         if status == _HTTP_FORBIDDEN:
             raise SecuritySpyPermissionError(
@@ -903,6 +977,36 @@ class SecuritySpyClient:
                 self._connection.port,
                 f"unexpected HTTP status {status}",
             )
+
+    async def _probe_confirms_permission_denial(self) -> bool:
+        """Disambiguate a `401` with one follow-up read of ``++systemInfo``.
+
+        Called only from :meth:`_map_status`'s `401` branch, and never on
+        ``++systemInfo``'s own `401` -- :meth:`async_get_server_info` always
+        calls the shared status mapping with ``disambiguate=False``, which is
+        what stops this probe from ever triggering a second probe of itself.
+        Adds exactly one request, and only on an already-failed call -- a
+        successful response never reaches here.
+
+        No result is cached and none is returned to the caller beyond the
+        boolean verdict: the moment a probe's payload were retained or reused,
+        it would become the kind of hidden state story 1.13 forbids acquiring
+        behind a caller's back.
+
+        Returns:
+            ``True`` when the probe cleanly succeeded, meaning the credentials
+            are valid and the original `401` was a permission denial.
+            ``False`` for every other outcome -- another `401`, a `403`, a
+            connect or TLS failure, an unexpected status, or a body that would
+            not decode -- none of which is a clean confirmation, so the
+            original :class:`SecuritySpyAuthError` verdict must stand.
+
+        """
+        try:
+            await self.async_get_server_info()
+        except SecuritySpyError:
+            return False
+        return True
 
     def _raise_transport_error(self, err: BaseException) -> NoReturn:
         """Re-raise a transport failure as this library's typed equivalent.
@@ -974,7 +1078,13 @@ class SecuritySpyClient:
                 "server response body was too large",
             )
 
-    async def _request_bytes(self, path: str) -> tuple[bytes, str]:
+    async def _request_bytes(
+        self,
+        path: str,
+        *,
+        permission: str | None = None,
+        camera_number: int | None = None,
+    ) -> tuple[bytes, str]:
         """Issue one authenticated GET and return the raw body bytes + content type.
 
         Used by ``async_get_capture_preview`` for a buffered read with the
@@ -987,9 +1097,13 @@ class SecuritySpyClient:
         the wrong one.
 
         Raises:
-            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
             SecuritySpyPermissionError: The credentials were accepted but the
-                account lacks a required permission (403).
+                account lacks a required permission (403), or a `401` that a
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
             SecuritySpyConnectError: The server redirected, answered with an
                 unexpected status, sent a body over the cap, or the transport
                 failed.
@@ -1005,7 +1119,15 @@ class SecuritySpyClient:
                 headers={"Authorization": self._connection.auth_header},
                 **self._request_kwargs(self._connection.request_timeout()),
             ) as response:
-                self._map_status(response.status)
+                if not _HTTP_OK_MIN <= response.status <= _HTTP_OK_MAX:
+                    # Release before interpreting the status: on a 401 the
+                    # mapping below fires a second request to disambiguate
+                    # it, and that must not run while this failed response
+                    # is still holding a connection out of the caller's pool.
+                    response.release()
+                await self._map_status(
+                    response.status, permission=permission, camera_number=camera_number
+                )
                 self._check_declared_length(response.content_length)
                 content_type = response.content_type or "application/octet-stream"
                 chunks: list[bytes] = []
@@ -1036,6 +1158,8 @@ class SecuritySpyClient:
         params: Mapping[str, str],
         *,
         path_suffix: str,
+        permission: str | None = None,
+        camera_number: int | None = None,
     ) -> CaptureFileStream:
         """Issue one authenticated GET and return an async-iterable stream.
 
@@ -1051,9 +1175,13 @@ class SecuritySpyClient:
         and corrupt the query.
 
         Raises:
-            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
             SecuritySpyPermissionError: The credentials were accepted but the
-                account lacks a required permission (403).
+                account lacks a required permission (403), or a `401` that a
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
             SecuritySpyConnectError: The server redirected, answered with an
                 unexpected status, or the transport failed.
 
@@ -1073,13 +1201,13 @@ class SecuritySpyClient:
             )
         except (aiohttp.ClientError, TimeoutError, OSError) as err:
             self._raise_transport_error(err)
-        try:
-            self._map_status(response.status)
-        except SecuritySpyError:
-            # The status ladder raises before any body is read, so the response
-            # is still holding a connection out of the caller's pool.
+        if not _HTTP_OK_MIN <= response.status <= _HTTP_OK_MAX:
+            # Release before interpreting the status: on a 401 the mapping
+            # below fires a second request to disambiguate it, and that must
+            # not run while this failed response is still holding a
+            # connection out of the caller's pool.
             response.release()
-            raise
+        await self._map_status(response.status, permission=permission, camera_number=camera_number)
         content_type = response.content_type or "application/octet-stream"
         return CaptureFileStream(
             response, self._connection.host, self._connection.port, content_type
@@ -1104,9 +1232,13 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 answered with an unexpected status, or sent a body that was not
                 a settings object.
-            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
             SecuritySpyPermissionError: The credentials were accepted but the
-                account lacks the 'settings' permission (403).
+                account lacks the 'settings' permission (403), or a `401` that
+                a disambiguating probe confirmed was a permission denial
+                rather than rejected credentials.
 
         Returns:
             The decoded, credential-free settings.
@@ -1170,9 +1302,13 @@ class SecuritySpyClient:
                 patch is empty. Raised before any request is issued.
             SecuritySpyConnectError: The server was unreachable, timed out, or
                 answered with an unexpected status.
-            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
             SecuritySpyPermissionError: The credentials were accepted but the
-                account lacks the 'settings' permission (403).
+                account lacks the 'settings' permission (403), or a `401` that
+                a disambiguating probe confirmed was a permission denial
+                rather than rejected credentials.
 
         """
         number = _validated_camera_number(camera_number)
@@ -1216,9 +1352,13 @@ class SecuritySpyClient:
                 before any request is issued.
             SecuritySpyConnectError: The server was unreachable, timed out, or
                 answered with an unexpected status.
-            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
             SecuritySpyPermissionError: The credentials were accepted but the
-                account lacks the 'settings' permission (403).
+                account lacks the 'settings' permission (403), or a `401` that
+                a disambiguating probe confirmed was a permission denial
+                rather than rejected credentials.
 
         """
         number = _validated_camera_number(camera_number)
@@ -1258,9 +1398,16 @@ class SecuritySpyClient:
                 any request is issued.
             SecuritySpyConnectError: The server was unreachable, timed out, or
                 answered with an unexpected status.
-            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial. Verified live: ``++ssSetSchedule`` answers a
+                missing 'schedule' permission with 401, not 403 (research
+                §5.9).
             SecuritySpyPermissionError: The credentials were accepted but the
-                account lacks the 'schedule' permission (403).
+                account lacks the 'schedule' permission -- reported as `403`
+                on some servers, but verified live as `401` on 6.21
+                (research §5.9), reclassified here by the disambiguating
+                probe.
 
         """
         number = _validated_camera_number(camera_number)
@@ -1288,6 +1435,7 @@ class SecuritySpyClient:
         *,
         permission: str | None = None,
         camera_number: int | None = None,
+        disambiguate: bool = True,
     ) -> object:
         """Issue one authenticated GET and return its parsed JSON body.
 
@@ -1295,7 +1443,11 @@ class SecuritySpyClient:
         JSON parse.
         """
         body = await self._request(
-            path, params=params, permission=permission, camera_number=camera_number
+            path,
+            params=params,
+            permission=permission,
+            camera_number=camera_number,
+            disambiguate=disambiguate,
         )
         try:
             return json.loads(body)
@@ -1361,6 +1513,7 @@ class SecuritySpyClient:
         strict_encoding: bool = True,
         permission: str | None = None,
         camera_number: int | None = None,
+        disambiguate: bool = True,
     ) -> str:
         """Issue one authenticated request and return its decoded body text.
 
@@ -1411,8 +1564,11 @@ class SecuritySpyClient:
                 )
             )
             async with context as response:
-                self._map_status(
-                    response.status, permission=permission, camera_number=camera_number
+                await self._map_status(
+                    response.status,
+                    permission=permission,
+                    camera_number=camera_number,
+                    disambiguate=disambiguate,
                 )
                 self._check_declared_length(response.content_length)
                 # Accumulate rather than issuing one `read(n)`: StreamReader.read

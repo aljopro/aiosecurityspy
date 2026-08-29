@@ -26,8 +26,12 @@ from aiosecurityspy import (
     CAPTURE_FILTER_MOVIES,
     CAPTURE_FILTER_VEHICLE,
     DEFAULT_TIMEOUT,
+    PERM_FILES,
+    PERM_SCHED,
+    PERMISSION_NAMES,
     CameraSettingsPatch,
     CaptureFileStream,
+    CaptureModes,
     SecuritySpyAuthError,
     SecuritySpyCertificateError,
     SecuritySpyClient,
@@ -2282,3 +2286,255 @@ async def test_async_get_captures_server_timezone_is_a_required_keyword_argument
         await client.async_get_captures(  # type: ignore[call-arg]
             [1], start_date=START_DATE, end_date=END_DATE
         )
+
+
+SCHEDULE_TEST_CAMERA = 4
+LIVE_ONLY_TEST_CAMERA = 5
+
+
+# --- Story 1.14: a 401 can mean permission, not bad credentials (research §5.9) ---
+#
+# SecuritySpy 6.21 answers a permission denial with 401 -- not 403 -- on
+# ++getfile, ++getfilehb, ++getfilelb, ++getpreview and ++ssSetSchedule, and
+# that 401 is byte-identical to a genuinely wrong password. `_map_status`
+# disambiguates any 401 with one follow-up read of ++systemInfo: the two
+# requests hit the same stubbed transport, so the single canned status the
+# existing `FakeSession`/`FakeStreamSession` return for every call cannot
+# represent them differently. The two `Sequenced*` fakes below answer a
+# different canned response per successive call instead.
+
+
+class SequencedFakeSession(FakeSession):
+    """Answers each successive `get`/`post` with the next item in a list.
+
+    An item is either an ``(status, body)`` pair, answered as a `FakeResponse`,
+    or a `BaseException`, raised as a connector error would be.
+    """
+
+    def __init__(self, responses: list[tuple[int, str] | BaseException]) -> None:
+        """Store the queue of canned responses, one per call."""
+        super().__init__()
+        self._responses = list(responses)
+
+    def _record(self, method: str, url: str, kwargs: dict[str, Any]) -> Any:  # noqa: ANN401
+        """Append the call and return the next queued response or error."""
+        self.methods.append(method)
+        self.calls.append((url, kwargs))
+        index = len(self.calls) - 1
+        assert index < len(self._responses), f"unexpected extra request #{index + 1}: {url}"
+        item = self._responses[index]
+        if isinstance(item, BaseException):
+            return RaisingContext(item)
+        status, body = item
+        return self.response_factory(status, body)
+
+
+class SequencedFakeStreamSession(FakeStreamSession):
+    """Answers each successive `get` with the next item in a list.
+
+    An item is either an ``(status, body, content_type)`` triple, answered as
+    a `FakeStreamResponse`, or a `BaseException`, raised as a connector error
+    would be. Used for the media accessors, which share the streaming
+    transport with the disambiguating ``++systemInfo`` probe.
+    """
+
+    def __init__(self, responses: list[tuple[int, bytes, str] | BaseException]) -> None:
+        """Store the queue of canned responses, one per call."""
+        super().__init__()
+        self._responses = list(responses)
+
+    def get(self, url: str, **kwargs: Any) -> Any:  # noqa: ANN401
+        """Record the call and return the next queued response or error."""
+        self.methods.append("GET")
+        self.calls.append((url, kwargs))
+        index = len(self.calls) - 1
+        assert index < len(self._responses), f"unexpected extra request #{index + 1}: {url}"
+        item = self._responses[index]
+        if isinstance(item, BaseException):
+            return RaisingContext(item)
+        status, body, content_type = item
+        response = FakeStreamResponse(status, body, content_type)
+        self.responses.append(response)
+        return AwaitableFakeStreamResponse(response)
+
+
+@pytest.mark.asyncio
+async def test_permitted_fetch_issues_no_probe() -> None:
+    """A successful media fetch is never slowed or probed: exactly one request."""
+    session = SequencedFakeStreamSession([(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)])
+    client = make_media_client(session)
+    stream = await client.async_get_capture_file(make_capture())
+    assert stream.content_type == MOVIE_CONTENT_TYPE
+    assert len(session.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_schedule_write_401_without_perm_sched_is_reclassified() -> None:
+    """++ssSetSchedule's 401 for a missing 'schedule' permission is not an auth failure.
+
+    Verified live (research §5.9): a mask-839 account (no PERM_SCHED bit) gets
+    401 from ++ssSetSchedule while ++systemInfo answers 200 in the same second.
+    """
+    session = SequencedFakeSession([(401, ""), (200, fixture_body())])
+    client = make_client(session)
+    with pytest.raises(SecuritySpyPermissionError) as err:
+        await client.async_set_camera_arming(SCHEDULE_TEST_CAMERA, CaptureModes(continuous=True))
+    assert err.value.permission == PERMISSION_NAMES[PERM_SCHED]
+    assert err.value.camera_number == SCHEDULE_TEST_CAMERA
+    assert len(session.calls) == TWO_STATUSES
+
+
+@pytest.mark.asyncio
+async def test_live_only_getfile_401_is_reclassified_to_permission_error() -> None:
+    """A Live-only account's ++getfile 401 is a permission denial, not bad credentials.
+
+    Verified live (research §5.9): the byte-identical 401 that ++getfile,
+    ++getfilehb and ++getfilelb answer with for a Live-only account is
+    reclassified once ++systemInfo confirms the credentials are fine.
+    """
+    session = SequencedFakeStreamSession(
+        [(401, b"", ""), (200, fixture_body().encode(), "application/json")]
+    )
+    client = make_media_client(session)
+    capture = make_capture(camera=LIVE_ONLY_TEST_CAMERA)
+    with pytest.raises(SecuritySpyPermissionError) as err:
+        await client.async_get_capture_file(capture)
+    assert err.value.permission == PERMISSION_NAMES[PERM_FILES]
+    assert err.value.camera_number == LIVE_ONLY_TEST_CAMERA
+    assert len(session.calls) == TWO_STATUSES
+
+
+@pytest.mark.asyncio
+async def test_live_only_getpreview_401_is_reclassified_to_permission_error() -> None:
+    """Same reclassification as ++getfile, for ++getpreview's camera."""
+    session = SequencedFakeStreamSession(
+        [(401, b"", ""), (200, fixture_body().encode(), "application/json")]
+    )
+    client = make_media_client(session)
+    capture = make_capture(camera=LIVE_ONLY_TEST_CAMERA)
+    with pytest.raises(SecuritySpyPermissionError) as err:
+        await client.async_get_capture_preview(capture)
+    assert err.value.permission == PERMISSION_NAMES[PERM_FILES]
+    assert err.value.camera_number == LIVE_ONLY_TEST_CAMERA
+    assert len(session.calls) == TWO_STATUSES
+
+
+@pytest.mark.asyncio
+async def test_genuinely_wrong_password_stays_an_auth_error() -> None:
+    """A second 401 from the probe means the credentials really are bad."""
+    session = SequencedFakeStreamSession([(401, b"", ""), (401, b"", "")])
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyAuthError) as err:
+        await client.async_get_capture_file(make_capture())
+    assert err.value.status == client_module._HTTP_UNAUTHORIZED  # noqa: SLF001 - the mapped status under test
+    assert len(session.calls) == TWO_STATUSES
+
+
+@pytest.mark.asyncio
+async def test_inconclusive_probe_leaves_the_original_verdict_unchanged() -> None:
+    """A probe that cannot cleanly answer must never upgrade or downgrade the verdict.
+
+    The original 401 is a `SecuritySpyAuthError` here even though the true
+    cause is unknowable -- an inconclusive probe (timeout, TLS, connection
+    failure) is not evidence either way, so the verdict the media endpoint
+    itself gave stands.
+    """
+    session = SequencedFakeStreamSession([(401, b"", ""), TimeoutError("probe timed out")])
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyAuthError):
+        await client.async_get_capture_file(make_capture())
+    assert len(session.calls) == TWO_STATUSES
+
+
+@pytest.mark.asyncio
+async def test_probe_itself_401_does_not_recurse() -> None:
+    """A direct ++systemInfo 401 is never disambiguated: it would probe itself.
+
+    Calling `async_get_server_info` directly and getting a 401 must raise
+    immediately, issuing exactly one request -- probing ++systemInfo with
+    another read of ++systemInfo would answer nothing new.
+    """
+    session = SequencedFakeSession([(401, "")])
+    client = make_client(session)
+    with pytest.raises(SecuritySpyAuthError):
+        await client.async_get_server_info()
+    assert len(session.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_settings_403_is_unchanged_and_issues_no_probe() -> None:
+    """The settings pages' 403 is unaffected: it is already unambiguous."""
+    session = SequencedFakeSession([(403, "")])
+    client = make_client(session)
+    with pytest.raises(SecuritySpyPermissionError):
+        await client.async_set_camera_settings(4, CameraSettingsPatch(overlay_text="x"))
+    assert len(session.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_streamed_media_401_releases_the_connection_before_reclassifying() -> None:
+    """A reclassified 401 must not leak the pooled connection either.
+
+    Preserves the existing release-before-raise ordering (`_stream_bytes`
+    releases its response as soon as the status ladder raises) for the
+    reclassified path, not only for the plain-401 path.
+    """
+    session = SequencedFakeStreamSession(
+        [(401, b"", ""), (200, fixture_body().encode(), "application/json")]
+    )
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyPermissionError):
+        await client.async_get_capture_file(make_capture())
+    assert session.responses[0].released is True
+
+
+class ReleaseOrderCheckingStreamSession(SequencedFakeStreamSession):
+    """Fails the test if the probe request is issued before the prior response is released.
+
+    The disambiguating probe is a second live HTTP request; if it fires while
+    the original 401'd response is still holding a connection out of the
+    caller's pool, that is a resource leak even though the response is
+    eventually released once the exception propagates.
+    """
+
+    def get(self, url: str, **kwargs: Any) -> Any:  # noqa: ANN401
+        """Assert every already-issued response was released before this call."""
+        for response in self.responses:
+            assert response.released, (
+                "probe request issued while a prior response was still held open"
+            )
+        return super().get(url, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_streamed_media_401_releases_the_connection_before_probing() -> None:
+    """The probe must not run while the original 401'd response is still held open.
+
+    Distinct from `test_streamed_media_401_releases_the_connection_before_reclassifying`:
+    that test only checks release happens before the exception is raised, which
+    is also satisfied if release happens after the probe completes. This test
+    pins down that release happens before the probe request is even issued, so
+    the two requests never concurrently hold connections out of the pool.
+    """
+    session = ReleaseOrderCheckingStreamSession(
+        [(401, b"", ""), (200, fixture_body().encode(), "application/json")]
+    )
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyPermissionError):
+        await client.async_get_capture_file(make_capture())
+
+
+@pytest.mark.asyncio
+async def test_buffered_media_401_releases_the_connection_before_probing() -> None:
+    """Same release-before-probe guarantee for the buffered accessor.
+
+    `async_get_capture_preview` reads a response inside an `async with` block
+    rather than returning a live stream; the probe must still not run while
+    that response is held open.
+    """
+    session = ReleaseOrderCheckingStreamSession(
+        [(401, b"", ""), (200, fixture_body().encode(), "application/json")]
+    )
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyPermissionError):
+        await client.async_get_capture_preview(make_capture())
