@@ -26,8 +26,11 @@
 #   research-only — from securityspy-api-reference.md, never verified here
 #
 # `x-vendor-documented` states whether the endpoint appears in Ben Software's published spec
-# (https://bensoftware.com/securityspy/web-server-spec.html). An undocumented endpoint may
-# change or disappear in any release without that being a breaking change upstream.
+# (https://bensoftware.com/securityspy/web-server-spec.html). It is a PROVENANCE note, not a
+# health warning: that spec is stale and not kept up to date — it still names 6.20-era settings
+# fields and a ptz path that 404s on 6.21. Undocumented endpoints here are called by the shipped
+# web client on every page load. Where the spec and a live response disagree, the live response
+# wins; `x-verification` is the field that carries real weight.
 #
 # Companion prose: _bmad-output/planning-artifacts/research/securityspy-6.21-verification.md
 
