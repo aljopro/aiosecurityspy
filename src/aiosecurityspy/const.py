@@ -104,8 +104,11 @@ __all__ = [
     "PERM_FILEDEL",
     "PERM_FILES",
     "PERM_LIVEVIDEO",
+    "PERM_NODOWNLOAD",
     "PERM_PTZSET",
+    "PERM_PUSH_STREAMS",
     "PERM_SCHED",
+    "PERM_SETTINGS",
     "PERM_TRIGGER",
     "REDACTED",
     "SETTINGS_FORM_SENTINEL",
@@ -247,26 +250,41 @@ MIN_SERVER_VERSION_TEXT: Final = ".".join(str(part) for part in MIN_SERVER_VERSI
 PERM_LIVEVIDEO: Final = 1  # bit 0  -- view live video
 PERM_FILES: Final = 4  # bit 2  -- access captured files
 PERM_FILEDEL: Final = 8  # bit 3  -- delete files
+PERM_SETTINGS: Final = 16  # bit 4  -- set camera settings (research §4.1)
 PERM_CAMCONTROL: Final = 64  # bit 6  -- camera control (incl. PTZ movement)
 PERM_SCHED: Final = 128  # bit 7  -- arm/disarm, set schedules
 PERM_PTZSET: Final = 256  # bit 8  -- save PTZ presets
 PERM_AUDIORCV: Final = 512  # bit 9  -- receive audio
 PERM_TRIGGER: Final = 1024  # bit 10 -- manually trigger
 PERM_AUDIOSND: Final = 2048  # bit 11 -- send audio (two-way talk)
+#: Deny-bit: set means *hide download options*, not "grant no-download"
+#: (research §4.1, §5.2). Deliberately excluded from `PERMISSION_NAMES` below --
+#: see that mapping's docstring for why.
+PERM_NODOWNLOAD: Final = 4096  # bit 12 -- deny: hide download options (inverted sense)
+PERM_PUSH_STREAMS: Final = 8192  # bit 13 -- receive push streams (research §4.1)
 
 #: Mapping of permission bit value to a stable, snake_case permission name.
 #: Exposed as a read-only view so a consumer cannot corrupt decoding globally.
+#:
+#: `PERM_NODOWNLOAD` is deliberately **not** included here. This mapping feeds
+#: `has_permission()`/`decode_permissions()`, both of which read as "the camera
+#: *grants* X". Bit 12 is an inverted, deny-shaped bit -- set means "hide
+#: download options" -- so reporting it here would have `has_permission` claim
+#: a camera grants a "no download" capability it does not. The constant is
+#: still exported so a consumer that wants to test the bit deliberately can.
 PERMISSION_NAMES: Final[Mapping[int, str]] = MappingProxyType(
     {
         PERM_LIVEVIDEO: "live_video",
         PERM_FILES: "files",
         PERM_FILEDEL: "file_delete",
+        PERM_SETTINGS: "settings",
         PERM_CAMCONTROL: "camera_control",
         PERM_SCHED: "schedule",
         PERM_PTZSET: "ptz_preset_set",
         PERM_AUDIORCV: "audio_receive",
         PERM_TRIGGER: "trigger",
         PERM_AUDIOSND: "audio_send",
+        PERM_PUSH_STREAMS: "push_streams",
     }
 )
 

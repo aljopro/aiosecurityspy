@@ -697,7 +697,14 @@ class Camera:
         return decode_permissions(self.permissions)
 
     def has_permission(self, permission: str) -> bool:
-        """Return whether this camera grants the named permission."""
+        """Return whether this camera grants the named permission.
+
+        Reads as "grants" -- which is exactly why the inverted-sense
+        `PERM_NODOWNLOAD` bit is deliberately absent from `PERMISSION_NAMES`
+        (see that mapping's docstring in `const.py`): were it included, a
+        camera with the bit *set* -- meaning download is *denied* -- would have
+        this method answer ``True`` for a capability it does not grant.
+        """
         return permission in self.permission_names
 
     def __repr__(self) -> str:

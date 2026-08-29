@@ -7,8 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: HTTP `403` no longer raises `SecuritySpyAuthError` -- it raises
+  `SecuritySpyPermissionError`.** Verified against a live 6.21 server (research
+  §4.1, §5.2, §7.1), `403` means the credentials were *accepted* and the account
+  merely lacks a permission bit; `401` alone means the credentials were rejected.
+  Any consumer that previously caught `SecuritySpyAuthError` to handle both status
+  codes -- for example to trigger a credential re-prompt -- now needs to catch
+  `SecuritySpyPermissionError` too, since re-authentication cannot fix a missing
+  permission. `SecuritySpyPermissionError` already existed and already carries a
+  `permission` name and an optional `camera_number`; `async_get_camera_settings()`,
+  `async_set_camera_settings()` and `async_set_camera_arming()` now name the
+  `"settings"`/`"schedule"` permission and the camera on a `403`. Every other
+  endpoint still raises `SecuritySpyPermissionError` on `403`, without a name it
+  cannot honestly supply. `401` behaviour, message and type are unchanged.
+
 ### Fixed
 
+- **`PERM_SETTINGS` (bit 4), `PERM_NODOWNLOAD` (bit 12) and `PERM_PUSH_STREAMS`
+  (bit 13) are now recognised.** The permission bitmask was missing the very bit
+  that gates settings writes: `PERMISSION_NAMES` now decodes `"settings"` and
+  `"push_streams"` in addition to the existing seven names. `PERM_NODOWNLOAD` is
+  exported as a constant for a consumer that wants to test it directly, but
+  deliberately excluded from `PERMISSION_NAMES`: it is an inverted, deny-shaped
+  bit ("hide download options"), and that mapping feeds `has_permission()`, which
+  reads as *grants*.
 - **`ServerInfo._decode_cameras` now recognises a top-level `camera-list` key** -- the
   shape a real SecuritySpy 6.21 server actually sends -- in addition to the existing
   `cameralist.camera` (list or single object) and bare `camera` forms, all of which keep

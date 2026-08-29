@@ -33,6 +33,7 @@ from aiosecurityspy import (
     SecuritySpyClient,
     SecuritySpyConnectError,
     SecuritySpyError,
+    SecuritySpyPermissionError,
     SecuritySpyUnsupportedVersionError,
 )
 from aiosecurityspy import client as client_module
@@ -378,13 +379,35 @@ async def test_injected_session_is_never_closed(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [401, 403])
-async def test_auth_failure_maps_to_auth_error(status: int) -> None:
+async def test_auth_failure_maps_to_auth_error() -> None:
+    status = 401
     session = FakeSession(status, "")
     with pytest.raises(SecuritySpyAuthError) as err:
         await make_client(session).async_get_server_info()
     assert err.value.status == status
     assert f"{HOST}:{PORT}" in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_maps_to_permission_error_not_auth_error() -> None:
+    # Verified against a live 6.21 server (research §4.1, §5.2, §7.1): 403 means
+    # the credentials were *accepted* and the account merely lacks a
+    # permission bit, not that the credentials were rejected.
+    session = FakeSession(403, "")
+    with pytest.raises(SecuritySpyPermissionError):
+        await make_client(session).async_get_server_info()
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_is_not_caught_by_auth_error_handler() -> None:
+    """A consumer catching only SecuritySpyAuthError must not see a 403."""
+    session = FakeSession(403, "")
+    try:
+        await make_client(session).async_get_server_info()
+    except SecuritySpyAuthError:
+        pytest.fail("403 must not raise SecuritySpyAuthError")
+    except SecuritySpyPermissionError:
+        pass
 
 
 @pytest.mark.asyncio
@@ -966,10 +989,16 @@ async def test_skippable_entries_are_dropped_and_the_rest_decode() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [401, 403])
-async def test_auth_rejection_surfaces_from_the_shared_seam(status: int) -> None:
-    session = FakeSession(status, "")
+async def test_auth_rejection_surfaces_from_the_shared_seam() -> None:
+    session = FakeSession(401, "")
     with pytest.raises(SecuritySpyAuthError):
+        await get_captures(session)
+
+
+@pytest.mark.asyncio
+async def test_permission_rejection_surfaces_from_the_shared_seam() -> None:
+    session = FakeSession(403, "")
+    with pytest.raises(SecuritySpyPermissionError):
         await get_captures(session)
 
 
@@ -2094,7 +2123,7 @@ async def test_file_releases_the_response_on_every_status_failure(status: int) -
     """No status failure may leave a connection checked out of the caller's pool."""
     session = FakeStreamSession(status, b"", "text/html")
     client = make_media_client(session)
-    with pytest.raises((SecuritySpyAuthError, SecuritySpyConnectError)):
+    with pytest.raises((SecuritySpyAuthError, SecuritySpyPermissionError, SecuritySpyConnectError)):
         await client.async_get_capture_file(make_capture())
     assert session.responses[0].released is True
 

@@ -23,7 +23,9 @@ from aiosecurityspy import (
     PERM_FILES,
     PERM_LIVEVIDEO,
     PERM_PTZSET,
+    PERM_PUSH_STREAMS,
     PERM_SCHED,
+    PERM_SETTINGS,
     PERM_TRIGGER,
     Camera,
     CameraStatus,
@@ -159,11 +161,13 @@ def test_observed_bitmask_decodes_bit_by_bit() -> None:
         PERM_LIVEVIDEO
         | PERM_FILES
         | PERM_FILEDEL
+        | PERM_SETTINGS
         | PERM_CAMCONTROL
         | PERM_SCHED
         | PERM_PTZSET
         | PERM_AUDIORCV
         | PERM_TRIGGER
+        | PERM_PUSH_STREAMS
     )
     assert FIXTURE_FULL_PERMISSIONS & expected == expected
     assert not FIXTURE_FULL_PERMISSIONS & PERM_AUDIOSND
@@ -171,11 +175,13 @@ def test_observed_bitmask_decodes_bit_by_bit() -> None:
         "live_video",
         "files",
         "file_delete",
+        "settings",
         "camera_control",
         "schedule",
         "ptz_preset_set",
         "audio_receive",
         "trigger",
+        "push_streams",
     }
 
 

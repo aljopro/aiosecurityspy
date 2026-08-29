@@ -30,6 +30,9 @@ from .const import (
     ENDPOINT_SET_SCHEDULE,
     ENDPOINT_SETTINGS_CAMERAS,
     ENDPOINT_SYSTEM_INFO,
+    PERM_SCHED,
+    PERM_SETTINGS,
+    PERMISSION_NAMES,
     SETTINGS_FORM_SENTINEL,
     capture_filter_for_class,
 )
@@ -38,6 +41,7 @@ from .exceptions import (
     SecuritySpyCertificateError,
     SecuritySpyConnectError,
     SecuritySpyError,
+    SecuritySpyPermissionError,
 )
 from .models import (
     SETTINGS_PAGE_KEY_QUORUM,
@@ -67,6 +71,13 @@ _LOGGER: Final = logging.getLogger(__name__)
 
 _HTTP_UNAUTHORIZED: Final = 401
 _HTTP_FORBIDDEN: Final = 403
+
+#: The permission name reported when a `403` lands on an endpoint whose
+#: required permission this library does not know. `SecuritySpyPermissionError`
+#: takes a required `permission: str` -- there is no unnamed/optional form to
+#: fall back to -- so this is the one honest thing to say: the account lacks
+#: *some* permission, and which one is not knowable from the status code alone.
+_PERMISSION_UNKNOWN: Final = "unknown"
 _HTTP_OK_MIN: Final = 200
 _HTTP_OK_MAX: Final = 299
 _HTTP_REDIRECT_MIN: Final = 300
@@ -524,7 +535,9 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 failed TLS, answered with an unexpected status, or sent a body
                 that was not JSON.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403).
             SecuritySpyUnsupportedVersionError: The server is older than the
                 supported minimum, or the payload shape is not locatable.
 
@@ -558,7 +571,9 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 answered with an unexpected status, or sent a body that was not
                 a JSON array.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403).
 
         Returns:
             The decoded per-camera status, one entry per camera the server
@@ -648,7 +663,9 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 answered with an unexpected status, or sent a body that was
                 neither a list of captures nor a mapping containing one.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403).
 
         Returns:
             The decoded captures, newest first. Empty when nothing matched.
@@ -728,7 +745,9 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 answered with an unexpected status, or sent a body exceeding
                 the 8 MiB preview cap.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403).
 
         Returns:
             The JPEG thumbnail bytes and content type.
@@ -782,7 +801,9 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 answered with an unexpected status, or the connection dropped
                 mid-stream.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403).
 
         Returns:
             An async-iterable stream whose ``content_type`` is the media type
@@ -820,7 +841,13 @@ class SecuritySpyClient:
             "allow_redirects": False,
         }
 
-    def _map_status(self, status: int) -> None:
+    def _map_status(
+        self,
+        status: int,
+        *,
+        permission: str | None = None,
+        camera_number: int | None = None,
+    ) -> None:
         """Map an HTTP status to this library's typed exceptions.
 
         The single place that decides what a status means. Every transport path
@@ -828,14 +855,36 @@ class SecuritySpyClient:
         401 or a stray redirect cannot come to mean different things depending
         on which accessor the caller reached for.
 
+        `401` and `403` are deliberately not both mapped to the same error:
+        verified against a live 6.21 server (research §4.1, §5.2), `403` means
+        the credentials were *accepted* and the account merely lacks a
+        permission bit, while `401` means they were rejected outright. Neither
+        the response body (a fixed string, no permission named in it) nor the
+        reason phrase (unreliable -- a `403` arrives as `403 OK`) is consulted;
+        the status code alone decides (research §7.1).
+
+        Args:
+            status: The HTTP status code the server answered with.
+            permission: The permission name implied by the endpoint that was
+                called, when the caller knows one (e.g. `"settings"` for a
+                `settings-*` write). ``None`` when it does not.
+            camera_number: The camera the request targeted, when known.
+
         Raises:
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403).
             SecuritySpyConnectError: The server redirected, or answered with a
                 status outside the 2xx range.
 
         """
-        if status in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
+        if status == _HTTP_UNAUTHORIZED:
             raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
+        if status == _HTTP_FORBIDDEN:
+            raise SecuritySpyPermissionError(
+                permission if permission is not None else _PERMISSION_UNKNOWN,
+                camera_number,
+            )
         if _HTTP_REDIRECT_MIN <= status <= _HTTP_REDIRECT_MAX:
             # Almost always "you asked for http, this server wants https".
             # Say so, rather than reporting a bare 301.
@@ -935,7 +984,9 @@ class SecuritySpyClient:
         the wrong one.
 
         Raises:
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403).
             SecuritySpyConnectError: The server redirected, answered with an
                 unexpected status, sent a body over the cap, or the transport
                 failed.
@@ -997,7 +1048,9 @@ class SecuritySpyClient:
         and corrupt the query.
 
         Raises:
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403).
             SecuritySpyConnectError: The server redirected, answered with an
                 unexpected status, or the transport failed.
 
@@ -1048,7 +1101,9 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 answered with an unexpected status, or sent a body that was not
                 a settings object.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks the 'settings' permission (403).
 
         Returns:
             The decoded, credential-free settings.
@@ -1056,7 +1111,10 @@ class SecuritySpyClient:
         """
         number = _validated_camera_number(camera_number)
         payload = await self._request_json(
-            ENDPOINT_SETTINGS_CAMERAS, {"cameraNum": str(number), "format": "json"}
+            ENDPOINT_SETTINGS_CAMERAS,
+            {"cameraNum": str(number), "format": "json"},
+            permission=PERMISSION_NAMES[PERM_SETTINGS],
+            camera_number=number,
         )
         # The body is deliberately not echoed, and no local may still be holding
         # it on *any* exit: this endpoint's payload carries the camera's device
@@ -1109,7 +1167,9 @@ class SecuritySpyClient:
                 patch is empty. Raised before any request is issued.
             SecuritySpyConnectError: The server was unreachable, timed out, or
                 answered with an unexpected status.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks the 'settings' permission (403).
 
         """
         number = _validated_camera_number(camera_number)
@@ -1128,7 +1188,12 @@ class SecuritySpyClient:
         # The patch itself is not logged: it can carry a camera name or an
         # overlay string, and settings payloads are never logged (research §8.3).
         _LOGGER.debug("Writing %s settings field(s) to camera %s", len(fields), number)
-        await self._post_form(ENDPOINT_SETTINGS_CAMERAS, "&".join(parts))
+        await self._post_form(
+            ENDPOINT_SETTINGS_CAMERAS,
+            "&".join(parts),
+            permission=PERMISSION_NAMES[PERM_SETTINGS],
+            camera_number=number,
+        )
 
     async def async_set_camera_arming(
         self,
@@ -1164,7 +1229,9 @@ class SecuritySpyClient:
                 any request is issued.
             SecuritySpyConnectError: The server was unreachable, timed out, or
                 answered with an unexpected status.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks the 'schedule' permission (403).
 
         """
         number = _validated_camera_number(camera_number)
@@ -1181,15 +1248,26 @@ class SecuritySpyClient:
                 "mode": modes.mode_string,
                 "override": str(record.value),
             },
+            permission=PERMISSION_NAMES[PERM_SCHED],
+            camera_number=number,
         )
 
-    async def _request_json(self, path: str, params: Mapping[str, str] | None = None) -> object:
+    async def _request_json(
+        self,
+        path: str,
+        params: Mapping[str, str] | None = None,
+        *,
+        permission: str | None = None,
+        camera_number: int | None = None,
+    ) -> object:
         """Issue one authenticated GET and return its parsed JSON body.
 
         A thin wrapper over :meth:`_request`; the only thing it adds is the
         JSON parse.
         """
-        body = await self._request(path, params=params)
+        body = await self._request(
+            path, params=params, permission=permission, camera_number=camera_number
+        )
         try:
             return json.loads(body)
         except ValueError as err:
@@ -1201,31 +1279,59 @@ class SecuritySpyClient:
                 self._connection.host, self._connection.port, "server response was not valid JSON"
             ) from err
 
-    async def _request_text(self, path: str, params: Mapping[str, str] | None = None) -> str:
+    async def _request_text(
+        self,
+        path: str,
+        params: Mapping[str, str] | None = None,
+        *,
+        permission: str | None = None,
+        camera_number: int | None = None,
+    ) -> str:
         """Issue one authenticated GET whose body is not JSON, and return it.
 
         Used by endpoints that acknowledge a write without a documented body
         shape. The response still goes through the shared status mapping and
         byte cap; only the JSON parse is skipped.
         """
-        return await self._request(path, params=params, strict_encoding=False)
+        return await self._request(
+            path,
+            params=params,
+            strict_encoding=False,
+            permission=permission,
+            camera_number=camera_number,
+        )
 
-    async def _post_form(self, path: str, body: str) -> str:
+    async def _post_form(
+        self,
+        path: str,
+        body: str,
+        *,
+        permission: str | None = None,
+        camera_number: int | None = None,
+    ) -> str:
         """POST an already-assembled ``application/x-www-form-urlencoded`` body.
 
         ``body`` is a string, never a mapping: SecuritySpy's settings pages
         require the literal ``formData`` sentinel *first* (research §8.0), and
         handing aiohttp a dict would let it choose its own ordering.
         """
-        return await self._request(path, form_body=body, strict_encoding=False)
+        return await self._request(
+            path,
+            form_body=body,
+            strict_encoding=False,
+            permission=permission,
+            camera_number=camera_number,
+        )
 
-    async def _request(
+    async def _request(  # noqa: PLR0913 - the transport seam's own kwargs plus the permission context threaded from call sites
         self,
         path: str,
         *,
         params: Mapping[str, str] | None = None,
         form_body: str | None = None,
         strict_encoding: bool = True,
+        permission: str | None = None,
+        camera_number: int | None = None,
     ) -> str:
         """Issue one authenticated request and return its decoded body text.
 
@@ -1276,7 +1382,9 @@ class SecuritySpyClient:
                 )
             )
             async with context as response:
-                self._map_status(response.status)
+                self._map_status(
+                    response.status, permission=permission, camera_number=camera_number
+                )
                 self._check_declared_length(response.content_length)
                 # Accumulate rather than issuing one `read(n)`: StreamReader.read
                 # returns whatever is currently buffered, not n bytes, so a

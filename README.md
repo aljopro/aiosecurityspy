@@ -372,16 +372,19 @@ async def main() -> None:
 
         # `require_permission` is a pure guard: it costs no round trip, so run
         # it before touching a plane, and guard each call with the permission
-        # that call actually needs. `"camera_control"` covers the settings page
-        # -- both reading it and writing it; `"schedule"` covers arming. They
-        # are separate grants, so holding one says nothing about the other.
+        # that call actually needs. `"settings"` covers the settings page --
+        # both reading it and writing it; `"schedule"` covers arming. They are
+        # separate grants, so holding one says nothing about the other. A
+        # server that answers a settings or arming call with 403 raises this
+        # same `SecuritySpyPermissionError` even if you skip the guard --
+        # `require_permission` just avoids the round trip.
         info = await client.async_get_server_info()
         camera = info.cameras.get(3)
         if camera is None:
             print("camera 3 is not on this server")
             return
         try:
-            require_permission(camera, "camera_control")
+            require_permission(camera, "settings")
         except SecuritySpyPermissionError as err:
             print(err)
             return
@@ -618,6 +621,12 @@ account, and grant it only the per-camera permissions you actually need — typi
 control**, and **arm/disarm** unless a feature you use requires them. Each camera's
 granted permissions are decoded for you into `Camera.permission_names`, so you can check
 capability before attempting an operation.
+
+A least-privileged account that lacks a permission a call needs gets `SecuritySpyPermissionError`,
+not `SecuritySpyAuthError` — the server answers with a `403`, and a `403` means the
+credentials were *accepted*, not that they were wrong. Catch `SecuritySpyAuthError` to
+detect a bad username or password (`401`) and `SecuritySpyPermissionError` to detect a
+missing grant; re-prompting for credentials on the latter will not fix anything.
 
 ### Prefer HTTPS
 

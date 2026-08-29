@@ -26,8 +26,11 @@ from aiosecurityspy import (
     PERM_FILEDEL,
     PERM_FILES,
     PERM_LIVEVIDEO,
+    PERM_NODOWNLOAD,
     PERM_PTZSET,
+    PERM_PUSH_STREAMS,
     PERM_SCHED,
+    PERM_SETTINGS,
     PERM_TRIGGER,
     ArmOverride,
     Camera,
@@ -451,7 +454,11 @@ async def test_write_posts_only_the_changed_keys() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "expected"),
-    [(401, SecuritySpyAuthError), (403, SecuritySpyAuthError), (500, SecuritySpyConnectError)],
+    [
+        (401, SecuritySpyAuthError),
+        (403, SecuritySpyPermissionError),
+        (500, SecuritySpyConnectError),
+    ],
 )
 async def test_rejected_write_maps_to_a_typed_error_without_echoing_the_body(
     status: int, expected: type[Exception]
@@ -470,6 +477,49 @@ async def test_rejected_read_maps_to_a_typed_error_without_echoing_the_body() ->
     with pytest.raises(SecuritySpyAuthError) as err:
         await make_client(session).async_get_camera_settings(3)
     assert DEVICE_PASSWORD not in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_settings_read_names_the_settings_permission() -> None:
+    """An unprivileged account reading settings gets a named, camera-scoped error."""
+    session = FakeSession(status=403, body=json.dumps({"password": DEVICE_PASSWORD}))
+    with pytest.raises(SecuritySpyPermissionError) as err:
+        await make_client(session).async_get_camera_settings(CAMERA)
+    assert err.value.permission == "settings"
+    assert err.value.camera_number == CAMERA
+    assert DEVICE_PASSWORD not in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_settings_write_names_the_settings_permission() -> None:
+    session = FakeSession(status=403, body=json.dumps({"secret": DEVICE_PASSWORD}))
+    with pytest.raises(SecuritySpyPermissionError) as err:
+        await make_client(session).async_set_camera_settings(
+            OTHER_CAMERA, CameraSettingsPatch(overlay_text="x")
+        )
+    assert err.value.permission == "settings"
+    assert err.value.camera_number == OTHER_CAMERA
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_arming_names_the_schedule_permission() -> None:
+    session = FakeSession(status=403, body="")
+    with pytest.raises(SecuritySpyPermissionError) as err:
+        await make_client(session).async_set_camera_arming(CAMERA, CaptureModes(motion=True))
+    assert err.value.permission == "schedule"
+    assert err.value.camera_number == CAMERA
+
+
+@pytest.mark.asyncio
+async def test_permission_error_is_never_caught_as_auth_error() -> None:
+    """A consumer that opens a reauth flow on SecuritySpyAuthError must not fire on 403."""
+    session = FakeSession(status=403, body="")
+    try:
+        await make_client(session).async_get_camera_settings(3)
+    except SecuritySpyAuthError:
+        pytest.fail("a permission denial must not be catchable as SecuritySpyAuthError")
+    except SecuritySpyPermissionError:
+        pass
 
 
 @pytest.mark.asyncio
@@ -684,26 +734,62 @@ def test_permission_decode_of_the_observed_mask() -> None:
             "live_video",
             "files",
             "file_delete",
+            "settings",
             "camera_control",
             "schedule",
             "ptz_preset_set",
             "audio_receive",
             "trigger",
+            "push_streams",
         }
     )
     observed = (
         PERM_LIVEVIDEO
         | PERM_FILES
         | PERM_FILEDEL
+        | PERM_SETTINGS
         | PERM_CAMCONTROL
         | PERM_SCHED
         | PERM_PTZSET
         | PERM_AUDIORCV
         | PERM_TRIGGER
+        | PERM_PUSH_STREAMS
     )
     assert decode_permissions(OBSERVED_PERMISSION_MASK) == decode_permissions(observed)
     assert not decode_permissions(OBSERVED_PERMISSION_MASK) & {"audio_send"}
     assert PERM_AUDIOSND & OBSERVED_PERMISSION_MASK == 0
+
+
+def test_permission_decode_of_a_live_6_21_camera_mask() -> None:
+    """A real ``permissions`` value from a live 6.21 camera (research §4.1).
+
+    839 = bits 0, 1, 2, 6, 8, 9. Bit 1 (value 2) is set but named nowhere in
+    the application, so it must be silently dropped rather than reported.
+    """
+    live_mask = 839
+    assert live_mask == (1 | 2 | 4 | 64 | 256 | 512)
+    assert decode_permissions(live_mask) == frozenset(
+        {"live_video", "files", "camera_control", "ptz_preset_set", "audio_receive"}
+    )
+    assert "bit_1" not in decode_permissions(live_mask)
+
+
+def test_inverted_nodownload_bit_is_not_reported_as_a_granted_capability() -> None:
+    """Bit 12 (PERM_NODOWNLOAD) means *deny* download, not "grants no-download"."""
+    cam = camera(permissions=PERM_LIVEVIDEO | PERM_NODOWNLOAD)
+    assert decode_permissions(cam.permissions) == frozenset({"live_video"})
+    assert cam.has_permission("live_video") is True
+    # There is no name a set PERM_NODOWNLOAD bit could satisfy: it is excluded
+    # from PERMISSION_NAMES entirely, by design.
+    assert not any("download" in name for name in cam.permission_names)
+
+
+def test_new_permission_bits_decode_by_name() -> None:
+    assert decode_permissions(PERM_SETTINGS) == frozenset({"settings"})
+    assert decode_permissions(PERM_PUSH_STREAMS) == frozenset({"push_streams"})
+    assert decode_permissions(PERM_SETTINGS | PERM_PUSH_STREAMS) == frozenset(
+        {"settings", "push_streams"}
+    )
 
 
 @pytest.mark.parametrize("mask", [0, -1, -OBSERVED_PERMISSION_MASK, "10207", None, True, 2.5])
@@ -712,8 +798,9 @@ def test_absent_negative_or_non_int_permissions_decode_to_nothing(mask: object) 
 
 
 def test_undocumented_permission_bits_are_ignored_rather_than_rejected() -> None:
-    # Bits 1, 4, 5 and 12+ are undecoded; they must simply not appear.
-    assert decode_permissions(1 | 2 | 16 | 32 | (1 << 20)) == frozenset({"live_video"})
+    # Bits 1, 5 and 20+ are undecoded; they must simply not appear. Bit 4
+    # (value 16, PERM_SETTINGS) is documented as of story 1.11 and does decode.
+    assert decode_permissions(1 | 2 | 16 | 32 | (1 << 20)) == frozenset({"live_video", "settings"})
 
 
 def test_trigger_reasons_on_a_default_install() -> None:
