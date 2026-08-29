@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ServerInfo._decode_cameras` now recognises a top-level `camera-list` key** -- the
+  shape a real SecuritySpy 6.21 server actually sends -- in addition to the existing
+  `cameralist.camera` (list or single object) and bare `camera` forms, all of which keep
+  working unchanged. Previously, a live server's `camera-list` array fell through the
+  lookup silently and `async_get_server_info()` reported an inventory of **zero cameras**
+  against a server reporting eleven, with no error, only a debug log -- blocking every
+  camera-scoped feature.
+- **An unlocatable camera inventory now raises `SecuritySpyUnsupportedVersionError`**
+  where it previously returned an empty `{}` silently. The two cases are
+  indistinguishable to a consumer but mean opposite things: a genuinely empty, located
+  list (`camera-count: 0`) still decodes to a success with no cameras, but no recognised
+  camera-list key at all, or a located list that decodes to nothing while the server
+  reports a positive `camera-count`, is now a typed decode failure instead of a
+  plausible-looking empty result. A partial mismatch (some cameras decode, the count
+  doesn't match) is unaffected and stays a debug log.
+
 ### Added
 
 - **OpenAPI description of the SecuritySpy HTTP API** at `docs/securityspy-openapi.yaml`,

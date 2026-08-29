@@ -855,16 +855,19 @@ class ServerInfo:
 
         The envelope is not recorded in the protocol research, so this accepts
         both the wrapped form (``{"system": {"server": ...}}``) and a bare
-        ``{"server": ...}``, and accepts ``cameralist.camera`` as either a list
-        or a single object.
+        ``{"server": ...}``, and accepts the camera list as ``cameralist.camera``,
+        a top-level ``camera-list``, or a bare ``camera`` key -- each either a
+        list or a single object.
 
         Args:
             payload: The parsed JSON body.
 
         Raises:
             SecuritySpyUnsupportedVersionError: When no server block is
-                locatable, when the version is missing or unparseable, or when
-                the server is older than the supported minimum.
+                locatable, when the version is missing or unparseable, when the
+                server is older than the supported minimum, when no recognised
+                camera-list key is present at all, or when the server reports a
+                positive camera count but zero cameras survive decoding.
 
         Returns:
             The decoded server info.
@@ -885,13 +888,23 @@ class ServerInfo:
         if version_info < MIN_SERVER_VERSION:
             raise SecuritySpyUnsupportedVersionError(version, MIN_SERVER_VERSION_TEXT)
 
-        cameras = cls._decode_cameras(system)
+        cameras, located = cls._decode_cameras(system)
+        if not located:
+            # No recognised camera-list key at all -- this is indistinguishable
+            # from a genuinely camera-less server unless it is called out as its
+            # own failure, so it is never allowed to collapse into `{}`.
+            raise SecuritySpyUnsupportedVersionError(version, MIN_SERVER_VERSION_TEXT)
         camera_count = _as_int(server.get("camera-count"))
         if camera_count is not None and camera_count < 0:
             # A negative inventory size is nonsense; fall back to what decoded.
             _LOGGER.debug("Server reported a negative camera count; using the decoded count")
             camera_count = None
         if camera_count is not None and camera_count != len(cameras):
+            if camera_count > 0 and not cameras:
+                # A located, positive-count inventory that decoded to nothing is
+                # the exact symptom of the original defect -- a plausible-looking
+                # empty result standing in for a total decode failure.
+                raise SecuritySpyUnsupportedVersionError(version, MIN_SERVER_VERSION_TEXT)
             _LOGGER.debug("Server reports %s cameras but %s decoded", camera_count, len(cameras))
 
         cpu_usage = _as_float(server.get("cpu-usage"))
@@ -916,10 +929,46 @@ class ServerInfo:
         )
 
     @staticmethod
-    def _decode_cameras(system: dict[str, object]) -> dict[int, Camera]:
-        """Decode the camera list, tolerating absent, single-object and list forms."""
+    def _decode_cameras(system: dict[str, object]) -> tuple[dict[int, Camera], bool]:
+        """Locate and decode the camera list, tolerating single-object and list forms.
+
+        Three envelope shapes are recognised, in this order: ``cameralist.camera``
+        (the legacy wrapped form), a top-level ``camera-list`` (what a live 6.21
+        server actually sends), and a bare top-level ``camera`` key. Each may hold
+        a list or a single object. A ``cameralist`` wrapper takes priority whenever
+        it is present at all, even if it holds no inner ``camera`` key -- that keeps
+        a legacy ``cameralist: {}`` decoding as a genuinely-empty success rather
+        than falling through to the newer top-level keys.
+
+        Returns:
+            A ``(cameras, located)`` pair. ``located`` is ``False`` only when none
+            of the three keys is present at all -- it is ``True`` even when the
+            key that *was* found holds an empty list, so a caller can tell "no
+            camera list found" (a decode failure) from "camera list found, empty"
+            (a genuinely camera-less server) apart, which is the whole point:
+            those two collapse to the same `{}` otherwise.
+        """
         cameralist = _as_mapping(system.get("cameralist"))
-        raw = system.get("camera") if cameralist is None else cameralist.get("camera")
+        raw: object
+        located: bool
+        if cameralist is not None:
+            # `cameralist` being present at all is "located", even without an
+            # inner `camera` key -- that mirrors the pre-existing tolerance for
+            # `cameralist.get("camera")` being `None`, so a legacy server that
+            # sends an empty `cameralist: {}` for zero cameras keeps decoding
+            # to a genuinely-empty success instead of a new false raise.
+            raw = cameralist.get("camera")
+            located = True
+        elif "camera-list" in system:
+            raw = system.get("camera-list")
+            located = True
+        elif "camera" in system:
+            raw = system.get("camera")
+            located = True
+        else:
+            raw = None
+            located = False
+
         entries: list[object]
         if raw is None:
             entries = []
@@ -941,7 +990,7 @@ class ServerInfo:
                 _LOGGER.debug("Duplicate camera number %s; keeping the first", camera.number)
                 continue
             cameras[camera.number] = camera
-        return cameras
+        return cameras, located
 
     def __repr__(self) -> str:
         """Return a representation that cannot carry credentials."""

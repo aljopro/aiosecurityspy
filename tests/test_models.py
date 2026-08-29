@@ -44,13 +44,26 @@ def load_system_info() -> dict[str, Any]:
     return payload
 
 
+def load_real_server_camera_list() -> dict[str, Any]:
+    """Load the synthetic, scrubbed 6.21 capture with a top-level `camera-list`.
+
+    This is the shape a real server sends (research §4.3): six top-level keys,
+    `camera-list` as the array, no `cameralist` wrapper anywhere. Every value is
+    synthetic -- see the module docstring in the fixture file's sibling story --
+    but the *shape* is what a live 6.21 server actually produces.
+    """
+    payload: dict[str, Any] = json.loads((FIXTURES / "real_server_camera_list.json").read_text())
+    return payload
+
+
 def wrap(server: dict[str, Any], cameras: object) -> dict[str, Any]:
     return {"system": {"server": server, "cameralist": {"camera": cameras}}}
 
 
-SERVER = {"version": "6.20", "uuid": "abc", "camera-count": "1"}
+SERVER = {"version": "6.20", "uuid": "abc", "camera-count": "0"}
 FIXTURE_CAMERA_COUNT = 3
 FIXTURE_FULL_PERMISSIONS = 10207
+FIXTURE_ELEVEN_CAMERAS = 11
 TWO_CAMERAS = 2
 
 
@@ -66,6 +79,27 @@ def test_fixture_decodes_to_server_info() -> None:
     assert set(info.cameras) == {0, 1, 7}
     assert all(isinstance(number, int) for number in info.cameras)
     assert info.name == "nvr"
+
+
+def test_live_camera_list_envelope_decodes_all_eleven_cameras() -> None:
+    """The fixture-backed regression test for story 1.12.
+
+    This asserts on the `camera-list` top-level shape specifically -- eleven
+    cameras keyed by camera number, matching `camera-count: 11` -- so it is
+    structurally impossible for it to pass without `camera-list` recognition:
+    the pre-fix `_decode_cameras` (which only looked at `cameralist.camera` and
+    a bare `camera` key) would find nothing here and this would fail with zero
+    cameras decoded, not eleven.
+    """
+    payload = load_real_server_camera_list()
+    info = ServerInfo.from_api(payload)
+    assert info.version == "6.21"
+    assert info.camera_count == FIXTURE_ELEVEN_CAMERAS
+    assert set(info.cameras) == set(range(FIXTURE_ELEVEN_CAMERAS))
+    for number in range(FIXTURE_ELEVEN_CAMERAS):
+        camera = info.cameras[number]
+        assert camera.name == f"camera-{number + 1:02d}"
+        assert camera.connected is True
 
 
 @pytest.mark.parametrize(
@@ -217,9 +251,107 @@ def test_empty_camera_list_is_empty_dict() -> None:
     assert info.cameras == {}
 
 
-def test_absent_camera_list_is_empty_dict() -> None:
-    info = ServerInfo.from_api({"system": {"server": SERVER}})
+def test_unlocatable_camera_list_raises() -> None:
+    """No recognised camera-list key at all must never collapse into an empty inventory."""
+    with pytest.raises(SecuritySpyUnsupportedVersionError):
+        ServerInfo.from_api({"system": {"server": SERVER}})
+
+
+def test_top_level_camera_list_decodes_a_single_object() -> None:
+    """`camera-list` holding one object, not a list, still decodes (I/O matrix row 3)."""
+    info = ServerInfo.from_api(
+        {"system": {"server": SERVER, "camera-list": {"number": "5", "name": "Solo2"}}}
+    )
+    assert list(info.cameras) == [5]
+    assert info.cameras[5].name == "Solo2"
+
+
+def test_top_level_camera_list_decodes_a_list() -> None:
+    """A top-level `camera-list` array, with no `cameralist` wrapper at all."""
+    info = ServerInfo.from_api(
+        {
+            "system": {
+                "server": SERVER,
+                "camera-list": [{"number": "1", "name": "One"}, {"number": "2", "name": "Two"}],
+            }
+        }
+    )
+    assert set(info.cameras) == {1, 2}
+
+
+def test_bare_camera_key_decodes() -> None:
+    info = ServerInfo.from_api(
+        {"system": {"server": SERVER, "camera": [{"number": "9", "name": "Bare"}]}}
+    )
+    assert list(info.cameras) == [9]
+
+
+def test_genuinely_empty_server_is_success_not_error() -> None:
+    """A located list with zero entries and `camera-count: 0` stays a success."""
+    server = {"version": "6.20", "uuid": "abc", "camera-count": "0"}
+    info = ServerInfo.from_api({"system": {"server": server, "camera-list": []}})
     assert info.cameras == {}
+    assert info.camera_count == 0
+
+
+def test_located_but_nothing_decoded_against_positive_count_raises() -> None:
+    """The exact symptom of the original defect: a positive count, zero decoded."""
+    server = {"version": "6.20", "uuid": "abc", "camera-count": "2"}
+    with pytest.raises(SecuritySpyUnsupportedVersionError):
+        ServerInfo.from_api({"system": {"server": server, "camera-list": []}})
+
+
+def test_located_but_nothing_decoded_all_malformed_against_positive_count_raises() -> None:
+    """Same failure, but every entry is present and unusable rather than the list being empty."""
+    server = {"version": "6.20", "uuid": "abc", "camera-count": "2"}
+    with pytest.raises(SecuritySpyUnsupportedVersionError):
+        ServerInfo.from_api(
+            {
+                "system": {
+                    "server": server,
+                    "camera-list": [{"name": "no-number"}, {"name": "also-no-number"}],
+                }
+            }
+        )
+
+
+def test_partial_decode_stays_a_debug_log_not_an_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`camera-count: 11`, one malformed entry, ten decode -- partial data beats none."""
+    server = {"version": "6.20", "uuid": "abc", "camera-count": "2"}
+    entries = [{"number": "1", "name": "Good"}, {"name": "no-number"}]
+    with caplog.at_level("DEBUG"):
+        info = ServerInfo.from_api({"system": {"server": server, "camera-list": entries}})
+    assert list(info.cameras) == [1]
+    assert "Server reports 2 cameras but 1 decoded" in caplog.text
+
+
+def test_cameralist_wrapper_without_camera_key_is_located_not_raised() -> None:
+    """`cameralist: {}` (no inner `camera` key) is a legacy empty-inventory shape.
+
+    A `cameralist` wrapper takes priority whenever present at all -- it must not
+    fall through to top-level `camera-list`/`camera` lookups and it must not be
+    mistaken for an unlocatable inventory just because it has no `camera` key.
+    """
+    server = {"version": "6.20", "uuid": "abc", "camera-count": "0"}
+    info = ServerInfo.from_api({"system": {"server": server, "cameralist": {}}})
+    assert info.cameras == {}
+
+
+def test_camera_list_count_absent_falls_back_to_decoded_count() -> None:
+    """No `camera-count` at all, list located and decoded (I/O matrix's last row)."""
+    server = {"version": "6.20", "uuid": "abc"}
+    info = ServerInfo.from_api(
+        {
+            "system": {
+                "server": server,
+                "camera-list": [{"number": "1"}, {"number": "2"}, {"number": "3"}],
+            }
+        }
+    )
+    assert info.camera_count == 3  # noqa: PLR2004 - the fixture's own count
+    assert set(info.cameras) == {1, 2, 3}
 
 
 def test_non_numeric_camera_number_is_skipped_and_rest_decode() -> None:
