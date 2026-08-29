@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenAPI description of the SecuritySpy HTTP API** at `docs/securityspy-openapi.yaml`,
+  shipped in the sdist and schema-validated in CI. Each operation records whether it was
+  verified against a live server, read from the shipped web client, or taken from research
+  only. The parts OpenAPI cannot express — `++getpreview`'s double-`?` URL, the `formData`
+  body sentinel, id-keyed checkbox fields — are annotated rather than normalised.
+
 - **Capture media fetch.** `async_get_capture_preview()` returns a capture's JPEG thumbnail
   as raw bytes + content type; `async_get_capture_file()` returns a `CaptureFileStream` --
   an async-iterable that yields the file body in bounded chunks without ever buffering the

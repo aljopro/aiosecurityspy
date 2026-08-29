@@ -22,6 +22,23 @@ credential-safe diagnostics — as an ordinary PyPI package usable from any scri
   an HTTP session. The caller owns session lifetime and passes one in.
 - **Typed.** A `py.typed` marker ships with the wheel; the source passes `mypy --strict`.
 
+## The API this wraps
+
+SecuritySpy's HTTP API is undocumented by the vendor. This library's description of it lives
+in [`docs/securityspy-openapi.yaml`](docs/securityspy-openapi.yaml) — an OpenAPI 3.1 file
+that ships in the sdist and is schema-validated in CI.
+
+Read its header before generating anything from it. OpenAPI cannot express several things
+this server does, and the file marks them rather than normalising them away: `++getpreview`'s
+URL carries a literal `?` inside the path and a second one before `archive`; every settings
+POST body must begin with a bare `formData` token that is not a key=value pair; checkbox
+fields are keyed by HTML element id and their order matters. A generated client that ignores
+those annotations will be broken in ways the description looks like it endorses.
+
+Every operation carries an `x-verification` marker — `live-6.21`, `client-source` or
+`research-only` — so you can tell which parts were observed from a running server and which
+are still inherited belief. CI fails if an operation lacks one.
+
 ## Usage
 
 The caller creates and owns the `aiohttp` session. `aiosecurityspy` never creates,
