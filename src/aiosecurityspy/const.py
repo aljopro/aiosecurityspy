@@ -36,6 +36,9 @@ __all__ = [
     "BACKOFF_JITTER",
     "BACKOFF_MAX",
     "BACKOFF_MULTIPLIER",
+    "CAPTURE_FILE_BANDWIDTH_HIGH",
+    "CAPTURE_FILE_BANDWIDTH_LOW",
+    "CAPTURE_FILE_BANDWIDTH_STANDARD",
     "CAPTURE_FILTERS",
     "CAPTURE_FILTER_ALL",
     "CAPTURE_FILTER_ANIMAL",
@@ -60,6 +63,10 @@ __all__ = [
     "ENDPOINT_CAM_STATUS",
     "ENDPOINT_CAPTURE_LIST",
     "ENDPOINT_EVENT_STREAM",
+    "ENDPOINT_GET_FILE",
+    "ENDPOINT_GET_FILE_HIGH_BANDWIDTH",
+    "ENDPOINT_GET_FILE_LOW_BANDWIDTH",
+    "ENDPOINT_GET_PREVIEW",
     "ENDPOINT_PREFIX",
     "ENDPOINT_SETTINGS_CAMERAS",
     "ENDPOINT_SET_SCHEDULE",
@@ -158,6 +165,34 @@ ENDPOINT_SETTINGS_CAMERAS: Final = f"{ENDPOINT_PREFIX}settings-cameras"
 #: this library can make differently; it is noted so a deployment behind a
 #: logging proxy is a known exposure rather than a surprise.
 ENDPOINT_SET_SCHEDULE: Final = f"{ENDPOINT_PREFIX}ssSetSchedule"
+
+#: Capture preview endpoint (research §4.3). The ``getpreview`` path carries
+#: the ``archive`` flag inside the path string itself (``?archive=``), not as
+#: a separate query parameter -- the server's parser splits on the *last* ``?``.
+ENDPOINT_GET_PREVIEW: Final = f"{ENDPOINT_PREFIX}getpreview"
+
+#: Standard-bandwidth capture file endpoint (research §4b.1). Returns
+#: ``video/quicktime``.
+ENDPOINT_GET_FILE: Final = f"{ENDPOINT_PREFIX}getfile"
+
+#: High-bandwidth capture file endpoint (research §4b.1). Returns
+#: ``video/quicktime``.
+ENDPOINT_GET_FILE_HIGH_BANDWIDTH: Final = f"{ENDPOINT_PREFIX}getfilehb"
+
+#: Low-bandwidth capture file endpoint (research §4b.1). Returns
+#: ``video/mp4``.
+ENDPOINT_GET_FILE_LOW_BANDWIDTH: Final = f"{ENDPOINT_PREFIX}getfilelb"
+
+#: Client-side bandwidth selector for :func:`capture_file_bandwidth`. Maps to
+#: one of the three ``getfile*`` endpoint paths and their content types
+#: (research §4b.1). The value itself is not sent on the wire.
+CAPTURE_FILE_BANDWIDTH_STANDARD: Final = 0
+
+#: High-bandwidth variant (research §4b.1).
+CAPTURE_FILE_BANDWIDTH_HIGH: Final = 1
+
+#: Low-bandwidth variant (research §4b.1).
+CAPTURE_FILE_BANDWIDTH_LOW: Final = 2
 
 #: Literal first token of every ``settings-*`` POST body (research §8.0 rule 2).
 #: The server's own client builds the body as

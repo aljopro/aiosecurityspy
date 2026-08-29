@@ -31,8 +31,14 @@ from .const import (
     ARM_OVERRIDE_DISARMED_UNTIL_NEXT,
     ARM_OVERRIDE_NONE,
     ARM_OVERRIDE_UNCHANGED,
+    CAPTURE_FILE_BANDWIDTH_HIGH,
+    CAPTURE_FILE_BANDWIDTH_LOW,
+    CAPTURE_FILE_BANDWIDTH_STANDARD,
     CAPTURE_TYPE_MOVIE,
     CAPTURE_TYPE_NAMES,
+    ENDPOINT_GET_FILE,
+    ENDPOINT_GET_FILE_HIGH_BANDWIDTH,
+    ENDPOINT_GET_FILE_LOW_BANDWIDTH,
     MIN_SERVER_VERSION,
     MIN_SERVER_VERSION_TEXT,
     MODE_ACTIONS,
@@ -57,9 +63,12 @@ __all__ = [
     "CameraSettingsPatch",
     "CameraStatus",
     "Capture",
+    "CaptureFileBandwidth",
     "CaptureModes",
+    "CapturePreview",
     "ServerInfo",
     "arm_override",
+    "capture_file_bandwidth",
     "require_permission",
 ]
 
@@ -1048,6 +1057,81 @@ class Capture:
             f"object_classes={sorted(self.object_classes)}, "
             f"filename={self.filename!r})"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CapturePreview:
+    """A JPEG thumbnail returned by ``++getpreview`` (research §4.3).
+
+    ``data`` is the raw JPEG bytes, never text-decoded. The preview is
+    capped at 8 MiB by the transport layer (the same cap as JSON bodies),
+    and a real thumbnail is verified to be ~95 KB (research §4.3).
+    """
+
+    data: bytes
+    content_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureFileBandwidth:
+    """A bandwidth selector and its endpoint/content-type pair (research §4b.1).
+
+    Mirrors the ``ArmOverride`` validated-int-sentinel pattern: the raw
+    ``CAPTURE_FILE_BANDWIDTH_*`` constant is the wire-side identity, and this
+    record is the typed, validated lookup result the client uses.
+    """
+
+    value: int
+    endpoint: str
+    content_type: str
+
+
+#: Mapping of a ``CAPTURE_FILE_BANDWIDTH_*`` value to its endpoint constant and
+#: content type (research §4b.1).
+_BANDWIDTH_ENDPOINTS: Final[Mapping[int, CaptureFileBandwidth]] = MappingProxyType(
+    {
+        CAPTURE_FILE_BANDWIDTH_STANDARD: CaptureFileBandwidth(
+            value=CAPTURE_FILE_BANDWIDTH_STANDARD,
+            endpoint=ENDPOINT_GET_FILE,
+            content_type="video/quicktime",
+        ),
+        CAPTURE_FILE_BANDWIDTH_HIGH: CaptureFileBandwidth(
+            value=CAPTURE_FILE_BANDWIDTH_HIGH,
+            endpoint=ENDPOINT_GET_FILE_HIGH_BANDWIDTH,
+            content_type="video/quicktime",
+        ),
+        CAPTURE_FILE_BANDWIDTH_LOW: CaptureFileBandwidth(
+            value=CAPTURE_FILE_BANDWIDTH_LOW,
+            endpoint=ENDPOINT_GET_FILE_LOW_BANDWIDTH,
+            content_type="video/mp4",
+        ),
+    }
+)
+
+
+def capture_file_bandwidth(value: int) -> CaptureFileBandwidth:
+    """Look up the typed record for one bandwidth selector.
+
+    Args:
+        value: A ``CAPTURE_FILE_BANDWIDTH_*`` constant.
+
+    Raises:
+        ValueError: The value is not one of the three bandwidth constants.
+
+    Returns:
+        The typed bandwidth record, including its endpoint and content type.
+
+    """
+    if isinstance(cast("object", value), int) and not isinstance(value, bool):
+        record = _BANDWIDTH_ENDPOINTS.get(value)
+        if record is not None:
+            return record
+    message = (
+        "bandwidth must be one of the CAPTURE_FILE_BANDWIDTH_* values "
+        f"({CAPTURE_FILE_BANDWIDTH_STANDARD}, {CAPTURE_FILE_BANDWIDTH_HIGH}, "
+        f"{CAPTURE_FILE_BANDWIDTH_LOW})"
+    )
+    raise ValueError(message)
 
 
 # The curated ``++settings-cameras`` fields this library models, as

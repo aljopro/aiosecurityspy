@@ -474,6 +474,42 @@ decoded with its code, never independently: when the code folds to `None`, so do
 the two as one error surface. An entry with no usable camera number is skipped, the same precedent
 `Camera.from_api` follows, and the rest of the response still decodes.
 
+### Fetch capture previews and recordings
+
+`async_get_capture_preview()` returns the JPEG thumbnail for a capture as raw bytes, and
+`async_get_capture_file()` returns a streaming handle to the recorded file. Both derive
+their URL entirely from a `Capture` -- no caller-supplied path, folder date, or raw query
+parameter.
+
+```python
+# Get the thumbnail for a capture
+preview = await client.async_get_capture_preview(capture)
+# preview.data is the JPEG bytes, preview.content_type is "image/jpeg"
+
+# Stream the recorded file (never fully buffered)
+stream = await client.async_get_capture_file(capture)
+async for chunk in stream:
+    process(chunk)  # each chunk is a bounded slice of the file body
+```
+
+A few things the protocol makes non-obvious:
+
+- **The `archive` flag is derived from `Capture.archived` by default.** Both calls work
+  from the `Capture` alone. An explicit `archive=True` or `archive=False` on the file fetch
+  overrides it.
+- **`getpreview`'s `archive` flag travels inside the path string.** The URL is
+  `++getpreview?/{camera}/{folderDate}/{filename}?archive={0|1}` -- a literal second `?`,
+  not `&`. The library assembles this correctly so you never have to think about it.
+- **Bandwidth selects one of three endpoint paths.** `CaptureFileBandwidth.STANDARD` (the
+  default) uses `++getfile`, `HIGH` uses `++getfilehb`, and `LOW` uses `++getfilelb`. Each
+  has a distinct content type. Pass a `CAPTURE_FILE_BANDWIDTH_*` constant or a
+  `CaptureFileBandwidth` record.
+- **The file stream never buffers the full body.** Bytes are read and yielded in bounded
+  chunks, so even a multi-gigabyte recording stays at one chunk in memory at a time. The
+  stream timeout (no total deadline) is used so a large transfer is not cut short.
+- **Transport errors during streaming are wrapped.** A connection drop mid-iteration raises
+  `SecuritySpyConnectError`, not a bare `aiohttp.ClientError` or `TimeoutError`.
+
 ### Anonymize a diagnostics dump before you publish it
 
 The library keeps credentials out of its own models, logs, URLs and exceptions. What it

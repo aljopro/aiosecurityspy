@@ -19,19 +19,26 @@ import aiohttp
 from .connection import ConnectionSettings
 from .const import (
     ARM_OVERRIDE_UNCHANGED,
+    CAPTURE_FILE_BANDWIDTH_STANDARD,
     CAPTURE_FILTER_ALL,
     CAPTURE_FILTERS,
     DEFAULT_PORT,
     DEFAULT_TIMEOUT,
     ENDPOINT_CAM_STATUS,
     ENDPOINT_CAPTURE_LIST,
+    ENDPOINT_GET_PREVIEW,
     ENDPOINT_SET_SCHEDULE,
     ENDPOINT_SETTINGS_CAMERAS,
     ENDPOINT_SYSTEM_INFO,
     SETTINGS_FORM_SENTINEL,
     capture_filter_for_class,
 )
-from .exceptions import SecuritySpyAuthError, SecuritySpyCertificateError, SecuritySpyConnectError
+from .exceptions import (
+    SecuritySpyAuthError,
+    SecuritySpyCertificateError,
+    SecuritySpyConnectError,
+    SecuritySpyError,
+)
 from .models import (
     SETTINGS_PAGE_KEY_QUORUM,
     SETTINGS_PAGE_KEYS,
@@ -39,8 +46,11 @@ from .models import (
     CameraSettings,
     CameraStatus,
     Capture,
+    CaptureFileBandwidth,
+    CapturePreview,
     ServerInfo,
     arm_override,
+    capture_file_bandwidth,
 )
 from .stream import SecuritySpyEventStream
 
@@ -83,6 +93,61 @@ _CAPTURE_LIST_KEYS: Final = ("captures", "caplist", "files", "file")
 
 #: Content type every ``settings-*`` write carries (research §8.0).
 _FORM_CONTENT_TYPE: Final = "application/x-www-form-urlencoded"
+
+
+class CaptureFileStream:
+    """An async-iterable stream of bytes from a capture file fetch.
+
+    The response body is never fully buffered: bytes are read and yielded in
+    bounded chunks. Iteration wraps transport errors into
+    :class:`~aiosecurityspy.SecuritySpyConnectError` and releases the response
+    when complete or on error.
+
+    The stream is not a context manager: the consumer iterates over it and the
+    response is released when iteration finishes or when the stream is garbage
+    collected.
+    """
+
+    def __init__(
+        self,
+        response: Any,  # noqa: ANN401 - aiohttp.ClientResponse, typed loosely to avoid import
+        host: str,
+        port: int,
+        content_type: str,
+    ) -> None:
+        """Store the response and connection details."""
+        self._response = response
+        self._host = host
+        self._port = port
+        self.content_type = content_type
+        self._released = False
+
+    def _release(self) -> None:
+        """Release the response if not already released."""
+        if not self._released:
+            self._released = True
+            self._response.release()
+
+    def __aiter__(self) -> Any:  # noqa: ANN401 - async iterator of bytes
+        """Return the async iterator."""
+        return self._aiter()
+
+    async def _aiter(self) -> Any:  # noqa: ANN401 - async generator yielding bytes
+        """Yield bounded chunks of the response body, catching transport errors."""
+        try:
+            while True:
+                chunk = await self._response.content.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        except (aiohttp.ClientError, TimeoutError, OSError) as err:
+            raise SecuritySpyConnectError(
+                self._host,
+                self._port,
+                f"stream failure ({type(err).__name__})",
+            ) from err
+        finally:
+            self._release()
 
 
 def _tls_reason(err: BaseException) -> str:
@@ -599,6 +664,219 @@ class SecuritySpyClient:
             if capture is not None:
                 captures.append(capture)
         return _ordered_newest_first(captures)
+
+    async def async_get_capture_preview(self, capture: Capture) -> CapturePreview:
+        """Fetch the JPEG thumbnail for a capture from ``++getpreview``.
+
+        The URL is derived entirely from the ``Capture``: no caller-supplied
+        path, folder date, or raw query parameter. The ``archive`` flag is
+        taken from ``capture.archived``.
+
+        Args:
+            capture: The capture whose preview to fetch.
+
+        Raises:
+            SecuritySpyConnectError: The server was unreachable, timed out,
+                answered with an unexpected status, or sent a body exceeding
+                the 8 MiB preview cap.
+            SecuritySpyAuthError: The credentials were rejected (401/403).
+
+        Returns:
+            The JPEG thumbnail bytes and content type.
+
+        """
+        if not capture.path:
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "capture has no addressable file path",
+            )
+        archive = 1 if capture.archived else 0
+        # The getpreview URL uses a literal second '?' (research §4.3): the
+        # archive flag is part of the path string, not a separate query param.
+        # The filename is percent-encoded per the existing precedent in client.py.
+        encoded_path = "/".join(quote(part, safe="") for part in capture.path.split("/", 2))
+        path = f"{ENDPOINT_GET_PREVIEW}?/{encoded_path}?archive={archive}"
+        body, content_type = await self._request_bytes(path)
+        return CapturePreview(data=body, content_type=content_type)
+
+    async def async_get_capture_file(
+        self,
+        capture: Capture,
+        *,
+        bandwidth: CaptureFileBandwidth | int = CAPTURE_FILE_BANDWIDTH_STANDARD,
+        archive: bool | None = None,
+    ) -> CaptureFileStream:
+        """Fetch the recorded file for a capture from ``++getfile``.
+
+        The path is derived entirely from the ``Capture``: no caller-supplied
+        folder date or raw query parameter. The ``archive`` flag defaults to
+        ``capture.archived`` but can be overridden.
+
+        The returned stream is an async iterable that yields the body in bounded
+        chunks without ever buffering the full file. Its ``content_type``
+        indicates the media type (e.g. ``"video/quicktime"``).
+
+        Args:
+            capture: The capture whose file to fetch.
+            bandwidth: The bandwidth variant. Accepts a
+                ``CAPTURE_FILE_BANDWIDTH_*`` constant or a
+                :class:`~aiosecurityspy.CaptureFileBandwidth` record. Defaults
+                to standard bandwidth.
+            archive: Override the ``archive`` flag. ``None`` (the default) uses
+                ``capture.archived``; an explicit ``True`` or ``False``
+                overrides it.
+
+        Raises:
+            ValueError: ``bandwidth`` is not a valid bandwidth selector.
+                Raised before any request is issued.
+            SecuritySpyConnectError: The server was unreachable, timed out,
+                answered with an unexpected status, or the connection dropped
+                mid-stream.
+            SecuritySpyAuthError: The credentials were rejected (401/403).
+
+        Returns:
+            An async-iterable stream whose ``content_type`` is the media type
+            and whose iteration yields bounded chunks of the file body.
+
+        """
+        if not capture.path:
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "capture has no addressable file path",
+            )
+        bw = capture_file_bandwidth(bandwidth) if isinstance(bandwidth, int) else bandwidth
+        archive_flag = capture.archived if archive is None else archive
+        params = {"archive": "1" if archive_flag else "0"}
+        return await self._stream_bytes(bw.endpoint, params, path_suffix=capture.path)
+
+    async def _request_bytes(
+        self, path: str, params: Mapping[str, str] | None = None
+    ) -> tuple[bytes, str]:
+        """Issue one authenticated GET and return the raw body bytes + content type.
+
+        Used by ``async_get_capture_preview`` for a buffered read with the
+        existing 8 MiB cap. No text decode.
+        """
+        url = self._connection.build_url(path)
+        _LOGGER.debug(
+            "Requesting %s from %s:%s", path, self._connection.host, self._connection.port
+        )
+        shared: dict[str, Any] = {
+            "params": dict(params or {}),
+            "ssl": self._connection.verify_ssl,
+            "timeout": self._connection.request_timeout(),
+            "allow_redirects": False,
+        }
+        try:
+            async with self._connection.session.get(
+                url, headers={"Authorization": self._connection.auth_header}, **shared
+            ) as response:
+                status = response.status
+                if status in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
+                    raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
+                if _HTTP_REDIRECT_MIN <= status <= _HTTP_REDIRECT_MAX:
+                    raise SecuritySpyConnectError(
+                        self._connection.host,
+                        self._connection.port,
+                        f"server redirected (HTTP {status}); if the server uses TLS, "
+                        "construct the client with use_https=True",
+                    )
+                if not _HTTP_OK_MIN <= status <= _HTTP_OK_MAX:
+                    raise SecuritySpyConnectError(
+                        self._connection.host,
+                        self._connection.port,
+                        f"unexpected HTTP status {status}",
+                    )
+                content_type = response.content_type or "application/octet-stream"
+                chunks: list[bytes] = []
+                chunk = b""
+                total = 0
+                result = b""
+                try:
+                    while chunk := await response.content.read(_MAX_BODY_BYTES + 1 - total):
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        if total > _MAX_BODY_BYTES:
+                            raise SecuritySpyConnectError(
+                                self._connection.host,
+                                self._connection.port,
+                                "server response body was too large",
+                            )
+                    result = b"".join(chunks)
+                finally:
+                    chunks.clear()
+                    chunk = b""
+                return result, content_type
+        except (aiohttp.ClientError, TimeoutError, OSError) as err:
+            if isinstance(err, SecuritySpyError):
+                raise
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"transport failure ({type(err).__name__})",
+            ) from err
+
+    async def _stream_bytes(
+        self,
+        endpoint: str,
+        params: Mapping[str, str] | None = None,
+        *,
+        path_suffix: str,
+    ) -> CaptureFileStream:
+        """Issue one authenticated GET and return an async-iterable stream.
+
+        The response is never fully buffered: bytes are read and yielded in
+        bounded chunks. The stream timeout (no total deadline) is used so a
+        large file transfer is not cut short.
+        """
+        path = f"{endpoint}/{path_suffix}"
+        url = self._connection.build_url(path)
+        _LOGGER.debug(
+            "Requesting %s from %s:%s", path, self._connection.host, self._connection.port
+        )
+        shared: dict[str, Any] = {
+            "params": dict(params or {}),
+            "ssl": self._connection.verify_ssl,
+            "timeout": self._connection.stream_timeout(),
+            "allow_redirects": False,
+        }
+        try:
+            response = await self._connection.session.get(
+                url, headers={"Authorization": self._connection.auth_header}, **shared
+            )
+        except (aiohttp.ClientError, TimeoutError, OSError) as err:
+            if isinstance(err, SecuritySpyError):
+                raise
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"transport failure ({type(err).__name__})",
+            ) from err
+        status = response.status
+        if status in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
+            response.release()
+            raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
+        if _HTTP_REDIRECT_MIN <= status <= _HTTP_REDIRECT_MAX:
+            response.release()
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"server redirected (HTTP {status}); if the server uses TLS, "
+                "construct the client with use_https=True",
+            )
+        if not _HTTP_OK_MIN <= status <= _HTTP_OK_MAX:
+            response.release()
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"unexpected HTTP status {status}",
+            )
+        content_type = response.content_type or "application/octet-stream"
+        return CaptureFileStream(
+            response, self._connection.host, self._connection.port, content_type
+        )
 
     async def async_get_camera_settings(self, camera_number: int) -> CameraSettings:
         """Read one camera's settings page (research §8.0).

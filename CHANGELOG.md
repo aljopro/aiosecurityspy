@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Capture media fetch.** `async_get_capture_preview()` returns a capture's JPEG thumbnail
+  as raw bytes + content type; `async_get_capture_file()` returns a `CaptureFileStream` --
+  an async-iterable that yields the file body in bounded chunks without ever buffering the
+  full recording. Both derive their URL entirely from a `Capture` (no caller-supplied path,
+  folder date, or raw query parameter). The `archive` flag defaults to
+  `capture.archived`; an explicit override is available on the file fetch. Bandwidth
+  selection (`CAPTURE_FILE_BANDWIDTH_STANDARD`, `_HIGH`, `_LOW`) picks one of three
+  distinct endpoint paths (`++getfile`, `++getfilehb`, `++getfilelb`), each with its own
+  content type. Transport errors during streaming (connection drop, timeout, OS error) are
+  wrapped into `SecuritySpyConnectError`.
+- `CapturePreview` frozen dataclass (`data: bytes`, `content_type: str`) for the preview
+  return value.
+- `CaptureFileBandwidth` frozen dataclass with a `capture_file_bandwidth()` lookup
+  function, mirroring the `ArmOverride`/`arm_override()` pattern.
+- `ENDPOINT_GET_PREVIEW`, `ENDPOINT_GET_FILE`, `ENDPOINT_GET_FILE_HIGH_BANDWIDTH`,
+  `ENDPOINT_GET_FILE_LOW_BANDWIDTH` protocol constants for the media endpoints.
+- `CAPTURE_FILE_BANDWIDTH_STANDARD`, `CAPTURE_FILE_BANDWIDTH_HIGH`,
+  `CAPTURE_FILE_BANDWIDTH_LOW` client-side bandwidth selectors.
 - **Server and camera health decoding.** `ServerInfo` gains `cpu_usage`, `memory_pressure`,
   `cert_expiry_days` and `update_version`; `Camera` gains `current_fps`, `data_rate`,
   `last_error` and `last_error_description` — all decoded from `++systemInfo` (research

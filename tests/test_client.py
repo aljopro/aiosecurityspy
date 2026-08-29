@@ -6,7 +6,7 @@ import contextlib
 import json
 import ssl
 import traceback
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
 from zoneinfo import ZoneInfo
@@ -15,6 +15,9 @@ import aiohttp
 import pytest
 
 from aiosecurityspy import (
+    CAPTURE_FILE_BANDWIDTH_HIGH,
+    CAPTURE_FILE_BANDWIDTH_LOW,
+    CAPTURE_FILE_BANDWIDTH_STANDARD,
     CAPTURE_FILTER_ALL,
     CAPTURE_FILTER_ANIMAL,
     CAPTURE_FILTER_CONTINUOUS,
@@ -30,6 +33,8 @@ from aiosecurityspy import (
     SecuritySpyUnsupportedVersionError,
 )
 from aiosecurityspy import client as client_module
+from aiosecurityspy.client import CaptureFileStream
+from aiosecurityspy.models import Capture, capture_file_bandwidth
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -133,6 +138,14 @@ class RaisingContext:
         tb: TracebackType | None,
     ) -> None:
         """Leave the context without suppressing anything."""
+
+    def __await__(self) -> Any:  # noqa: ANN401
+        """Support ``await session.get(...)`` in addition to ``async with``."""
+
+        async def _raise() -> None:
+            raise self._error
+
+        return _raise().__await__()
 
 
 class FakeSession:
@@ -1206,3 +1219,651 @@ async def test_camera_status_auth_failure_maps_to_auth_error() -> None:
     session = FakeSession(401, "")
     with pytest.raises(SecuritySpyAuthError):
         await make_client(session).async_get_camera_status()
+
+
+# --- capture media fetch: preview and file (spec 1.9) ------------------------
+
+PREVIEW_URL = f"http://{HOST}:{PORT}/++getpreview"
+FILE_URL = f"http://{HOST}:{PORT}/++getfile"
+FILE_HB_URL = f"http://{HOST}:{PORT}/++getfilehb"
+FILE_LB_URL = f"http://{HOST}:{PORT}/++getfilelb"
+JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 100  # minimal JPEG header + padding
+JPEG_CONTENT_TYPE = "image/jpeg"
+MOVIE_BYTES = b"\x00\x00\x00\x1c" + b"\x00" * 200  # minimal ftyp-like header + padding
+MOVIE_CONTENT_TYPE = "video/quicktime"
+MP4_CONTENT_TYPE = "video/mp4"
+
+
+def make_capture(
+    *,
+    camera: int = 4,
+    folder_date: str = "2026-08-09",
+    filename: str = "M+2026-08-09_17-35-19_C.jpg",
+    archived: bool = False,
+) -> Capture:
+    """Build a Capture with a usable path for media fetch tests."""
+    return Capture(
+        camera=camera,
+        start=datetime(2026, 8, 9, 17, 35, 19, tzinfo=UTC),
+        duration=timedelta(seconds=10),
+        capture_type=1,
+        object_classes=frozenset(),
+        filename=filename,
+        folder_date=folder_date,
+        file_size=1024,
+        tag_id=0,
+        archived=archived,
+        unread=False,
+        path=f"{camera}/{folder_date}/{filename}",
+    )
+
+
+class FakeStreamContent:
+    """Minimal stand-in for response.content that yields chunks for streaming."""
+
+    CHUNK = 64
+
+    def __init__(self, raw: bytes) -> None:
+        """Store the canned bytes."""
+        self._raw = raw
+        self._pos = 0
+
+    async def read(self, limit: int = -1) -> bytes:
+        """Return at most `limit` bytes from the current position, then advance."""
+        take = len(self._raw) - self._pos if limit < 0 else min(limit, self.CHUNK)
+        chunk = self._raw[self._pos : self._pos + take]
+        self._pos += len(chunk)
+        return chunk
+
+
+class FakeStreamResponse:
+    """Minimal stand-in for a streaming response."""
+
+    def __init__(self, status: int, body: bytes, content_type: str) -> None:
+        """Store the canned status, body, and content type."""
+        self.status = status
+        self.content_type = content_type
+        self.content = FakeStreamContent(body)
+        self._released = False
+
+    def release(self) -> None:
+        """Mark the response as released."""
+        self._released = True
+
+    @property
+    def content_length(self) -> int | None:
+        """The declared body length, as aiohttp reports it."""
+        return None
+
+    def get_encoding(self) -> str:
+        """Return the charset the response declares."""
+        return "utf-8"
+
+    async def __aenter__(self) -> Self:
+        """Enter the response context."""
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        """Leave the response context without suppressing anything."""
+
+
+class AwaitableFakeStreamResponse:
+    """Wraps a FakeStreamResponse so ``await session.get(...)`` works."""
+
+    def __init__(self, response: FakeStreamResponse) -> None:
+        """Store the response to yield."""
+        self._response = response
+
+    def __await__(self) -> Any:  # noqa: ANN401
+        """Support ``await session.get(...)``."""
+
+        async def _return() -> FakeStreamResponse:
+            return self._response
+
+        return _return().__await__()
+
+    async def __aenter__(self) -> FakeStreamResponse:
+        """Enter the response context."""
+        return self._response
+
+    async def __aexit__(self, *args: object) -> None:
+        """Leave the response context without suppressing anything."""
+
+
+class FakeStreamSession:
+    """A session that returns streaming responses."""
+
+    def __init__(
+        self,
+        status: int = 200,
+        body: bytes = b"",
+        content_type: str = "application/octet-stream",
+        error: BaseException | None = None,
+    ) -> None:
+        """Configure the canned response or the transport error to raise."""
+        self._status = status
+        self._body = body
+        self._content_type = content_type
+        self._error = error
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.methods: list[str] = []
+
+    def get(self, url: str, **kwargs: Any) -> Any:  # noqa: ANN401
+        """Record the call and return an awaitable or error context."""
+        self.methods.append("GET")
+        self.calls.append((url, kwargs))
+        if self._error is not None:
+            return RaisingContext(self._error)
+        return AwaitableFakeStreamResponse(
+            FakeStreamResponse(self._status, self._body, self._content_type)
+        )
+
+    def post(self, url: str, **kwargs: Any) -> Any:  # noqa: ANN401
+        """Record a POST and return an awaitable or error context."""
+        return self.get(url, **kwargs)
+
+    async def close(self) -> None:  # pragma: no cover
+        """Mark the session closed; the library must never reach this."""
+
+
+# --- async_get_capture_preview tests ---
+
+
+@pytest.mark.asyncio
+async def test_preview_url_has_double_question_mark() -> None:
+    """The getpreview URL uses a literal second '?' for the archive flag."""
+    session = FakeStreamSession(200, JPEG_BYTES, JPEG_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    capture = make_capture()
+    preview = await client.async_get_capture_preview(capture)
+    assert preview.data == JPEG_BYTES
+    assert preview.content_type == JPEG_CONTENT_TYPE
+    url, kwargs = session.calls[0]
+    # The URL should contain the double '?' pattern: ++getpreview?/4/...?archive=0
+    assert "++getpreview?/" in url
+    assert "?archive=0" in url
+    assert kwargs["params"] == {}
+
+
+@pytest.mark.asyncio
+async def test_preview_archived_true_sends_archive_1() -> None:
+    session = FakeStreamSession(200, JPEG_BYTES, JPEG_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    capture = make_capture(archived=True)
+    preview = await client.async_get_capture_preview(capture)
+    assert preview.data == JPEG_BYTES
+    url, _ = session.calls[0]
+    assert "?archive=1" in url
+
+
+@pytest.mark.asyncio
+async def test_preview_encodes_filename() -> None:
+    session = FakeStreamSession(200, JPEG_BYTES, JPEG_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    capture = make_capture(filename="M+2026-08-09 17-35-19 C.jpg")
+    await client.async_get_capture_preview(capture)
+    url, _ = session.calls[0]
+    assert "%2B" in url  # '+' is percent-encoded
+    assert "%20" in url  # space is percent-encoded
+
+
+@pytest.mark.asyncio
+async def test_preview_auth_failure() -> None:
+    session = FakeStreamSession(401, b"")
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    with pytest.raises(SecuritySpyAuthError):
+        await client.async_get_capture_preview(make_capture())
+
+
+@pytest.mark.asyncio
+async def test_preview_unexpected_status() -> None:
+    session = FakeStreamSession(404, b"")
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    with pytest.raises(SecuritySpyConnectError, match="404"):
+        await client.async_get_capture_preview(make_capture())
+
+
+@pytest.mark.asyncio
+async def test_preview_empty_path_raises() -> None:
+    session = FakeStreamSession(200, JPEG_BYTES, JPEG_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    # A capture with empty path (e.g. bad filename)
+    capture = Capture(
+        camera=4,
+        start=None,
+        duration=None,
+        capture_type=1,
+        object_classes=frozenset(),
+        filename="",
+        folder_date="2026-08-09",
+        file_size=None,
+        tag_id=None,
+        archived=False,
+        unread=False,
+        path="",
+    )
+    with pytest.raises(SecuritySpyConnectError, match="no addressable file path"):
+        await client.async_get_capture_preview(capture)
+
+
+@pytest.mark.asyncio
+async def test_preview_transport_error_wrapped() -> None:
+    session = FakeStreamSession(error=aiohttp.ClientConnectionError("boom"))
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    with pytest.raises(SecuritySpyConnectError, match="transport failure"):
+        await client.async_get_capture_preview(make_capture())
+
+
+# --- async_get_capture_file tests ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("bandwidth", "expected_url"),
+    [
+        (CAPTURE_FILE_BANDWIDTH_STANDARD, FILE_URL),
+        (CAPTURE_FILE_BANDWIDTH_HIGH, FILE_HB_URL),
+        (CAPTURE_FILE_BANDWIDTH_LOW, FILE_LB_URL),
+    ],
+    ids=["standard", "high", "low"],
+)
+async def test_file_bandwidth_selects_correct_endpoint(bandwidth: int, expected_url: str) -> None:
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    capture = make_capture()
+    stream = await client.async_get_capture_file(capture, bandwidth=bandwidth)
+    assert stream.content_type == MOVIE_CONTENT_TYPE
+    url, _ = session.calls[0]
+    assert url.startswith(expected_url)
+    assert "/4/2026-08-09/" in url
+
+
+@pytest.mark.asyncio
+async def test_file_standard_bandwidth_content_type() -> None:
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    stream = await client.async_get_capture_file(make_capture())
+    assert stream.content_type == "video/quicktime"
+
+
+@pytest.mark.asyncio
+async def test_file_low_bandwidth_content_type() -> None:
+    session = FakeStreamSession(200, MOVIE_BYTES, MP4_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    stream = await client.async_get_capture_file(
+        make_capture(), bandwidth=CAPTURE_FILE_BANDWIDTH_LOW
+    )
+    assert stream.content_type == "video/mp4"
+
+
+@pytest.mark.asyncio
+async def test_file_archive_default_from_capture() -> None:
+    """archive=None uses capture.archived."""
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    capture = make_capture(archived=True)
+    await client.async_get_capture_file(capture)
+    _, kwargs = session.calls[0]
+    assert kwargs["params"]["archive"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_file_archive_override_true() -> None:
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    capture = make_capture(archived=False)
+    await client.async_get_capture_file(capture, archive=True)
+    _, kwargs = session.calls[0]
+    assert kwargs["params"]["archive"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_file_archive_override_false() -> None:
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    capture = make_capture(archived=True)
+    await client.async_get_capture_file(capture, archive=False)
+    _, kwargs = session.calls[0]
+    assert kwargs["params"]["archive"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_file_auth_failure() -> None:
+    session = FakeStreamSession(401, b"")
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    with pytest.raises(SecuritySpyAuthError):
+        await client.async_get_capture_file(make_capture())
+
+
+@pytest.mark.asyncio
+async def test_file_unexpected_status() -> None:
+    session = FakeStreamSession(404, b"")
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    with pytest.raises(SecuritySpyConnectError, match="404"):
+        await client.async_get_capture_file(make_capture())
+
+
+@pytest.mark.asyncio
+async def test_file_empty_path_raises() -> None:
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    capture = Capture(
+        camera=4,
+        start=None,
+        duration=None,
+        capture_type=1,
+        object_classes=frozenset(),
+        filename="",
+        folder_date="2026-08-09",
+        file_size=None,
+        tag_id=None,
+        archived=False,
+        unread=False,
+        path="",
+    )
+    with pytest.raises(SecuritySpyConnectError, match="no addressable file path"):
+        await client.async_get_capture_file(capture)
+
+
+@pytest.mark.asyncio
+async def test_file_invalid_bandwidth_raises_before_request() -> None:
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    with pytest.raises(ValueError, match="CAPTURE_FILE_BANDWIDTH"):
+        await client.async_get_capture_file(make_capture(), bandwidth=99)
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_file_transport_error_wrapped() -> None:
+    session = FakeStreamSession(error=aiohttp.ClientConnectionError("boom"))
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    with pytest.raises(SecuritySpyConnectError, match="transport failure"):
+        await client.async_get_capture_file(make_capture())
+
+
+@pytest.mark.asyncio
+async def test_file_accepts_typed_bandwidth_record() -> None:
+    """A CaptureFileBandwidth record works as well as a raw constant."""
+    session = FakeStreamSession(200, MOVIE_BYTES, MP4_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    bw = capture_file_bandwidth(CAPTURE_FILE_BANDWIDTH_LOW)
+    stream = await client.async_get_capture_file(make_capture(), bandwidth=bw)
+    assert stream.content_type == "video/mp4"
+    url, _ = session.calls[0]
+    assert url.startswith(FILE_LB_URL)
+
+
+# --- CaptureFileStream iteration tests ---
+
+
+@pytest.mark.asyncio
+async def test_stream_yields_all_bytes() -> None:
+    """The stream yields all bytes from the response."""
+    body = b"hello world"
+    response = FakeStreamResponse(200, body, "text/plain")
+    stream = CaptureFileStream(response, HOST, PORT, "text/plain")
+    chunks = [chunk async for chunk in stream]
+    assert b"".join(chunks) == body
+
+
+@pytest.mark.asyncio
+async def test_stream_content_type() -> None:
+    """The stream exposes the response content type."""
+    response = FakeStreamResponse(200, b"data", "video/quicktime")
+    stream = CaptureFileStream(response, HOST, PORT, "video/quicktime")
+    assert stream.content_type == "video/quicktime"
+
+
+@pytest.mark.asyncio
+async def test_stream_releases_response_on_completion() -> None:
+    """The stream releases the response when iteration completes."""
+    response = FakeStreamResponse(200, b"data", "text/plain")
+    stream = CaptureFileStream(response, HOST, PORT, "text/plain")
+    async for _ in stream:
+        pass
+    assert response._released is True  # noqa: SLF001 - test internal state
+
+
+@pytest.mark.asyncio
+async def test_stream_wraps_transport_error() -> None:
+    """Transport errors during iteration are wrapped in SecuritySpyConnectError."""
+
+    class RaisingContent:
+        """Content that raises on read."""
+
+        async def read(self, limit: int = -1) -> bytes:  # noqa: ARG002
+            error = aiohttp.ClientConnectionError("connection lost")
+            raise error
+
+    response = FakeStreamResponse(200, b"", "text/plain")
+    response.content = RaisingContent()  # type: ignore[assignment]
+    stream = CaptureFileStream(response, HOST, PORT, "text/plain")
+    with pytest.raises(SecuritySpyConnectError, match="stream failure"):
+        async for _ in stream:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_stream_wraps_timeout_error() -> None:
+    """Timeout errors during iteration are wrapped in SecuritySpyConnectError."""
+
+    class TimeoutContent:
+        """Content that raises TimeoutError on read."""
+
+        async def read(self, limit: int = -1) -> bytes:  # noqa: ARG002
+            error = TimeoutError("read timed out")
+            raise error
+
+    response = FakeStreamResponse(200, b"", "text/plain")
+    response.content = TimeoutContent()  # type: ignore[assignment]
+    stream = CaptureFileStream(response, HOST, PORT, "text/plain")
+    with pytest.raises(SecuritySpyConnectError, match="stream failure"):
+        async for _ in stream:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_stream_wraps_os_error() -> None:
+    """OS errors during iteration are wrapped in SecuritySpyConnectError."""
+
+    class OSErrorContent:
+        """Content that raises OSError on read."""
+
+        async def read(self, limit: int = -1) -> bytes:  # noqa: ARG002
+            error = OSError("connection reset")
+            raise error
+
+    response = FakeStreamResponse(200, b"", "text/plain")
+    response.content = OSErrorContent()  # type: ignore[assignment]
+    stream = CaptureFileStream(response, HOST, PORT, "text/plain")
+    with pytest.raises(SecuritySpyConnectError, match="stream failure"):
+        async for _ in stream:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_stream_releases_on_error() -> None:
+    """The stream releases the response even when iteration fails."""
+
+    class RaisingContent:
+        """Content that raises on read."""
+
+        async def read(self, limit: int = -1) -> bytes:  # noqa: ARG002
+            error = aiohttp.ClientConnectionError("connection lost")
+            raise error
+
+    response = FakeStreamResponse(200, b"", "text/plain")
+    response.content = RaisingContent()  # type: ignore[assignment]
+    stream = CaptureFileStream(response, HOST, PORT, "text/plain")
+    with contextlib.suppress(SecuritySpyConnectError):
+        async for _ in stream:
+            pass
+    assert response._released is True  # noqa: SLF001 - test internal state
+
+
+@pytest.mark.asyncio
+async def test_stream_yields_chunked_data() -> None:
+    """The stream fragments reads at 64 bytes, exercising the accumulation loop."""
+    body = b"x" * 200  # spans 4 chunks at 64 bytes each
+    response = FakeStreamResponse(200, body, "application/octet-stream")
+    stream = CaptureFileStream(response, HOST, PORT, "application/octet-stream")
+    chunks = [chunk async for chunk in stream]
+    assert b"".join(chunks) == body
+    assert len(chunks) >= 3  # at least 3 chunks at 64 bytes each  # noqa: PLR2004
+
+
+# --- credential containment for media fetch ---
+
+
+@pytest.mark.asyncio
+async def test_media_fetch_credentials_never_in_url() -> None:
+    session = FakeStreamSession(200, JPEG_BYTES, JPEG_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    await client.async_get_capture_preview(make_capture())
+    url, kwargs = session.calls[0]
+    assert USERNAME not in url
+    assert PASSWORD not in url
+    assert kwargs["headers"]["Authorization"] == aiohttp.encode_basic_auth(USERNAME, PASSWORD)
+
+
+@pytest.mark.asyncio
+async def test_media_fetch_auth_error_never_leaks_credentials() -> None:
+    session = FakeStreamSession(401, b"")
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    with pytest.raises(SecuritySpyError) as err:
+        await client.async_get_capture_preview(make_capture())
+    surfaces = [
+        str(err.value),
+        repr(err.value),
+        "".join(traceback.format_exception(err.value)),
+    ]
+    for surface in surfaces:
+        assert USERNAME not in surface
+        assert PASSWORD not in surface
