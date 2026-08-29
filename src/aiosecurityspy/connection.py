@@ -225,6 +225,22 @@ class ConnectionSettings:
         """
         return aiohttp.ClientTimeout(total=None, connect=self.timeout, sock_connect=self.timeout)
 
+    def media_timeout(self) -> aiohttp.ClientTimeout:
+        """Return the timeout used for a finite media transfer.
+
+        ``total`` is ``None`` because a recording can be large and a total
+        deadline would abort a healthy slow download. ``sock_read`` is bounded
+        because, unlike the event stream, a file transfer has a definite end:
+        a server that sends headers and then stalls mid-body would otherwise
+        block the reader forever while holding the connection.
+        """
+        return aiohttp.ClientTimeout(
+            total=None,
+            connect=self.timeout,
+            sock_connect=self.timeout,
+            sock_read=self.timeout,
+        )
+
     def __repr__(self) -> str:
         """Return a representation that cannot leak credentials."""
         return (

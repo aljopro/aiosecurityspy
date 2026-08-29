@@ -16,13 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   folder date, or raw query parameter). The `archive` flag defaults to
   `capture.archived`; an explicit override is available on the file fetch. Bandwidth
   selection (`CAPTURE_FILE_BANDWIDTH_STANDARD`, `_HIGH`, `_LOW`) picks one of three
-  distinct endpoint paths (`++getfile`, `++getfilehb`, `++getfilelb`), each with its own
-  content type. Transport errors during streaming (connection drop, timeout, OS error) are
-  wrapped into `SecuritySpyConnectError`.
+  distinct endpoint paths (`++getfile`, `++getfilehb`, `++getfilelb`);
+  `CaptureFileStream.content_type` reports the content type the server actually sent.
+  The stream supports `async with` and `aclose()` so a consumer that does not drain it can
+  still release the connection. Transport errors during streaming (connection drop,
+  timeout, OS error) are wrapped into `SecuritySpyConnectError`.
 - `CapturePreview` frozen dataclass (`data: bytes`, `content_type: str`) for the preview
   return value.
 - `CaptureFileBandwidth` frozen dataclass with a `capture_file_bandwidth()` lookup
   function, mirroring the `ArmOverride`/`arm_override()` pattern.
+- `CaptureFileStream` exported from the package root, so the return type of
+  `async_get_capture_file()` is nameable from the public surface.
 - `ENDPOINT_GET_PREVIEW`, `ENDPOINT_GET_FILE`, `ENDPOINT_GET_FILE_HIGH_BANDWIDTH`,
   `ENDPOINT_GET_FILE_LOW_BANDWIDTH` protocol constants for the media endpoints.
 - `CAPTURE_FILE_BANDWIDTH_STANDARD`, `CAPTURE_FILE_BANDWIDTH_HIGH`,

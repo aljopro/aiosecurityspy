@@ -9,7 +9,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _metadata_version
 
-from .client import SecuritySpyClient
+from .client import CaptureFileStream, SecuritySpyClient
 from .const import (
     ARM_OVERRIDE_ARMED_1_HOUR,
     ARM_OVERRIDE_ARMED_2_HOURS,
@@ -270,6 +270,7 @@ __all__ = [
     "CameraStatus",
     "Capture",
     "CaptureFileBandwidth",
+    "CaptureFileStream",
     "CaptureModes",
     "CapturePreview",
     "ClassificationPayload",

@@ -487,9 +487,9 @@ preview = await client.async_get_capture_preview(capture)
 # preview.data is the JPEG bytes, preview.content_type is "image/jpeg"
 
 # Stream the recorded file (never fully buffered)
-stream = await client.async_get_capture_file(capture)
-async for chunk in stream:
-    process(chunk)  # each chunk is a bounded slice of the file body
+async with await client.async_get_capture_file(capture) as stream:
+    async for chunk in stream:
+        process(chunk)  # each chunk is a bounded slice of the file body
 ```
 
 A few things the protocol makes non-obvious:
@@ -501,12 +501,21 @@ A few things the protocol makes non-obvious:
   `++getpreview?/{camera}/{folderDate}/{filename}?archive={0|1}` -- a literal second `?`,
   not `&`. The library assembles this correctly so you never have to think about it.
 - **Bandwidth selects one of three endpoint paths.** `CaptureFileBandwidth.STANDARD` (the
-  default) uses `++getfile`, `HIGH` uses `++getfilehb`, and `LOW` uses `++getfilelb`. Each
-  has a distinct content type. Pass a `CAPTURE_FILE_BANDWIDTH_*` constant or a
-  `CaptureFileBandwidth` record.
+  default) uses `++getfile`, `HIGH` uses `++getfilehb`, and `LOW` uses `++getfilelb`. Pass
+  a `CAPTURE_FILE_BANDWIDTH_*` constant or a `CaptureFileBandwidth` record.
+- **`stream.content_type` is what the server sent.** The variants usually differ
+  (`++getfilelb` typically serves `video/mp4`, the others QuickTime), but the library
+  reports the response's own content type rather than asserting one from the bandwidth you
+  asked for, so it cannot drift from what is actually on the wire.
 - **The file stream never buffers the full body.** Bytes are read and yielded in bounded
-  chunks, so even a multi-gigabyte recording stays at one chunk in memory at a time. The
-  stream timeout (no total deadline) is used so a large transfer is not cut short.
+  chunks, so even a multi-gigabyte recording stays at one chunk in memory at a time. There
+  is no total deadline, so a large transfer is not cut short, but the per-read socket
+  timeout is bounded: a server that sends headers and then stalls fails instead of hanging.
+- **Release the stream if you do not drain it.** Iterating to the end releases the response
+  for you. If you stop early, or never iterate at all, use `async with` (as above) or call
+  `await stream.aclose()` -- otherwise the connection stays checked out of your session's
+  pool. Re-iterating a stream raises `RuntimeError`: the body is consumed as it is read, so
+  a second pass could only yield a truncated remainder.
 - **Transport errors during streaming are wrapped.** A connection drop mid-iteration raises
   `SecuritySpyConnectError`, not a bare `aiohttp.ClientError` or `TimeoutError`.
 

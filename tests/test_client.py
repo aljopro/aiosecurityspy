@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 import pytest
+import yarl
 
 from aiosecurityspy import (
     CAPTURE_FILE_BANDWIDTH_HIGH,
@@ -24,7 +25,9 @@ from aiosecurityspy import (
     CAPTURE_FILTER_HUMAN,
     CAPTURE_FILTER_MOVIES,
     CAPTURE_FILTER_VEHICLE,
+    DEFAULT_TIMEOUT,
     CameraSettingsPatch,
+    CaptureFileStream,
     SecuritySpyAuthError,
     SecuritySpyCertificateError,
     SecuritySpyClient,
@@ -33,7 +36,6 @@ from aiosecurityspy import (
     SecuritySpyUnsupportedVersionError,
 )
 from aiosecurityspy import client as client_module
-from aiosecurityspy.client import CaptureFileStream
 from aiosecurityspy.models import Capture, capture_file_bandwidth
 
 if TYPE_CHECKING:
@@ -1267,33 +1269,74 @@ class FakeStreamContent:
         """Store the canned bytes."""
         self._raw = raw
         self._pos = 0
+        # Every `limit` the reader asked for. The fake answers with less than it
+        # was asked for -- a real StreamReader does too -- so the only way to
+        # verify the chunk bound the streaming API promises is to assert on what
+        # was requested, not on what came back.
+        self.limits: list[int] = []
 
     async def read(self, limit: int = -1) -> bytes:
         """Return at most `limit` bytes from the current position, then advance."""
+        self.limits.append(limit)
         take = len(self._raw) - self._pos if limit < 0 else min(limit, self.CHUNK)
         chunk = self._raw[self._pos : self._pos + take]
         self._pos += len(chunk)
         return chunk
 
 
+class FailAfterContent(FakeStreamContent):
+    """A content reader that fails after a set number of successful reads.
+
+    The matrix calls for a drop that happens *after* bytes are already flowing;
+    a fake that raises on the first read never exercises the partially-consumed
+    generator.
+    """
+
+    def __init__(self, raw: bytes, fail_after: int) -> None:
+        """Store the body and the number of reads to allow first."""
+        super().__init__(raw)
+        self._fail_after = fail_after
+        self._reads = 0
+
+    async def read(self, limit: int = -1) -> bytes:
+        """Return a chunk, then fail once the allowance is spent."""
+        if self._reads >= self._fail_after:
+            message = "connection dropped mid-body"
+            raise aiohttp.ClientPayloadError(message)
+        self._reads += 1
+        return await super().read(limit)
+
+
 class FakeStreamResponse:
     """Minimal stand-in for a streaming response."""
 
-    def __init__(self, status: int, body: bytes, content_type: str) -> None:
-        """Store the canned status, body, and content type."""
+    def __init__(
+        self,
+        status: int,
+        body: bytes,
+        content_type: str,
+        declared_length: int | None = None,
+    ) -> None:
+        """Store the canned status, body, content type and declared length."""
         self.status = status
         self.content_type = content_type
         self.content = FakeStreamContent(body)
         self._released = False
+        self._declared_length = declared_length
 
     def release(self) -> None:
         """Mark the response as released."""
         self._released = True
 
     @property
+    def released(self) -> bool:
+        """Whether the response has been released."""
+        return self._released
+
+    @property
     def content_length(self) -> int | None:
         """The declared body length, as aiohttp reports it."""
-        return None
+        return self._declared_length
 
     def get_encoding(self) -> str:
         """Return the charset the response declares."""
@@ -1339,12 +1382,15 @@ class FakeStreamSession:
         body: bytes = b"",
         content_type: str = "application/octet-stream",
         error: BaseException | None = None,
+        declared_length: int | None = None,
     ) -> None:
         """Configure the canned response or the transport error to raise."""
         self._status = status
         self._body = body
         self._content_type = content_type
         self._error = error
+        self._declared_length = declared_length
+        self.responses: list[FakeStreamResponse] = []
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.methods: list[str] = []
 
@@ -1354,9 +1400,11 @@ class FakeStreamSession:
         self.calls.append((url, kwargs))
         if self._error is not None:
             return RaisingContext(self._error)
-        return AwaitableFakeStreamResponse(
-            FakeStreamResponse(self._status, self._body, self._content_type)
+        response = FakeStreamResponse(
+            self._status, self._body, self._content_type, self._declared_length
         )
+        self.responses.append(response)
+        return AwaitableFakeStreamResponse(response)
 
     def post(self, url: str, **kwargs: Any) -> Any:  # noqa: ANN401
         """Record a POST and return an awaitable or error context."""
@@ -1388,7 +1436,7 @@ async def test_preview_url_has_double_question_mark() -> None:
     # The URL should contain the double '?' pattern: ++getpreview?/4/...?archive=0
     assert "++getpreview?/" in url
     assert "?archive=0" in url
-    assert kwargs["params"] == {}
+    assert "params" not in kwargs
 
 
 @pytest.mark.asyncio
@@ -1526,9 +1574,20 @@ async def test_file_bandwidth_selects_correct_endpoint(bandwidth: int, expected_
     assert "/4/2026-08-09/" in url
 
 
+@pytest.mark.parametrize(
+    ("bandwidth", "served_content_type"),
+    [
+        (CAPTURE_FILE_BANDWIDTH_STANDARD, MOVIE_CONTENT_TYPE),
+        (CAPTURE_FILE_BANDWIDTH_HIGH, MOVIE_CONTENT_TYPE),
+        (CAPTURE_FILE_BANDWIDTH_LOW, MP4_CONTENT_TYPE),
+    ],
+)
 @pytest.mark.asyncio
-async def test_file_standard_bandwidth_content_type() -> None:
-    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+async def test_file_reports_the_served_content_type(
+    bandwidth: int, served_content_type: str
+) -> None:
+    """The stream reports the content type the server sent, for every bandwidth."""
+    session = FakeStreamSession(200, MOVIE_BYTES, served_content_type)
     client = SecuritySpyClient(
         cast("aiohttp.ClientSession", session),
         HOST,
@@ -1536,13 +1595,19 @@ async def test_file_standard_bandwidth_content_type() -> None:
         username=USERNAME,
         password=PASSWORD,
     )
-    stream = await client.async_get_capture_file(make_capture())
-    assert stream.content_type == "video/quicktime"
+    stream = await client.async_get_capture_file(make_capture(), bandwidth=bandwidth)
+    assert stream.content_type == served_content_type
 
 
 @pytest.mark.asyncio
-async def test_file_low_bandwidth_content_type() -> None:
-    session = FakeStreamSession(200, MOVIE_BYTES, MP4_CONTENT_TYPE)
+async def test_file_content_type_is_not_dictated_by_bandwidth() -> None:
+    """The bandwidth selector never overrides what the server actually served.
+
+    The library reports the response header rather than a table keyed on the
+    bandwidth variant, so a server that answers the low-bandwidth endpoint with
+    QuickTime is reported as QuickTime -- not silently relabelled ``video/mp4``.
+    """
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
     client = SecuritySpyClient(
         cast("aiohttp.ClientSession", session),
         HOST,
@@ -1553,7 +1618,22 @@ async def test_file_low_bandwidth_content_type() -> None:
     stream = await client.async_get_capture_file(
         make_capture(), bandwidth=CAPTURE_FILE_BANDWIDTH_LOW
     )
-    assert stream.content_type == "video/mp4"
+    assert stream.content_type == MOVIE_CONTENT_TYPE
+
+
+@pytest.mark.asyncio
+async def test_file_content_type_falls_back_when_server_sends_none() -> None:
+    """A response with no content type reports the octet-stream fallback."""
+    session = FakeStreamSession(200, MOVIE_BYTES, "")
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    stream = await client.async_get_capture_file(make_capture())
+    assert stream.content_type == "application/octet-stream"
 
 
 @pytest.mark.asyncio
@@ -1711,12 +1791,19 @@ async def test_file_accepts_typed_bandwidth_record() -> None:
 # --- CaptureFileStream iteration tests ---
 
 
+def make_stream(
+    response: FakeStreamResponse, content_type: str = "text/plain"
+) -> CaptureFileStream:
+    """Build a stream over a fake response, casting at the single seam."""
+    return CaptureFileStream(cast("aiohttp.ClientResponse", response), HOST, PORT, content_type)
+
+
 @pytest.mark.asyncio
 async def test_stream_yields_all_bytes() -> None:
     """The stream yields all bytes from the response."""
     body = b"hello world"
     response = FakeStreamResponse(200, body, "text/plain")
-    stream = CaptureFileStream(response, HOST, PORT, "text/plain")
+    stream = make_stream(response, "text/plain")
     chunks = [chunk async for chunk in stream]
     assert b"".join(chunks) == body
 
@@ -1725,7 +1812,7 @@ async def test_stream_yields_all_bytes() -> None:
 async def test_stream_content_type() -> None:
     """The stream exposes the response content type."""
     response = FakeStreamResponse(200, b"data", "video/quicktime")
-    stream = CaptureFileStream(response, HOST, PORT, "video/quicktime")
+    stream = make_stream(response, "video/quicktime")
     assert stream.content_type == "video/quicktime"
 
 
@@ -1733,7 +1820,7 @@ async def test_stream_content_type() -> None:
 async def test_stream_releases_response_on_completion() -> None:
     """The stream releases the response when iteration completes."""
     response = FakeStreamResponse(200, b"data", "text/plain")
-    stream = CaptureFileStream(response, HOST, PORT, "text/plain")
+    stream = make_stream(response, "text/plain")
     async for _ in stream:
         pass
     assert response._released is True  # noqa: SLF001 - test internal state
@@ -1752,7 +1839,7 @@ async def test_stream_wraps_transport_error() -> None:
 
     response = FakeStreamResponse(200, b"", "text/plain")
     response.content = RaisingContent()  # type: ignore[assignment]
-    stream = CaptureFileStream(response, HOST, PORT, "text/plain")
+    stream = make_stream(response, "text/plain")
     with pytest.raises(SecuritySpyConnectError, match="stream failure"):
         async for _ in stream:
             pass
@@ -1771,7 +1858,7 @@ async def test_stream_wraps_timeout_error() -> None:
 
     response = FakeStreamResponse(200, b"", "text/plain")
     response.content = TimeoutContent()  # type: ignore[assignment]
-    stream = CaptureFileStream(response, HOST, PORT, "text/plain")
+    stream = make_stream(response, "text/plain")
     with pytest.raises(SecuritySpyConnectError, match="stream failure"):
         async for _ in stream:
             pass
@@ -1790,7 +1877,7 @@ async def test_stream_wraps_os_error() -> None:
 
     response = FakeStreamResponse(200, b"", "text/plain")
     response.content = OSErrorContent()  # type: ignore[assignment]
-    stream = CaptureFileStream(response, HOST, PORT, "text/plain")
+    stream = make_stream(response, "text/plain")
     with pytest.raises(SecuritySpyConnectError, match="stream failure"):
         async for _ in stream:
             pass
@@ -1809,7 +1896,7 @@ async def test_stream_releases_on_error() -> None:
 
     response = FakeStreamResponse(200, b"", "text/plain")
     response.content = RaisingContent()  # type: ignore[assignment]
-    stream = CaptureFileStream(response, HOST, PORT, "text/plain")
+    stream = make_stream(response, "text/plain")
     with contextlib.suppress(SecuritySpyConnectError):
         async for _ in stream:
             pass
@@ -1821,7 +1908,7 @@ async def test_stream_yields_chunked_data() -> None:
     """The stream fragments reads at 64 bytes, exercising the accumulation loop."""
     body = b"x" * 200  # spans 4 chunks at 64 bytes each
     response = FakeStreamResponse(200, body, "application/octet-stream")
-    stream = CaptureFileStream(response, HOST, PORT, "application/octet-stream")
+    stream = make_stream(response, "application/octet-stream")
     chunks = [chunk async for chunk in stream]
     assert b"".join(chunks) == body
     assert len(chunks) >= 3  # at least 3 chunks at 64 bytes each  # noqa: PLR2004
@@ -1867,3 +1954,282 @@ async def test_media_fetch_auth_error_never_leaks_credentials() -> None:
     for surface in surfaces:
         assert USERNAME not in surface
         assert PASSWORD not in surface
+
+
+# --- Review-driven coverage: encoding, caps, redirects, stream lifecycle ---
+
+
+def make_media_client(session: FakeStreamSession) -> SecuritySpyClient:
+    """Build a client over a fake streaming session."""
+    return SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_url_percent_encodes_the_filename() -> None:
+    """The file endpoint encodes the filename, exactly as the preview endpoint does.
+
+    `Capture.path` is documented as *not* URL-encoded, and a filename encodes the
+    camera's name, so a `?` would otherwise truncate the path and swallow the
+    archive query.
+    """
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = make_media_client(session)
+    capture = make_capture(filename="M+2026-08-09_17-35-19_Front? Door #2.mov")
+    await client.async_get_capture_file(capture)
+    url, _ = session.calls[0]
+    assert "?" not in url.removeprefix(f"http://{HOST}:{PORT}/")
+    assert "#" not in url
+    assert "%3F" in url
+    assert "%23" in url
+    assert "%2B" in url
+    assert url.startswith(f"{FILE_URL}/4/2026-08-09/")
+
+
+@pytest.mark.asyncio
+async def test_file_url_encodes_spaces_in_the_filename() -> None:
+    """A space in a camera name is encoded rather than sent raw."""
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = make_media_client(session)
+    await client.async_get_capture_file(make_capture(filename="M 2026 back yard.mov"))
+    url, _ = session.calls[0]
+    assert " " not in url
+    assert "%20" in url
+
+
+@pytest.mark.asyncio
+async def test_file_url_keeps_the_path_separators() -> None:
+    """Encoding is per component: the three path separators survive."""
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = make_media_client(session)
+    await client.async_get_capture_file(make_capture())
+    url, _ = session.calls[0]
+    assert url.startswith(f"{FILE_URL}/4/2026-08-09/M%2B2026-08-09_17-35-19_C.jpg")
+
+
+@pytest.mark.asyncio
+async def test_preview_url_survives_real_url_construction() -> None:
+    """Yarl must not re-encode the literal second '?' the archive flag rides on.
+
+    Every other preview test asserts the string the client handed to the session,
+    which is recorded before aiohttp parses it. This one pushes that string
+    through real yarl construction, the way aiohttp does, so a re-encoding of the
+    `?` -- which would silently return the non-archived preview for every
+    archived capture -- cannot pass unnoticed.
+    """
+    session = FakeStreamSession(200, JPEG_BYTES, JPEG_CONTENT_TYPE)
+    client = make_media_client(session)
+    await client.async_get_capture_preview(make_capture(archived=True))
+    url, _ = session.calls[0]
+    built = yarl.URL(url)
+    assert built.path.endswith("/++getpreview")
+    assert built.query_string.endswith("?archive=1")
+    assert str(built).endswith("?archive=1")
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_a_body_over_the_cap() -> None:
+    """A preview body past the 8 MiB cap is a typed failure, not a buffered blob."""
+    oversized = b"\xff" * (client_module._MAX_BODY_BYTES + 64)  # noqa: SLF001 - the cap under test
+    session = FakeStreamSession(200, oversized, JPEG_CONTENT_TYPE)
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyConnectError, match="too large"):
+        await client.async_get_capture_preview(make_capture())
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_an_oversized_declared_length() -> None:
+    """A declared Content-Length past the cap fails before the body is read."""
+    session = FakeStreamSession(
+        200,
+        JPEG_BYTES,
+        JPEG_CONTENT_TYPE,
+        declared_length=client_module._MAX_BODY_BYTES + 1,  # noqa: SLF001 - the cap under test
+    )
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyConnectError, match="too large"):
+        await client.async_get_capture_preview(make_capture())
+    assert session.responses[0].content.limits == []
+
+
+@pytest.mark.asyncio
+async def test_preview_accepts_a_body_exactly_at_the_cap() -> None:
+    """The cap is inclusive: a body of exactly the limit is not rejected."""
+    exact = b"\xff" * client_module._MAX_BODY_BYTES  # noqa: SLF001 - the cap under test
+    session = FakeStreamSession(200, exact, JPEG_CONTENT_TYPE)
+    client = make_media_client(session)
+    preview = await client.async_get_capture_preview(make_capture())
+    assert len(preview.data) == client_module._MAX_BODY_BYTES  # noqa: SLF001 - the cap under test
+
+
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+@pytest.mark.asyncio
+async def test_preview_maps_a_redirect(status: int) -> None:
+    """A redirect on the preview endpoint names the TLS fix rather than a bare 3xx."""
+    session = FakeStreamSession(status, b"", "text/html")
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyConnectError, match="use_https=True"):
+        await client.async_get_capture_preview(make_capture())
+
+
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+@pytest.mark.asyncio
+async def test_file_maps_a_redirect_and_releases(status: int) -> None:
+    """A redirect on the file endpoint is typed, and does not leak the response."""
+    session = FakeStreamSession(status, b"", "text/html")
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyConnectError, match="use_https=True"):
+        await client.async_get_capture_file(make_capture())
+    assert session.responses[0].released is True
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 500])
+@pytest.mark.asyncio
+async def test_file_releases_the_response_on_every_status_failure(status: int) -> None:
+    """No status failure may leave a connection checked out of the caller's pool."""
+    session = FakeStreamSession(status, b"", "text/html")
+    client = make_media_client(session)
+    with pytest.raises((SecuritySpyAuthError, SecuritySpyConnectError)):
+        await client.async_get_capture_file(make_capture())
+    assert session.responses[0].released is True
+
+
+@pytest.mark.asyncio
+async def test_file_uses_a_bounded_socket_read_timeout() -> None:
+    """The media timeout bounds sock_read: a stalled body must not hang forever.
+
+    The event stream deliberately has no read deadline because it never ends. A
+    file transfer does end, so a server that sends headers and then stalls has to
+    fail rather than block the reader while holding the connection.
+    """
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = make_media_client(session)
+    await client.async_get_capture_file(make_capture())
+    _, kwargs = session.calls[0]
+    timeout = kwargs["timeout"]
+    assert timeout.total is None
+    assert timeout.sock_read == DEFAULT_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_stream_reads_in_bounded_chunks() -> None:
+    """Every read is bounded by the documented chunk size, never unbounded."""
+    response = FakeStreamResponse(200, b"x" * 500, "video/quicktime")
+    stream = make_stream(response, "video/quicktime")
+    async for _ in stream:
+        pass
+    assert response.content.limits
+    # Asserted against an absolute ceiling, not against the constant itself: a
+    # test that only compares the reads to `_STREAM_CHUNK_BYTES` passes just as
+    # happily when that constant is raised to 64 MiB, which would defeat the
+    # memory bound this whole streaming API exists to provide.
+    one_mib = 1024 * 1024
+    assert all(0 < limit <= one_mib for limit in response.content.limits)
+
+
+@pytest.mark.asyncio
+async def test_stream_aclose_releases_a_stream_that_was_never_iterated() -> None:
+    """A stream the caller inspects and drops must still release its connection."""
+    response = FakeStreamResponse(200, MOVIE_BYTES, "video/quicktime")
+    stream = make_stream(response, "video/quicktime")
+    assert stream.content_type == "video/quicktime"
+    await stream.aclose()
+    assert response.released is True
+
+
+@pytest.mark.asyncio
+async def test_stream_aclose_is_idempotent() -> None:
+    """Closing twice, or closing a drained stream, is safe."""
+    response = FakeStreamResponse(200, b"data", "video/quicktime")
+    stream = make_stream(response, "video/quicktime")
+    async for _ in stream:
+        pass
+    await stream.aclose()
+    await stream.aclose()
+    assert response.released is True
+
+
+@pytest.mark.asyncio
+async def test_stream_context_manager_releases_on_early_break() -> None:
+    """Breaking out mid-iteration inside `async with` still releases the response."""
+    response = FakeStreamResponse(200, b"y" * 500, "video/quicktime")
+    stream = make_stream(response, "video/quicktime")
+    async with stream:
+        async for _ in stream:
+            break
+    assert response.released is True
+
+
+@pytest.mark.asyncio
+async def test_stream_context_manager_releases_on_error() -> None:
+    """An exception raised inside the block still releases the response."""
+    response = FakeStreamResponse(200, b"data", "video/quicktime")
+    stream = make_stream(response, "video/quicktime")
+    sentinel = "caller blew up"
+    with pytest.raises(ValueError, match=sentinel):
+        async with stream:
+            raise ValueError(sentinel)
+    assert response.released is True
+
+
+@pytest.mark.asyncio
+async def test_stream_rejects_a_second_iteration() -> None:
+    """Re-iterating is caller misuse, and must not look like a transport fault.
+
+    The body is consumed as it is read, so a second pass could only yield the
+    unread remainder -- a silently truncated file.
+    """
+    response = FakeStreamResponse(200, b"z" * 200, "video/quicktime")
+    stream = make_stream(response, "video/quicktime")
+    async for _ in stream:
+        pass
+    with pytest.raises(RuntimeError, match="already been iterated"):
+        async for _ in stream:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_stream_rejects_a_second_iteration_after_a_partial_read() -> None:
+    """The guard holds when the first pass stopped early, too."""
+    response = FakeStreamResponse(200, b"z" * 500, "video/quicktime")
+    stream = make_stream(response, "video/quicktime")
+    async for _ in stream:
+        break
+    with pytest.raises(RuntimeError, match="already been iterated"):
+        async for _ in stream:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_stream_wraps_a_failure_after_some_chunks_were_yielded() -> None:
+    """A mid-stream drop, once bytes are already flowing, is still typed."""
+    response = FakeStreamResponse(200, b"a" * 500, "video/quicktime")
+    allowed_reads = 2
+    response.content = FailAfterContent(b"a" * 500, fail_after=allowed_reads)
+    stream = make_stream(response, "video/quicktime")
+    received: list[bytes] = []
+
+    async def drain() -> None:
+        async for chunk in stream:
+            received.append(chunk)  # noqa: PERF401 - the partial read is the assertion
+
+    with pytest.raises(SecuritySpyConnectError, match="stream failure"):
+        await drain()
+    assert len(received) == allowed_reads
+    assert response.released is True
+
+
+@pytest.mark.parametrize("bandwidth", ["high", None, 3.0, object()])
+@pytest.mark.asyncio
+async def test_file_rejects_a_non_bandwidth_selector(bandwidth: object) -> None:
+    """A wrong-typed bandwidth is a ValueError before any request is issued."""
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = make_media_client(session)
+    with pytest.raises(ValueError, match="CAPTURE_FILE_BANDWIDTH"):
+        await client.async_get_capture_file(make_capture(), bandwidth=cast("Any", bandwidth))
+    assert session.calls == []

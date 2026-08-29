@@ -11,7 +11,7 @@ import json
 import logging
 import ssl
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, NoReturn, cast
 from urllib.parse import quote
 
 import aiohttp
@@ -55,7 +55,7 @@ from .models import (
 from .stream import SecuritySpyEventStream
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import AsyncIterator, Iterable, Mapping
     from datetime import tzinfo
 
     from .models import CameraSettingsPatch, CaptureModes
@@ -94,23 +94,37 @@ _CAPTURE_LIST_KEYS: Final = ("captures", "caplist", "files", "file")
 #: Content type every ``settings-*`` write carries (research §8.0).
 _FORM_CONTENT_TYPE: Final = "application/x-www-form-urlencoded"
 
+#: Size of one chunk yielded by :class:`CaptureFileStream`, in bytes. Named
+#: rather than inlined so the memory bound the streaming API is built on is a
+#: reviewable constant, not a literal buried in a read loop: a recording can be
+#: gigabytes, and this is the only thing keeping any of it out of the process.
+_STREAM_CHUNK_BYTES: Final = 64 * 1024
+
 
 class CaptureFileStream:
     """An async-iterable stream of bytes from a capture file fetch.
 
     The response body is never fully buffered: bytes are read and yielded in
-    bounded chunks. Iteration wraps transport errors into
-    :class:`~aiosecurityspy.SecuritySpyConnectError` and releases the response
-    when complete or on error.
+    bounded chunks of :data:`_STREAM_CHUNK_BYTES`. Iteration wraps transport
+    errors into :class:`~aiosecurityspy.SecuritySpyConnectError` and releases
+    the response when the body is exhausted or on error.
 
-    The stream is not a context manager: the consumer iterates over it and the
-    response is released when iteration finishes or when the stream is garbage
-    collected.
+    A consumer that does not drain the stream must release it explicitly,
+    either with ``await stream.aclose()`` or by using it as an async context
+    manager::
+
+        async with await client.async_get_capture_file(capture) as stream:
+            async for chunk in stream:
+                ...
+
+    Relying on garbage collection is not enough: a stream that is created and
+    never iterated never builds the generator whose ``finally`` releases the
+    response, so the connection would stay checked out of the caller's pool.
     """
 
     def __init__(
         self,
-        response: Any,  # noqa: ANN401 - aiohttp.ClientResponse, typed loosely to avoid import
+        response: aiohttp.ClientResponse,
         host: str,
         port: int,
         content_type: str,
@@ -121,6 +135,7 @@ class CaptureFileStream:
         self._port = port
         self.content_type = content_type
         self._released = False
+        self._iterated = False
 
     def _release(self) -> None:
         """Release the response if not already released."""
@@ -128,15 +143,49 @@ class CaptureFileStream:
             self._released = True
             self._response.release()
 
-    def __aiter__(self) -> Any:  # noqa: ANN401 - async iterator of bytes
-        """Return the async iterator."""
+    async def aclose(self) -> None:
+        """Release the underlying response.
+
+        Idempotent, and safe to call whether or not the stream was iterated.
+        """
+        self._release()
+
+    async def __aenter__(self) -> CaptureFileStream:
+        """Return the stream itself, for use in an ``async with`` block."""
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        """Release the response on leaving the ``async with`` block."""
+        await self.aclose()
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        """Return the async iterator over the response body.
+
+        Raises:
+            RuntimeError: Iteration was already started. The body is consumed
+                as it is read, so a second pass could only yield the unread
+                remainder -- silently producing a truncated file. A caller that
+                needs the bytes twice must buffer them, and a caller retrying a
+                failed transfer must issue a new request. This is a caller
+                mistake, so it stays outside the typed hierarchy, matching the
+                convention stated in :mod:`aiosecurityspy.exceptions`.
+
+        """
+        if self._iterated:
+            message = (
+                "this CaptureFileStream has already been iterated; its body is "
+                "consumed as it is read, so re-iterating would truncate. Issue "
+                "a new async_get_capture_file call instead."
+            )
+            raise RuntimeError(message)
+        self._iterated = True
         return self._aiter()
 
-    async def _aiter(self) -> Any:  # noqa: ANN401 - async generator yielding bytes
+    async def _aiter(self) -> AsyncIterator[bytes]:
         """Yield bounded chunks of the response body, catching transport errors."""
         try:
             while True:
-                chunk = await self._response.content.read(64 * 1024)
+                chunk = await self._response.content.read(_STREAM_CHUNK_BYTES)
                 if not chunk:
                     break
                 yield chunk
@@ -746,49 +795,164 @@ class SecuritySpyClient:
                 self._connection.port,
                 "capture has no addressable file path",
             )
-        bw = capture_file_bandwidth(bandwidth) if isinstance(bandwidth, int) else bandwidth
+        bw = (
+            bandwidth
+            if isinstance(bandwidth, CaptureFileBandwidth)
+            else capture_file_bandwidth(bandwidth)
+        )
         archive_flag = capture.archived if archive is None else archive
         params = {"archive": "1" if archive_flag else "0"}
         return await self._stream_bytes(bw.endpoint, params, path_suffix=capture.path)
 
-    async def _request_bytes(
-        self, path: str, params: Mapping[str, str] | None = None
-    ) -> tuple[bytes, str]:
+    def _request_kwargs(self, timeout: aiohttp.ClientTimeout) -> dict[str, Any]:
+        """Return the shared per-request kwargs, so no verb can drift.
+
+        Credentials, the TLS flag and the redirect policy are decided here once
+        for every request this library issues. ``allow_redirects=False``:
+        SecuritySpy 301-redirects plain HTTP to its HTTPS *port*, and a
+        different port is a different origin, so aiohttp strips the
+        Authorization header when following it -- turning a "wrong scheme"
+        mistake into a 401 that blames the user's password.
+        """
+        return {
+            "ssl": self._connection.verify_ssl,
+            "timeout": timeout,
+            "allow_redirects": False,
+        }
+
+    def _map_status(self, status: int) -> None:
+        """Map an HTTP status to this library's typed exceptions.
+
+        The single place that decides what a status means. Every transport path
+        -- buffered text, buffered bytes and streamed bytes -- calls this, so a
+        401 or a stray redirect cannot come to mean different things depending
+        on which accessor the caller reached for.
+
+        Raises:
+            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyConnectError: The server redirected, or answered with a
+                status outside the 2xx range.
+
+        """
+        if status in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
+            raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
+        if _HTTP_REDIRECT_MIN <= status <= _HTTP_REDIRECT_MAX:
+            # Almost always "you asked for http, this server wants https".
+            # Say so, rather than reporting a bare 301.
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"server redirected (HTTP {status}); if the server uses TLS, "
+                "construct the client with use_https=True",
+            )
+        if not _HTTP_OK_MIN <= status <= _HTTP_OK_MAX:
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"unexpected HTTP status {status}",
+            )
+
+    def _raise_transport_error(self, err: BaseException) -> NoReturn:
+        """Re-raise a transport failure as this library's typed equivalent.
+
+        The single place that decides what a TLS, timeout or socket failure
+        means. Order matters and is the reason this is one function rather than
+        an except-ladder repeated per call site: ``aiohttp.ClientSSLError`` is a
+        subclass of both ``aiohttp.ClientError`` and ``OSError``, and
+        ``ssl.SSLError`` is an ``OSError`` too, so a certificate failure tested
+        late would be swallowed whole by a generic clause.
+
+        Raises:
+            SecuritySpyCertificateError: The server's certificate failed
+                verification -- the one failure the caller can answer by
+                turning verification off.
+            SecuritySpyConnectError: Every other TLS, timeout, transport or
+                socket failure.
+
+        """
+        if isinstance(err, aiohttp.ClientConnectorCertificateError | ssl.SSLCertVerificationError):
+            # Deliberately narrow: only a failed *verification* is a certificate
+            # problem the caller can answer by turning verification off. Both
+            # forms are caught because a TLS failure raised outside aiohttp's
+            # connector wrapper arrives as the bare `ssl` exception.
+            raise SecuritySpyCertificateError(
+                self._connection.host, self._connection.port, _tls_reason(err)
+            ) from err
+        if isinstance(err, aiohttp.ClientSSLError | ssl.SSLError):
+            # Reported separately from the certificate case because the advice
+            # differs: speaking TLS to a plain-HTTP listener raises
+            # `WRONG_VERSION_NUMBER` here, and disabling certificate
+            # verification does not help it.
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"the TLS handshake failed ({_tls_reason(err)}); if the server speaks "
+                "plain HTTP on this port, connect without TLS or use the server's "
+                "HTTPS port",
+            ) from err
+        if isinstance(err, TimeoutError):
+            raise SecuritySpyConnectError(
+                self._connection.host, self._connection.port, "request timed out"
+            ) from err
+        if isinstance(err, aiohttp.ClientError):
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"transport failure ({type(err).__name__})",
+            ) from err
+        if isinstance(err, OSError):
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"connection failure ({type(err).__name__})",
+            ) from err
+        raise err
+
+    def _check_declared_length(self, declared: int | None) -> None:
+        """Reject a body the server declares as larger than the cap, before reading it.
+
+        Raises:
+            SecuritySpyConnectError: The declared ``Content-Length`` exceeds the cap.
+
+        """
+        if declared is not None and declared > _MAX_BODY_BYTES:
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "server response body was too large",
+            )
+
+    async def _request_bytes(self, path: str) -> tuple[bytes, str]:
         """Issue one authenticated GET and return the raw body bytes + content type.
 
         Used by ``async_get_capture_preview`` for a buffered read with the
         existing 8 MiB cap. No text decode.
+
+        The ``archive`` flag of a preview is baked into ``path`` itself
+        (research §4.3's double-``?`` form), so this helper deliberately takes
+        no ``params``: a caller passing one would put the flag in both the path
+        and the query, and SecuritySpy's last-``?`` parser would silently pick
+        the wrong one.
+
+        Raises:
+            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyConnectError: The server redirected, answered with an
+                unexpected status, sent a body over the cap, or the transport
+                failed.
+
         """
         url = self._connection.build_url(path)
         _LOGGER.debug(
             "Requesting %s from %s:%s", path, self._connection.host, self._connection.port
         )
-        shared: dict[str, Any] = {
-            "params": dict(params or {}),
-            "ssl": self._connection.verify_ssl,
-            "timeout": self._connection.request_timeout(),
-            "allow_redirects": False,
-        }
         try:
             async with self._connection.session.get(
-                url, headers={"Authorization": self._connection.auth_header}, **shared
+                url,
+                headers={"Authorization": self._connection.auth_header},
+                **self._request_kwargs(self._connection.request_timeout()),
             ) as response:
-                status = response.status
-                if status in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
-                    raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
-                if _HTTP_REDIRECT_MIN <= status <= _HTTP_REDIRECT_MAX:
-                    raise SecuritySpyConnectError(
-                        self._connection.host,
-                        self._connection.port,
-                        f"server redirected (HTTP {status}); if the server uses TLS, "
-                        "construct the client with use_https=True",
-                    )
-                if not _HTTP_OK_MIN <= status <= _HTTP_OK_MAX:
-                    raise SecuritySpyConnectError(
-                        self._connection.host,
-                        self._connection.port,
-                        f"unexpected HTTP status {status}",
-                    )
+                self._map_status(response.status)
+                self._check_declared_length(response.content_length)
                 content_type = response.content_type or "application/octet-stream"
                 chunks: list[bytes] = []
                 chunk = b""
@@ -810,69 +974,56 @@ class SecuritySpyClient:
                     chunk = b""
                 return result, content_type
         except (aiohttp.ClientError, TimeoutError, OSError) as err:
-            if isinstance(err, SecuritySpyError):
-                raise
-            raise SecuritySpyConnectError(
-                self._connection.host,
-                self._connection.port,
-                f"transport failure ({type(err).__name__})",
-            ) from err
+            self._raise_transport_error(err)
 
     async def _stream_bytes(
         self,
         endpoint: str,
-        params: Mapping[str, str] | None = None,
+        params: Mapping[str, str],
         *,
         path_suffix: str,
     ) -> CaptureFileStream:
         """Issue one authenticated GET and return an async-iterable stream.
 
         The response is never fully buffered: bytes are read and yielded in
-        bounded chunks. The stream timeout (no total deadline) is used so a
-        large file transfer is not cut short.
+        bounded chunks. ``media_timeout()`` leaves ``total`` unbounded so a
+        large transfer is not cut short, while bounding ``sock_read`` so a
+        server that stalls mid-body cannot hang the reader forever.
+
+        ``path_suffix`` is percent-encoded here, per component: it carries a
+        capture's filename, which encodes the camera's name and is therefore
+        user-influenced. ``Capture.path`` is documented as *not* URL-encoded,
+        so a ``?`` or ``#`` in a camera name would otherwise truncate the path
+        and corrupt the query.
+
+        Raises:
+            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyConnectError: The server redirected, answered with an
+                unexpected status, or the transport failed.
+
         """
-        path = f"{endpoint}/{path_suffix}"
+        encoded_suffix = "/".join(quote(part, safe="") for part in path_suffix.split("/", 2))
+        path = f"{endpoint}/{encoded_suffix}"
         url = self._connection.build_url(path)
         _LOGGER.debug(
             "Requesting %s from %s:%s", path, self._connection.host, self._connection.port
         )
-        shared: dict[str, Any] = {
-            "params": dict(params or {}),
-            "ssl": self._connection.verify_ssl,
-            "timeout": self._connection.stream_timeout(),
-            "allow_redirects": False,
-        }
         try:
             response = await self._connection.session.get(
-                url, headers={"Authorization": self._connection.auth_header}, **shared
+                url,
+                headers={"Authorization": self._connection.auth_header},
+                params=dict(params),
+                **self._request_kwargs(self._connection.media_timeout()),
             )
         except (aiohttp.ClientError, TimeoutError, OSError) as err:
-            if isinstance(err, SecuritySpyError):
-                raise
-            raise SecuritySpyConnectError(
-                self._connection.host,
-                self._connection.port,
-                f"transport failure ({type(err).__name__})",
-            ) from err
-        status = response.status
-        if status in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
+            self._raise_transport_error(err)
+        try:
+            self._map_status(response.status)
+        except SecuritySpyError:
+            # The status ladder raises before any body is read, so the response
+            # is still holding a connection out of the caller's pool.
             response.release()
-            raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
-        if _HTTP_REDIRECT_MIN <= status <= _HTTP_REDIRECT_MAX:
-            response.release()
-            raise SecuritySpyConnectError(
-                self._connection.host,
-                self._connection.port,
-                f"server redirected (HTTP {status}); if the server uses TLS, "
-                "construct the client with use_https=True",
-            )
-        if not _HTTP_OK_MIN <= status <= _HTTP_OK_MAX:
-            response.release()
-            raise SecuritySpyConnectError(
-                self._connection.host,
-                self._connection.port,
-                f"unexpected HTTP status {status}",
-            )
+            raise
         content_type = response.content_type or "application/octet-stream"
         return CaptureFileStream(
             response, self._connection.host, self._connection.port, content_type
@@ -1068,7 +1219,7 @@ class SecuritySpyClient:
         """
         return await self._request(path, form_body=body, strict_encoding=False)
 
-    async def _request(  # noqa: PLR0912 - the branches are the transport seam itself; splitting them would give a second place to decide what a status or a TLS failure means
+    async def _request(
         self,
         path: str,
         *,
@@ -1101,19 +1252,12 @@ class SecuritySpyClient:
             "Requesting %s from %s:%s", path, self._connection.host, self._connection.port
         )
         # Shared kwargs, so no verb can drift on credentials, TLS or timeout.
-        # `allow_redirects=False`: SecuritySpy 301-redirects plain HTTP to its
-        # HTTPS *port*, and a different port is a different origin, so aiohttp
-        # strips the Authorization header when following it (verified against
-        # aiohttp 3.12). Following the redirect therefore cannot succeed -- it
-        # just turns a "wrong scheme" mistake into a 401 that blames the user's
-        # password. Surface the redirect instead. Note that not following it is
-        # no credential safeguard either: over plain HTTP the Basic credential
-        # is already on the wire, which is why the README recommends HTTPS.
+        # Note that not following the redirect is no credential safeguard: over
+        # plain HTTP the Basic credential is already on the wire, which is why
+        # the README recommends HTTPS.
         shared: dict[str, Any] = {
             "params": dict(params or {}),
-            "ssl": self._connection.verify_ssl,
-            "timeout": self._connection.request_timeout(),
-            "allow_redirects": False,
+            **self._request_kwargs(self._connection.request_timeout()),
         }
         try:
             context = (
@@ -1132,31 +1276,8 @@ class SecuritySpyClient:
                 )
             )
             async with context as response:
-                status = response.status
-                if status in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
-                    raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
-                if _HTTP_REDIRECT_MIN <= status <= _HTTP_REDIRECT_MAX:
-                    # Almost always "you asked for http, this server wants
-                    # https". Say so, rather than reporting a bare 301.
-                    raise SecuritySpyConnectError(
-                        self._connection.host,
-                        self._connection.port,
-                        f"server redirected (HTTP {status}); if the server uses TLS, "
-                        "construct the client with use_https=True",
-                    )
-                if not _HTTP_OK_MIN <= status <= _HTTP_OK_MAX:
-                    raise SecuritySpyConnectError(
-                        self._connection.host,
-                        self._connection.port,
-                        f"unexpected HTTP status {status}",
-                    )
-                declared = response.content_length
-                if declared is not None and declared > _MAX_BODY_BYTES:
-                    raise SecuritySpyConnectError(
-                        self._connection.host,
-                        self._connection.port,
-                        "server response body was too large",
-                    )
+                self._map_status(response.status)
+                self._check_declared_length(response.content_length)
                 # Accumulate rather than issuing one `read(n)`: StreamReader.read
                 # returns whatever is currently buffered, not n bytes, so a
                 # single call silently truncates any body that spans more than
@@ -1215,48 +1336,10 @@ class SecuritySpyClient:
                 self._connection.port,
                 "server response was not decodable text",
             ) from err
-        except (aiohttp.ClientConnectorCertificateError, ssl.SSLCertVerificationError) as err:
-            # Deliberately narrow: only a failed *verification* is a certificate
-            # problem the caller can answer by turning verification off. Both
-            # forms are caught because a TLS failure raised outside aiohttp's
-            # connector wrapper arrives as the bare `ssl` exception.
-            raise SecuritySpyCertificateError(
-                self._connection.host, self._connection.port, _tls_reason(err)
-            ) from err
-        except (aiohttp.ClientSSLError, ssl.SSLError) as err:
-            # Every other TLS failure. Reported separately from the certificate
-            # case because the advice differs: speaking TLS to a plain-HTTP
-            # listener raises `WRONG_VERSION_NUMBER` here, and disabling
-            # certificate verification does not help it -- verified against a
-            # live aiohttp server with `ssl=True` and `ssl=False` alike.
-            #
-            # This clause and the one above must both precede `TimeoutError`,
-            # `aiohttp.ClientError` and `OSError` below: `aiohttp.ClientSSLError`
-            # is a subclass of the latter two, and `ssl.SSLError` is an `OSError`
-            # too, so any of them would swallow a TLS failure whole.
-            raise SecuritySpyConnectError(
-                self._connection.host,
-                self._connection.port,
-                f"the TLS handshake failed ({_tls_reason(err)}); if the server speaks "
-                "plain HTTP on this port, connect without TLS or use the server's "
-                "HTTPS port",
-            ) from err
-        except TimeoutError as err:
-            raise SecuritySpyConnectError(
-                self._connection.host, self._connection.port, "request timed out"
-            ) from err
-        except aiohttp.ClientError as err:
-            raise SecuritySpyConnectError(
-                self._connection.host,
-                self._connection.port,
-                f"transport failure ({type(err).__name__})",
-            ) from err
-        except OSError as err:
-            raise SecuritySpyConnectError(
-                self._connection.host,
-                self._connection.port,
-                f"connection failure ({type(err).__name__})",
-            ) from err
+        except (aiohttp.ClientError, TimeoutError, OSError) as err:
+            # Ordering of the TLS / timeout / socket cases lives in
+            # `_raise_transport_error`, shared with the byte and stream paths.
+            self._raise_transport_error(err)
 
         return body
 

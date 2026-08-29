@@ -1074,36 +1074,38 @@ class CapturePreview:
 
 @dataclass(frozen=True, slots=True)
 class CaptureFileBandwidth:
-    """A bandwidth selector and its endpoint/content-type pair (research §4b.1).
+    """A bandwidth selector and the endpoint that serves it (research §4b.1).
 
     Mirrors the ``ArmOverride`` validated-int-sentinel pattern: the raw
     ``CAPTURE_FILE_BANDWIDTH_*`` constant is the wire-side identity, and this
     record is the typed, validated lookup result the client uses.
+
+    The record carries no content type. Research §4b.1 documents what each
+    variant *usually* serves, but the media type a caller receives is whatever
+    the server actually sent, so ``CaptureFileStream.content_type`` reports the
+    response header rather than a value asserted here. A table would have been
+    free to drift from the wire with nothing to catch it.
     """
 
     value: int
     endpoint: str
-    content_type: str
 
 
-#: Mapping of a ``CAPTURE_FILE_BANDWIDTH_*`` value to its endpoint constant and
-#: content type (research §4b.1).
+#: Mapping of a ``CAPTURE_FILE_BANDWIDTH_*`` value to its endpoint constant
+#: (research §4b.1).
 _BANDWIDTH_ENDPOINTS: Final[Mapping[int, CaptureFileBandwidth]] = MappingProxyType(
     {
         CAPTURE_FILE_BANDWIDTH_STANDARD: CaptureFileBandwidth(
             value=CAPTURE_FILE_BANDWIDTH_STANDARD,
             endpoint=ENDPOINT_GET_FILE,
-            content_type="video/quicktime",
         ),
         CAPTURE_FILE_BANDWIDTH_HIGH: CaptureFileBandwidth(
             value=CAPTURE_FILE_BANDWIDTH_HIGH,
             endpoint=ENDPOINT_GET_FILE_HIGH_BANDWIDTH,
-            content_type="video/quicktime",
         ),
         CAPTURE_FILE_BANDWIDTH_LOW: CaptureFileBandwidth(
             value=CAPTURE_FILE_BANDWIDTH_LOW,
             endpoint=ENDPOINT_GET_FILE_LOW_BANDWIDTH,
-            content_type="video/mp4",
         ),
     }
 )
@@ -1119,7 +1121,7 @@ def capture_file_bandwidth(value: int) -> CaptureFileBandwidth:
         ValueError: The value is not one of the three bandwidth constants.
 
     Returns:
-        The typed bandwidth record, including its endpoint and content type.
+        The typed bandwidth record, including its endpoint.
 
     """
     if isinstance(cast("object", value), int) and not isinstance(value, bool):
