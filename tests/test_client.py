@@ -296,7 +296,7 @@ async def test_request_shape() -> None:
     url, kwargs = session.calls[0]
     assert url == f"http://{HOST}:{PORT}/++systemInfo"
     assert kwargs["params"] == {"format": "json"}
-    assert isinstance(kwargs["auth"], aiohttp.BasicAuth)
+    assert kwargs["headers"]["Authorization"] == aiohttp.encode_basic_auth(USERNAME, PASSWORD)
     assert isinstance(kwargs["timeout"], aiohttp.ClientTimeout)
     assert kwargs["timeout"].total == DEFAULT_TIMEOUT_SECONDS
 

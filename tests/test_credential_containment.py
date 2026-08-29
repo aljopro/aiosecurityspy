@@ -406,7 +406,7 @@ def test_no_url_the_library_builds_can_carry_a_credential() -> None:
 
 @pytest.mark.asyncio
 async def test_no_url_the_client_or_the_stream_sends_carries_a_credential() -> None:
-    """The credential travels as ``auth=``, on every request, without exception.
+    """The credential travels as an ``Authorization`` header, on every request, without exception.
 
     The URL is the observable half of that claim: a reverse proxy, a ``Referer``
     header and an access log all record it, and research §7 records a
@@ -419,7 +419,6 @@ async def test_no_url_the_client_or_the_stream_sends_carries_a_credential() -> N
     for _method, url, kwargs in server.calls:
         assert_url_carries_no_credential(url, dict(kwargs.get("params") or {}))
         # The other half: it did travel, just not in the URL.
-        assert isinstance(kwargs["auth"], aiohttp.BasicAuth)
-        assert kwargs["auth"].login == USERNAME
+        assert kwargs["headers"]["Authorization"] == aiohttp.encode_basic_auth(USERNAME, PASSWORD)
     # The stream is not an exception to any of it.
     assert any(url.endswith(ENDPOINT_EVENT_STREAM) for _, url, _ in server.calls)

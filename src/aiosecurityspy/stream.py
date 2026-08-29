@@ -377,7 +377,7 @@ class SecuritySpyEventStream:
         async with self._connection.session.get(
             url,
             params={"version": EVENT_STREAM_VERSION},
-            auth=self._connection.auth,
+            headers={"Authorization": self._connection.auth_header},
             ssl=self._connection.verify_ssl,
             # No total timeout: this response is designed never to end. The
             # connect phase stays bounded so a wrong host still fails fast, and

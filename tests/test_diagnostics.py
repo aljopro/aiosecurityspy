@@ -14,11 +14,10 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 from urllib.parse import quote, unquote
 from uuid import UUID
 
-import aiohttp
 import pytest
 
 from aiosecurityspy import (
@@ -344,13 +343,27 @@ def test_keys_that_render_the_same_are_disambiguated_rather_than_dropped() -> No
 # --- anonymize: shapes -------------------------------------------------------
 
 
+class _LegacyBasicAuth(NamedTuple):
+    """Same shape as ``aiohttp.BasicAuth``, which this test predates and outlives.
+
+    ``aiohttp.BasicAuth`` is itself deprecated ahead of removal in aiohttp 4.0,
+    but the shape it exemplifies -- a credential-bearing ``NamedTuple`` -- is
+    what motivates the field-name walk this test protects, and a consumer's own
+    older code may still hand ``anonymize()`` one for years yet.
+    """
+
+    login: str
+    password: str
+    encoding: str = "latin1"
+
+
 def test_a_named_tuple_is_walked_by_field_name_not_positionally() -> None:
     """``BasicAuth`` walked as a sequence would yield ``["bob", "s3cret"]``.
 
     There would be no key left for the predicate to match the password on,
     which is why ``_fields`` is checked before the sequence branch.
     """
-    anonymized = anonymize(aiohttp.BasicAuth("bob", "s3cret"))
+    anonymized = anonymize(_LegacyBasicAuth("bob", "s3cret"))
 
     assert anonymized == {"login": "bob", "password": REDACTED, "encoding": "latin1"}
     assert "s3cret" not in repr(anonymized)
@@ -617,7 +630,7 @@ def test_an_exception_argument_is_walked_rather_than_repr_ed() -> None:
     """
     walked = cast(
         "dict[str, Any]",
-        anonymize({"error": ValueError(aiohttp.BasicAuth(DEVICE_USERNAME, DEVICE_PASSWORD))}),
+        anonymize({"error": ValueError(_LegacyBasicAuth(DEVICE_USERNAME, DEVICE_PASSWORD))}),
     )
     assert DEVICE_PASSWORD not in str(walked)
     assert walked["error"] == {

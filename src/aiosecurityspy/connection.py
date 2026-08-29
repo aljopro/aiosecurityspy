@@ -4,8 +4,8 @@ The REST client and the event stream both need the same things: a validated
 host, a port, a scheme, a credential, the per-request TLS flag and a timeout.
 Deriving those twice is how two code paths end up disagreeing about what a valid
 host is -- and how a credential-bearing URL gets built in a second place. This
-module is that single place (AD-13): credentials live here as an
-:class:`aiohttp.BasicAuth` and never enter a URL.
+module is that single place (AD-13): credentials live here as a pre-encoded
+``Authorization`` header value and never enter a URL.
 
 The module is internal. Nothing here is re-exported from the package.
 """
@@ -109,8 +109,8 @@ class ConnectionSettings:
 
     Frozen so a client and any stream it spawns cannot drift apart, and so the
     credential cannot be swapped after construction. ``__repr__`` is overridden
-    because :class:`aiohttp.BasicAuth` is a ``NamedTuple`` whose default
-    representation prints the password.
+    because a naively-added field could otherwise print the credential; today
+    that is ``auth_header``, which already carries only the base64 encoding.
     """
 
     session: aiohttp.ClientSession
@@ -118,7 +118,11 @@ class ConnectionSettings:
     url_host: str
     port: int
     scheme: str
-    auth: aiohttp.BasicAuth
+    #: A ready-to-send ``Authorization: Basic ...`` header value. Built once by
+    #: :func:`aiohttp.encode_basic_auth` rather than carried as an
+    #: :class:`aiohttp.BasicAuth`, which aiohttp deprecates in favor of this
+    #: header form ahead of its removal in aiohttp 4.0.
+    auth_header: str
     verify_ssl: bool
     timeout: float
 
@@ -183,7 +187,7 @@ class ConnectionSettings:
             url_host=url_host,
             port=port,
             scheme="https" if use_https else "http",
-            auth=aiohttp.BasicAuth(username, password),
+            auth_header=aiohttp.encode_basic_auth(username, password),
             verify_ssl=verify_ssl,
             timeout=timeout,
         )
@@ -202,7 +206,7 @@ class ConnectionSettings:
 
         Returns:
             The absolute URL. Credentials are never interpolated into it; they
-            travel as :attr:`auth` in an ``Authorization`` header.
+            travel as :attr:`auth_header` in an ``Authorization`` header.
 
         """
         return f"{self.base_url}/{path}"

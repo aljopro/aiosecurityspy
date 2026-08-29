@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aiosecurityspy"
-version = "0.3.0"
+version = "0.1.0"
 description = "Async, fully-typed Python client library for the Ben Software SecuritySpy HTTP/event API."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -83,3 +83,4 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error"]

@@ -540,7 +540,8 @@ async def test_the_credential_travels_as_basic_auth_never_in_the_url() -> None:
     call = session.calls[0]
     assert PASSWORD not in str(call["url"])
     assert USERNAME not in str(call["url"])
-    assert call["auth"] == aiohttp.BasicAuth(USERNAME, PASSWORD)
+    headers = cast("dict[str, str]", call["headers"])
+    assert headers["Authorization"] == aiohttp.encode_basic_auth(USERNAME, PASSWORD)
     assert PASSWORD not in repr(stream)
     assert PASSWORD not in repr(
         ConnectionSettings.create(
