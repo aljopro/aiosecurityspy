@@ -314,30 +314,49 @@ paths:
     get:
       operationId: setSchedule
       tags: [arming]
-      summary: Set a camera's schedule and/or override. A write performed with GET.
-      x-verification: client-source
+      summary: Apply a schedule and/or override to selected capture modes. A write via GET.
+      description: |
+        `mode` selects WHICH of the three capture modes the write applies to. It is **not**
+        their armed state. `schedule` and `override` are the values applied to the selected
+        modes; either may be sent without the other.
+      x-verification: live-6.21
       x-quirks:
         - "A state-changing operation issued as a GET."
         - >-
-          `schedule=` reassigns which schedule governs a mode. aiosecurityspy never sends it
-          (AD-7): only the transient, bounded `override` is written.
+          ⚠ `mode` is a TARGET SELECTOR, not an armed-state. `mode=CMA` does not arm three
+          modes — it means "apply schedule/override to all three". An empty `mode` targets
+          NOTHING and the request is a silent no-op.
+        - >-
+          ⚠ The response is `200 OK`, body `OK`, EVEN WHEN NOTHING WAS APPLIED. Verified:
+          `mode=CMA&override=0` and `mode=CM&override=0` both returned `200 OK` and changed
+          no field. Status is not evidence of effect; read back to confirm.
+        - >-
+          `override` applies without `schedule` (verified: `override=2&mode=A` moved
+          `a-schedule-override` 0 → 2 alone), so AD-7's "write the override, never the
+          schedule" is achievable exactly as stated.
+        - >-
+          Live A/B on camera 10: `schedule=2&override=0&mode=A` changed exactly
+          `a-schedule-id` 1 → 2; restoring left 0 of 9 schedule fields differing.
       parameters:
         - name: cameraNum
           in: query
           schema: { type: integer }
         - name: schedule
           in: query
-          description: Schedule id. See AD-7 before sending.
+          description: Schedule id to assign to the selected modes. See AD-7 before sending.
           schema: { type: integer }
         - name: override
           in: query
+          description: Override id to assign to the selected modes.
           schema: { type: integer, minimum: 0, maximum: 14 }
         - name: mode
           in: query
-          description: Concatenated mode letters, e.g. `CMA`.
+          description: >-
+            Which capture modes to apply to, as concatenated letters (`C` continuous,
+            `M` motion, `A` actions), e.g. `CMA`. Empty targets nothing.
           schema: { type: string, pattern: "^[CMA]*$" }
       responses:
-        "200": { description: Applied. }
+        "200": { description: "Accepted. Body is `OK`. Does NOT imply anything changed." }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
