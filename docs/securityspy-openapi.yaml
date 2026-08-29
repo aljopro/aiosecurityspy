@@ -299,10 +299,20 @@ paths:
       tags: [streaming]
       summary: Long-lived event stream.
       description: |
-        ⚠ UNVERIFIED against a live server. Records are CR-framed, not LF-framed — see the
-        research doc §3.1 before implementing. No total read deadline applies; the stream
-        never ends by design.
-      x-verification: research-only
+        Records are terminated by **CR (0x0D) only** — the body contains zero LF bytes, and
+        the final record is CR-terminated too. A standard readline() never returns. Verified
+        live on 6.21: 5 CR, 0 LF, 0 CRLF over a 45 s capture.
+
+        Format: `[TIME] [EVENT_NUMBER] [CAMERA] [EVENT] [INFO]`, e.g.
+        `20260829062049 0 X NULL`. `EVENT_NUMBER` is a per-connection counter from 0.
+        `CAMERA` is `X` when not camera-specific. A `NULL` heartbeat arrives every 10 s.
+
+        ⚠ `TIME` is the server's **local** wall clock with no offset attached. Convert it
+        using `seconds-from-gmt` from `++systemInfo`, never by assuming UTC.
+
+        The response has no `Content-Length` and no chunked encoding; it is close-terminated
+        and never ends by design, so no total read deadline applies.
+      x-verification: live-6.21
       parameters:
         - name: version
           in: query
@@ -411,6 +421,17 @@ components:
         cpu-usage: { type: number }
         memory-pressure: { type: number }
         new-version: { type: string }
+        seconds-from-gmt:
+          type: integer
+          description: >-
+            Server UTC offset in seconds, e.g. -18000 for UTC-5. REQUIRED to interpret
+            event-stream timestamps and capture times, both of which are the server's local
+            wall clock with no offset attached.
+        current-local-time:
+          type: string
+          description: Full ISO-8601 local time WITH offset, e.g. `2026-08-29T05:28:00-05:00`.
+        current-absolute-time: { type: number }
+        time-format: { type: integer, description: "12 or 24; display preference only." }
       additionalProperties: true
 
     Camera:
