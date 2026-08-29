@@ -203,9 +203,16 @@ paths:
       description: |
         ⚠ The response contains the camera device's `username` and `password` in plaintext.
         Never log this body, and redact credential-shaped keys before publishing it anywhere.
-      x-verification: client-source
+      x-verification: live-6.21
       x-quirks:
         - "`cameraNum` is REQUIRED here; omitting it returns HTTP 500."
+        - >-
+          129 keys on 6.21 (48 bool, 62 int, 19 string), not the ~120 the research doc
+          estimated. `enabled` is present and reads as a JSON bool, while it must be
+          WRITTEN as 1/0. `presenceRect` is absent on every camera observed.
+        - >-
+          Requires permission bit 4 (value 16, "Set camera settings"). An account without
+          it gets 403 with valid credentials.
       parameters:
         - name: cameraNum
           in: query
@@ -238,7 +245,12 @@ paths:
 
         Partial writes are safe: untouched keys among the ~120 on the page retain their
         values, so no read-modify-write is required.
-      x-verification: client-source
+      x-verification: live-6.21
+      x-quirks:
+        - >-
+          Partial-write safety measured live: writing one field changed exactly 1 of the
+          page's 129 keys, and restoring left 0 of 129 differing from the original.
+        - 'Acknowledgement observed: {"camUpdate":{"num":"5","name":"Music Room"}}.'
       x-body-template: "formData&cameraNum={n}&{namedField}={urlEncodedValue}&{checkboxId}={1|0}"
       requestBody:
         required: true
