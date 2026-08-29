@@ -48,6 +48,7 @@ from .models import (
     SETTINGS_PAGE_KEYS,
     ArmOverride,
     CameraSettings,
+    CameraSettingsPatch,
     CameraStatus,
     Capture,
     CaptureFileBandwidth,
@@ -62,7 +63,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping
     from datetime import tzinfo
 
-    from .models import CameraSettingsPatch, CaptureModes
+    from .models import CaptureModes
     from .stream import EventCallback, LifecycleCallback
 
 __all__ = ["SecuritySpyClient"]
@@ -1194,6 +1195,32 @@ class SecuritySpyClient:
             permission=PERMISSION_NAMES[PERM_SETTINGS],
             camera_number=number,
         )
+
+    async def async_set_camera_enabled(self, camera_number: int, *, enabled: bool) -> None:
+        """Enable or disable a camera (FR-16, research §5.5).
+
+        Takes a camera in or out of service through the same verified
+        partial-write path as :meth:`async_set_camera_settings`, writing the
+        single ``enabled`` field. ``enabled`` is an id-only checkbox key on the
+        settings page, which is why it is absent from the named-field list in
+        research §8.1 (verification §5.5).
+
+        Args:
+            camera_number: The camera to enable or disable.
+            enabled: The new state. ``False`` takes the camera out of service.
+
+        Raises:
+            ValueError: ``camera_number`` is not a non-negative integer. Raised
+                before any request is issued.
+            SecuritySpyConnectError: The server was unreachable, timed out, or
+                answered with an unexpected status.
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks the 'settings' permission (403).
+
+        """
+        number = _validated_camera_number(camera_number)
+        await self.async_set_camera_settings(number, CameraSettingsPatch(enabled=enabled))
 
     async def async_set_camera_arming(
         self,

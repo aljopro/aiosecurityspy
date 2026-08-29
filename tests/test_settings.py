@@ -102,6 +102,7 @@ def settings_payload(**overrides: object) -> dict[str, object]:
         "aTriggerMotionA": False,
         "ccMovie": False,
         "ccImage": False,
+        "enabled": True,
         "motionSensitivity": 55,
         "humanSensitivity": 60,
         "vehicleSensitivity": 65,
@@ -441,6 +442,40 @@ async def test_partial_write_leaves_every_other_field_identical() -> None:
 
 
 @pytest.mark.asyncio
+async def test_enabled_write_round_trip_changes_only_enabled() -> None:
+    """The enable write goes through the same partial path as any other field."""
+    session = SettingsServer(settings_payload())
+    client = make_client(session)
+
+    before = await client.async_get_camera_settings(3)
+    await client.async_set_camera_enabled(3, enabled=False)
+    after = await client.async_get_camera_settings(3)
+
+    assert before.enabled is True
+    assert after.enabled is False
+    changed = {
+        name
+        for name in vars(CameraSettings)["__dataclass_fields__"]
+        if getattr(before, name) != getattr(after, name)
+    }
+    assert changed == {"enabled"}
+
+
+@pytest.mark.asyncio
+async def test_enable_write_round_trip_restores_the_previous_state() -> None:
+    """Disabling then re-enabling returns every field to its original value."""
+    session = SettingsServer(settings_payload())
+    client = make_client(session)
+
+    await client.async_set_camera_enabled(3, enabled=False)
+    await client.async_set_camera_enabled(3, enabled=True)
+    final = await client.async_get_camera_settings(3)
+
+    assert final.enabled is True
+    assert final.overlay_text == "Front Gate"
+
+
+@pytest.mark.asyncio
 async def test_write_posts_only_the_changed_keys() -> None:
     session = SettingsServer(settings_payload())
     await make_client(session).async_set_camera_settings(
@@ -449,6 +484,66 @@ async def test_write_posts_only_the_changed_keys() -> None:
 
     posted = decode_form_body(cast("bytes", session.calls[0][2]["data"]).decode())
     assert posted == {"cameraNum": "3", "motionSensitivity": "80"}
+
+
+# --- enabling and disabling cameras -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_enable_write_sends_the_byte_exact_body() -> None:
+    session = FakeSession()
+    await make_client(session).async_set_camera_enabled(OTHER_CAMERA, enabled=True)
+
+    method, url, kwargs = session.calls[0]
+    assert method == "POST"
+    assert url == f"http://{HOST}:{PORT}/++settings-cameras"
+    assert kwargs["params"] == {}, "the query form of this endpoint returns 404"
+    assert kwargs["data"] == b"formData&cameraNum=4&enabled=1", (
+        "enabled is an id-only checkbox; it is written as 1/0 like every bool"
+    )
+
+
+@pytest.mark.asyncio
+async def test_disable_write_sends_zero() -> None:
+    session = FakeSession()
+    await make_client(session).async_set_camera_enabled(OTHER_CAMERA, enabled=False)
+
+    body = cast("bytes", session.calls[0][2]["data"]).decode()
+    assert body == "formData&cameraNum=4&enabled=0"
+
+
+def test_enabled_patch_renders_one_and_zero() -> None:
+    assert CameraSettingsPatch(enabled=True).form_fields() == {"enabled": "1"}
+    assert CameraSettingsPatch(enabled=False).form_fields() == {"enabled": "0"}
+
+
+def test_enabled_reads_from_the_settings_page() -> None:
+    assert CameraSettings.from_api({"enabled": True}, camera_number=CAMERA).enabled is True
+    assert CameraSettings.from_api({}, camera_number=CAMERA).enabled is False
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_enable_write_names_the_settings_permission() -> None:
+    session = FakeSession(status=403, body=json.dumps({"secret": DEVICE_PASSWORD}))
+    with pytest.raises(SecuritySpyPermissionError) as err:
+        await make_client(session).async_set_camera_enabled(OTHER_CAMERA, enabled=True)
+    assert err.value.permission == "settings"
+    assert err.value.camera_number == OTHER_CAMERA
+
+
+@pytest.mark.asyncio
+async def test_rejected_enable_write_maps_to_auth_error() -> None:
+    session = FakeSession(status=401, body=json.dumps({"password": DEVICE_PASSWORD}))
+    with pytest.raises(SecuritySpyAuthError):
+        await make_client(session).async_set_camera_enabled(OTHER_CAMERA, enabled=True)
+
+
+@pytest.mark.asyncio
+async def test_rejected_enable_write_maps_to_a_connect_error() -> None:
+    session = FakeSession(status=500, body=json.dumps({"secret": DEVICE_PASSWORD}))
+    with pytest.raises(SecuritySpyConnectError) as err:
+        await make_client(session).async_set_camera_enabled(CAMERA, enabled=True)
+    assert DEVICE_PASSWORD not in str(err.value)
 
 
 @pytest.mark.asyncio
@@ -851,6 +946,8 @@ async def test_bad_camera_number_is_refused_by_every_new_method(number: object) 
         await client.async_set_camera_settings(bad, CameraSettingsPatch(brightness=1))
     with pytest.raises(ValueError, match="camera numbers must be non-negative"):
         await client.async_set_camera_arming(bad, CaptureModes())
+    with pytest.raises(ValueError, match="camera numbers must be non-negative"):
+        await client.async_set_camera_enabled(bad, enabled=True)
 
     assert session.calls == []
 

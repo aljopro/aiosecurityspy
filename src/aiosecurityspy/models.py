@@ -446,6 +446,27 @@ class CameraScheduleAssignment:
             actions_override=_as_int(payload.get("a-schedule-override")),
         )
 
+    def resolve_names(
+        self, schedules: Mapping[int, str]
+    ) -> tuple[str | None, str | None, str | None]:
+        """Resolve the three schedule ids to names against a schedule mapping.
+
+        Pure and synchronous: no request is issued, and an id that is absent
+        from ``schedules`` -- or already ``None`` -- resolves to ``None`` and
+        never raises. Schedules are user-editable, and while the two documents
+        arrive in one payload they need not stay consistent, so an unresolvable
+        id is a display gap, not a decode failure.
+        """
+        return (
+            schedules.get(self.continuous_schedule_id)
+            if self.continuous_schedule_id is not None
+            else None,
+            schedules.get(self.motion_schedule_id) if self.motion_schedule_id is not None else None,
+            schedules.get(self.actions_schedule_id)
+            if self.actions_schedule_id is not None
+            else None,
+        )
+
     # No hand-written `__repr__`: every field is an `int | None`, so the
     # dataclass's own repr cannot carry a credential. See `CaptureModes`.
 
@@ -831,6 +852,10 @@ class ServerInfo:
     #: Read-only view; ``ServerInfo`` is frozen and its inventory is not
     #: mutable through this attribute.
     cameras: Mapping[int, Camera] = field(default_factory=lambda: MappingProxyType({}))
+    #: Read-only id-to-name mapping of the schedules the server publishes
+    #: (research §5.4). ``{id: name}``; empty when ``schedule-list`` is absent
+    #: or holds no well-formed entry.
+    schedules: Mapping[int, str] = field(default_factory=lambda: MappingProxyType({}))
     #: Server CPU usage (research §10). ``None`` when absent, unparseable, or
     #: negative -- a negative usage has no legitimate reading.
     cpu_usage: float | None = None
@@ -864,7 +889,8 @@ class ServerInfo:
         both the wrapped form (``{"system": {"server": ...}}``) and a bare
         ``{"server": ...}``, and accepts the camera list as ``cameralist.camera``,
         a top-level ``camera-list``, or a bare ``camera`` key -- each either a
-        list or a single object.
+        list or a single object. The schedule list is read from a top-level
+        ``schedule-list`` when present.
 
         Args:
             payload: The parsed JSON body.
@@ -895,6 +921,7 @@ class ServerInfo:
         if version_info < MIN_SERVER_VERSION:
             raise SecuritySpyUnsupportedVersionError(version, MIN_SERVER_VERSION_TEXT)
 
+        schedules = cls._decode_schedules(system)
         cameras, located = cls._decode_cameras(system)
         if not located:
             # No recognised camera-list key at all -- this is indistinguishable
@@ -923,6 +950,7 @@ class ServerInfo:
             version_info=version_info,
             camera_count=camera_count if camera_count is not None else len(cameras),
             cameras=MappingProxyType(cameras),
+            schedules=MappingProxyType(schedules),
             cpu_usage=cpu_usage if cpu_usage is not None and cpu_usage >= 0 else None,
             memory_pressure=(
                 memory_pressure if memory_pressure is not None and memory_pressure >= 0 else None
@@ -998,6 +1026,43 @@ class ServerInfo:
                 continue
             cameras[camera.number] = camera
         return cameras, located
+
+    @staticmethod
+    def _decode_schedules(system: Mapping[str, object]) -> dict[int, str]:
+        """Decode the ``schedule-list`` into an ``{id: name}`` mapping.
+
+        ``schedule-list`` is an array of ``{"name": str, "id": int}`` objects
+        (research §5.4), not an object keyed by id. Schedules are
+        user-definable and this mapping is display data, so a malformed entry
+        is skipped rather than failing the whole decode -- every well-formed
+        entry still decodes.
+
+        Returns:
+            The decoded mapping, empty when ``schedule-list`` is absent, not a
+            list, or holds no well-formed entry.
+
+        """
+        raw = system.get("schedule-list")
+        if not isinstance(raw, list):
+            return {}
+        schedules: dict[int, str] = {}
+        for entry in raw:
+            mapping = _as_mapping(entry)
+            if mapping is None:
+                _LOGGER.debug("Skipping non-object schedule entry")
+                continue
+            schedule_id = _as_int(mapping.get("id"))
+            name = _as_str(mapping.get("name"))
+            if schedule_id is None or name is None:
+                _LOGGER.debug("Skipping schedule entry without an id or name")
+                continue
+            if schedule_id in schedules:
+                # Same rule as `_decode_cameras`: a duplicated id keeps the first
+                # entry rather than silently letting a later one win.
+                _LOGGER.debug("Duplicate schedule id %s; keeping the first", schedule_id)
+                continue
+            schedules[schedule_id] = name
+        return schedules
 
     def __repr__(self) -> str:
         """Return a representation that cannot carry credentials."""
@@ -1217,6 +1282,7 @@ _SETTINGS_BOOL_FIELDS: Final[tuple[tuple[str, str], ...]] = (
     ("actions_trigger_animal", "aTriggerMotionA"),
     ("continuous_capture_movie", "ccMovie"),
     ("continuous_capture_image", "ccImage"),
+    ("enabled", "enabled"),
 )
 
 _SETTINGS_INT_FIELDS: Final[tuple[tuple[str, str], ...]] = (
@@ -1322,6 +1388,7 @@ class CameraSettings:
     actions_trigger_animal: bool = False
     continuous_capture_movie: bool = False
     continuous_capture_image: bool = False
+    enabled: bool = False
     motion_sensitivity: int | None = None
     human_sensitivity: int | None = None
     vehicle_sensitivity: int | None = None
@@ -1364,6 +1431,7 @@ class CameraSettings:
             actions_trigger_animal=_as_bool(payload.get("aTriggerMotionA")),
             continuous_capture_movie=_as_bool(payload.get("ccMovie")),
             continuous_capture_image=_as_bool(payload.get("ccImage")),
+            enabled=_as_bool(payload.get("enabled")),
             motion_sensitivity=_as_int(payload.get("motionSensitivity")),
             human_sensitivity=_as_int(payload.get("humanSensitivity")),
             vehicle_sensitivity=_as_int(payload.get("vehicleSensitivity")),
@@ -1415,6 +1483,7 @@ class CameraSettingsPatch:
     actions_trigger_animal: bool | None = None
     continuous_capture_movie: bool | None = None
     continuous_capture_image: bool | None = None
+    enabled: bool | None = None
     motion_sensitivity: int | None = None
     human_sensitivity: int | None = None
     vehicle_sensitivity: int | None = None

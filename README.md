@@ -442,7 +442,15 @@ Three things about this surface are worth stating plainly:
   outside the published `-1`..`14` table rather than guessing.
 - **Schedules are read-only.** `Camera.schedules` reports the ids SecuritySpy assigned,
   and no method in this library reassigns one: the arming request sends `cameraNum`,
-  `mode` and `override`, and never `schedule=`.
+  `mode` and `override`, and never `schedule=`. The ids resolve to human-readable names
+  without a second request: `ServerInfo.schedules` is a read-only id-to-name map decoded
+  from the server's `schedule-list`, and `camera.schedules.resolve_names(info.schedules)`
+  returns the three names in `(continuous, motion, actions)` order. Schedules are
+  user-editable, so an id missing from the map resolves to `None` rather than raising.
+- **A camera can be taken in or out of service.** `async_set_camera_enabled(3,
+  enabled=False)` writes the settings page's `enabled` checkbox, through the same verified
+  partial-write path as `async_set_camera_settings` — only the one field is sent, and the
+  read-as-bool/write-as-`1`/`0` asymmetry is absorbed by the library.
 - **A settings payload contains the camera's device credentials in plaintext.**
   `CameraSettings` therefore keeps only a declared, curated set of non-credential fields —
   the raw payload is dropped at decode, never retained, and never logged at any level

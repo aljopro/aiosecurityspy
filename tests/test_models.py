@@ -28,6 +28,7 @@ from aiosecurityspy import (
     PERM_SETTINGS,
     PERM_TRIGGER,
     Camera,
+    CameraScheduleAssignment,
     CameraStatus,
     Capture,
     SecuritySpyUnsupportedVersionError,
@@ -1191,3 +1192,111 @@ def test_whitespace_only_new_version_offers_no_update() -> None:
     """A padded empty `new-version` is still the server's "no update" signal."""
     info = ServerInfo.from_api(wrap({**SERVER, "new-version": "   "}, []))
     assert info.update_version is None
+
+
+# --- schedules ----------------------------------------------------------------
+
+FIXTURE_SCHEDULE_NAMES = {
+    0: "Disarmed 24/7",
+    1: "Armed 24/7",
+    2: "Armed Sunrise To Sunset",
+    3: "Armed Sunset To Sunrise",
+}
+
+
+def test_live_camera_list_schedule_list_decodes() -> None:
+    """The real-server fixture's `schedule-list` decodes to an id-to-name map."""
+    info = ServerInfo.from_api(load_real_server_camera_list())
+    assert info.schedules == FIXTURE_SCHEDULE_NAMES
+
+
+def test_live_fixture_camera_schedule_ids_resolve_against_the_decoded_map() -> None:
+    """Each fixture camera's ids resolve by name, with no second request.
+
+    The fixture's cameras carry `cc-schedule-id`/`mc-schedule-id`/`a-schedule-id`
+    values (`1`/`1`/`0`), so this asserts the whole read path: the same decoded
+    `ServerInfo` both carries the schedule map and the cameras whose ids resolve
+    through it. It would fail if the fixture used the XML-form key spellings the
+    library does not decode (`schedule-id-cc`), or if `resolve_names` could not
+    see the server-level map.
+    """
+    info = ServerInfo.from_api(load_real_server_camera_list())
+    for camera in info.cameras.values():
+        assert camera.schedules.resolve_names(info.schedules) == (
+            "Armed 24/7",
+            "Armed 24/7",
+            "Disarmed 24/7",
+        )
+
+
+def test_absent_schedule_list_decodes_to_empty_mapping() -> None:
+    """A server that publishes no `schedule-list` still decodes fine."""
+    info = ServerInfo.from_api(load_system_info())
+    assert info.schedules == {}
+
+
+def test_malformed_schedule_entries_are_skipped() -> None:
+    """Entries lacking an id, lacking a name, or not objects are skipped."""
+    payload = wrap(SERVER, [])
+    payload["system"]["schedule-list"] = [
+        {"name": "Missing id"},
+        {"id": 5},
+        "not an object",
+        {"name": "Good", "id": 7},
+    ]
+    info = ServerInfo.from_api(payload)
+    assert info.schedules == {7: "Good"}
+
+
+def test_schedule_list_that_is_not_a_list_decodes_to_empty() -> None:
+    """A `schedule-list` that is not a list is treated as absent."""
+    payload = wrap(SERVER, [])
+    payload["system"]["schedule-list"] = {"name": "Armed 24/7", "id": 1}
+    info = ServerInfo.from_api(payload)
+    assert info.schedules == {}
+
+
+def test_schedules_are_not_mutable_through_the_model() -> None:
+    """`ServerInfo` is frozen, so its schedule map must not be mutable in place."""
+    info = ServerInfo.from_api(load_real_server_camera_list())
+    with pytest.raises(TypeError):
+        info.schedules[99] = "Nope"  # type: ignore[index]
+
+
+def test_resolve_names_resolves_known_ids() -> None:
+    """All three schedule ids resolve to names against the server's mapping."""
+    assignment = CameraScheduleAssignment(
+        continuous_schedule_id=0, motion_schedule_id=1, actions_schedule_id=2
+    )
+    assert assignment.resolve_names(FIXTURE_SCHEDULE_NAMES) == (
+        "Disarmed 24/7",
+        "Armed 24/7",
+        "Armed Sunrise To Sunset",
+    )
+
+
+def test_resolve_names_unknown_id_resolves_to_none() -> None:
+    """An id absent from the mapping is a display gap, not a failure."""
+    assignment = CameraScheduleAssignment(
+        continuous_schedule_id=0, motion_schedule_id=99, actions_schedule_id=2
+    )
+    assert assignment.resolve_names(FIXTURE_SCHEDULE_NAMES) == (
+        "Disarmed 24/7",
+        None,
+        "Armed Sunrise To Sunset",
+    )
+
+
+def test_resolve_names_absent_id_resolves_to_none() -> None:
+    """A `None` schedule id (never assigned) resolves to `None`, never raises."""
+    assignment = CameraScheduleAssignment(actions_schedule_id=2)
+    expected = (None, None, "Armed Sunrise To Sunset")
+    assert assignment.resolve_names(FIXTURE_SCHEDULE_NAMES) == expected
+
+
+def test_resolve_names_against_empty_mapping_never_raises() -> None:
+    """Even an empty schedule map leaves `resolve_names` total and silent."""
+    assignment = CameraScheduleAssignment(
+        continuous_schedule_id=0, motion_schedule_id=1, actions_schedule_id=2
+    )
+    assert assignment.resolve_names({}) == (None, None, None)

@@ -107,6 +107,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error surface. An array entry with no usable camera number is skipped — the same
   precedent `Camera.from_api` follows — and the rest of the response still decodes.
 - `ENDPOINT_CAM_STATUS` protocol constant for `++camStatus`.
+- **Schedule names and the camera enable write.** `ServerInfo` gains `schedules`, a
+  read-only id-to-name mapping decoded from `++systemInfo`'s `schedule-list` (research §5.4),
+  and `CameraScheduleAssignment.resolve_names()` resolves a camera's three schedule ids to
+  names against it — pure and synchronous, with an id absent from the mapping (or already
+  `None`) resolving to `None` rather than raising. Schedules remain **read-only**: this
+  library still has no method that reassigns one (AD-7), and `schedule=` is never sent to
+  `++ssSetSchedule`. New `SecuritySpyClient.async_set_camera_enabled(camera_number, *,
+  enabled=)` takes a camera in or out of service (FR-16, research §5.5), writing the single
+  `enabled` checkbox key through the same verified partial-write path as
+  `async_set_camera_settings()` — `enabled` is read as a JSON bool but written as `1`/`0`,
+  an asymmetry that lives entirely in `CameraSettingsPatch.form_fields()` like every other
+  boolean. `CameraSettings` and `CameraSettingsPatch` both gain the `enabled` field so the
+  read allowlist and the write field tables stay in lock-step.
 
 ## [0.1.0] - 2026-08-28
 
