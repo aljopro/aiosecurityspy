@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] - 2026-08-28
+
 ### Added
 
 - **Credential-safe diagnostics.** `anonymize()` returns a credential-free copy of any
@@ -320,11 +322,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a URL is built. `SecuritySpyClient`'s observable behaviour is unchanged.
 - Narrowed the `aiohttp` dependency to `>=3.12,<4`, matching the architecture's declared
   stack now that `aiohttp` is actually imported.
-
-## [0.1.0] - 2026-08-28
-
-### Added
-
 - Initial publishable package skeleton: `src/` layout, hatchling build backend, and all
   configuration in `pyproject.toml`.
 - `aiosecurityspy.__version__`, single-sourced from package metadata.
