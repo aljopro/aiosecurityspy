@@ -42,6 +42,7 @@ USERNAME = "sentinel-user-9d3f"
 PASSWORD = "sentinel-pass-4a71"  # noqa: S105 - leak-detection sentinel, not a real credential
 DEFAULT_TIMEOUT_SECONDS = 30.0
 CUSTOM_TIMEOUT_SECONDS = 2.5
+TWO_STATUSES = 2
 
 
 def fixture_body() -> str:
@@ -1099,3 +1100,109 @@ async def test_the_stub_records_a_post_alongside_its_gets() -> None:
     assert session.methods == ["POST"]
     assert len(session.calls) == 1
     assert session.calls[0][0].endswith("/++settings-cameras")
+
+
+# --- camera status: cheap health poll (spec 1.8) -----------------------------
+
+CAM_STATUS_URL = f"http://{HOST}:{PORT}/++camStatus"
+
+
+def cam_status_body(entries: list[dict[str, Any]]) -> str:
+    return json.dumps(entries)
+
+
+@pytest.mark.asyncio
+async def test_camera_status_happy_path_decodes_every_entry() -> None:
+    session = FakeSession(
+        200,
+        cam_status_body(
+            [
+                {
+                    "num": 0,
+                    "enabled": True,
+                    "online": True,
+                    "open": False,
+                    "err": "",
+                    "errDesc": "",
+                },
+                {
+                    "num": 1,
+                    "enabled": True,
+                    "online": False,
+                    "open": True,
+                    "err": "e",
+                    "errDesc": "d",
+                },
+            ]
+        ),
+    )
+    statuses = await make_client(session).async_get_camera_status()
+    assert len(statuses) == TWO_STATUSES
+    first, second = statuses
+    assert first.number == 0
+    assert first.enabled is True
+    assert first.online is True
+    assert first.open is False
+    assert first.error is None
+    assert first.error_description is None
+    assert second.number == 1
+    assert second.online is False
+    assert second.open is True
+    assert second.error == "e"
+    assert second.error_description == "d"
+
+
+@pytest.mark.asyncio
+async def test_camera_status_request_shape() -> None:
+    session = FakeSession(200, cam_status_body([]))
+    await make_client(session).async_get_camera_status()
+    url, kwargs = session.calls[0]
+    assert url == CAM_STATUS_URL
+    assert kwargs["headers"]["Authorization"] == aiohttp.encode_basic_auth(USERNAME, PASSWORD)
+    # The endpoint is called without `format=json`, unlike `++systemInfo`; the
+    # docstring records that as an assumption, so pin it rather than let a
+    # silently-added parameter pass.
+    assert not kwargs["params"]
+
+
+@pytest.mark.asyncio
+async def test_camera_status_entry_with_no_usable_number_is_skipped() -> None:
+    session = FakeSession(
+        200,
+        cam_status_body(
+            [
+                {"num": "x", "enabled": True, "online": True, "open": False},
+                {"num": 2, "enabled": True, "online": True, "open": False},
+            ]
+        ),
+    )
+    statuses = await make_client(session).async_get_camera_status()
+    assert [status.number for status in statuses] == [2]
+
+
+@pytest.mark.asyncio
+async def test_camera_status_non_object_entry_is_skipped() -> None:
+    session = FakeSession(200, '["nonsense", {"num": 3}]')
+    statuses = await make_client(session).async_get_camera_status()
+    assert [status.number for status in statuses] == [3]
+
+
+@pytest.mark.asyncio
+async def test_camera_status_empty_array_is_an_empty_tuple() -> None:
+    session = FakeSession(200, cam_status_body([]))
+    assert await make_client(session).async_get_camera_status() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", ['"a string"', "42", "null", "{}"])
+async def test_camera_status_non_array_body_raises_connect_error(body: str) -> None:
+    session = FakeSession(200, body)
+    with pytest.raises(SecuritySpyConnectError):
+        await make_client(session).async_get_camera_status()
+
+
+@pytest.mark.asyncio
+async def test_camera_status_auth_failure_maps_to_auth_error() -> None:
+    session = FakeSession(401, "")
+    with pytest.raises(SecuritySpyAuthError):
+        await make_client(session).async_get_camera_status()

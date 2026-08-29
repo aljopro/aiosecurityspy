@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Server and camera health decoding.** `ServerInfo` gains `cpu_usage`, `memory_pressure`,
+  `cert_expiry_days` and `update_version`; `Camera` gains `current_fps`, `data_rate`,
+  `last_error` and `last_error_description` — all decoded from `++systemInfo` (research
+  §10) via a new `_as_float` helper alongside the existing `_as_str`/`_as_int`/`_as_bool`
+  tolerant-optional coercions. Every new field is `None` when the server omits it, sends a
+  non-numeric value, or — for the fields where only a non-negative reading is meaningful
+  (CPU usage, memory pressure, frame rate, data rate) — sends a negative one; the
+  surrounding `ServerInfo`/`Camera` decode still succeeds. `cert_expiry_days` is
+  deliberately **not** clamped on a negative value: a negative day count is what an
+  already-expired certificate reports, and that is exactly the diagnosable state the field
+  exists to carry. `update_version` folds `new-version`'s empty string to `None` like every
+  other `_as_str` field, and is never compared against `version` — an empty `new-version`
+  is the only "no update" signal the API documents.
+- `CameraStatus` and `SecuritySpyClient.async_get_camera_status()`: a typed accessor for
+  the cheap `++camStatus` poll (794 B for 11 cameras vs `++systemInfo`'s 27 KB), for a consumer that only
+  needs to notice a camera going offline, closing, or erroring on every cycle.
+  `enabled`/`online`/`open` are three independent booleans, never collapsed, matching the
+  precedent `CaptureModes` already set for the three capture modes. `error`/
+  `error_description` decode the wire's `err`/`errDesc` keys, named to match
+  `Camera.last_error`/`last_error_description`. Zero, not just the empty string, is this
+  surface's "no error" sentinel — the one live capture sends `"err":0` on a healthy camera
+  — so both spellings decode to `None` and only a non-zero code is carried through. The
+  description is decoded with its code rather than independently, so it is `None` whenever
+  the code is and can never outlive the fault it describes. `Camera.last_error`/
+  `last_error_description` follow both rules, since research §10 lists the two as one
+  error surface. An array entry with no usable camera number is skipped — the same
+  precedent `Camera.from_api` follows — and the rest of the response still decodes.
+- `ENDPOINT_CAM_STATUS` protocol constant for `++camStatus`.
+
 ## [0.1.0] - 2026-08-28
 
 ### Added

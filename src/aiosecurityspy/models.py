@@ -55,6 +55,7 @@ __all__ = [
     "CameraScheduleAssignment",
     "CameraSettings",
     "CameraSettingsPatch",
+    "CameraStatus",
     "Capture",
     "CaptureModes",
     "ServerInfo",
@@ -114,6 +115,75 @@ def _parse_ascii_int(text: str) -> int | None:
     if not digits or not digits.isascii() or not digits.isdigit():
         return None
     return int(text)
+
+
+def _finite_float(value: int | float) -> float | None:
+    """Return ``value`` as a finite ``float``, or ``None``.
+
+    `json.loads` accepts NaN/Infinity literals; a non-finite health reading is
+    not a usable number. It also accepts arbitrarily large integer literals,
+    which ``float()``/``math.isfinite()`` reject with an ``OverflowError``
+    rather than returning a value -- not a usable number either, so it is
+    treated the same as non-finite.
+    """
+    try:
+        return float(value) if math.isfinite(value) else None
+    except OverflowError:
+        return None
+
+
+def _as_float(value: object) -> float | None:
+    """Coerce an API value to a ``float``, or ``None`` when it will not parse.
+
+    Unlike :func:`_as_int`, the health fields this backs (``cpu-usage``,
+    ``current-fps``, ``data-rate``, ...) are inherently fractional, so a
+    ``float`` is the wire's own shape rather than a lossy narrowing. It matches
+    :func:`_as_int`'s *strictness* though: Python literal spellings that no
+    server emits -- underscore grouping (``"1_0"`` -> 10.0) and the ``"nan"`` /
+    ``"inf"`` words -- must not be honoured for wire data.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return _finite_float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text.isascii() or "_" in text:
+            return None
+        try:
+            parsed = float(text)
+        except ValueError:
+            return None
+        return _finite_float(parsed)
+    return None
+
+
+def _as_error_code(value: object) -> str | None:
+    """Coerce an API error field to a reported error code, or ``None``.
+
+    The one live ``++camStatus`` capture the project holds (research addendum
+    §8.12) sends ``"err":0`` on a *healthy* camera, not ``""`` -- so zero, not
+    just absence, is this surface's "no error" sentinel. Decoding it with plain
+    :func:`_as_str` would hand every healthy camera the string ``"0"`` and make
+    the documented ``if status.error is not None`` idiom report the whole
+    inventory as errored.
+
+    ``++systemInfo``'s ``last-error`` is the same concept under a different key
+    (research §10 lists the pair as one "error surface"), so it collapses zero
+    the same way. Any other value -- including a non-zero numeric code -- is
+    carried through as the server's own string.
+    """
+    text = _as_str(value)
+    if text is None:
+        return None
+    # A whitespace-only code is the empty code with padding, not an error;
+    # `_as_str` keeps it because it is truthy, so it is collapsed here.
+    text = text.strip()
+    if not text:
+        return None
+    # `_as_float`, not `_as_int`, so a ``"0.0"`` spelling collapses too; a value
+    # that is not a number at all leaves ``None != 0`` and is carried through.
+    return None if _as_float(text) == 0 else text
 
 
 def _as_bool(value: object, *, default: bool = False) -> bool:
@@ -558,6 +628,20 @@ class Camera:
     capture_modes: CaptureModes = field(default_factory=CaptureModes)
     #: Read-only schedule ids and overrides (research §10, AD-7).
     schedules: CameraScheduleAssignment = field(default_factory=CameraScheduleAssignment)
+    #: Current frames-per-second (research §10). ``None`` when absent,
+    #: unparseable, or negative -- a negative frame rate has no legitimate
+    #: reading.
+    current_fps: float | None = None
+    #: Current data rate (research §10). Same fallback rule as
+    #: :attr:`current_fps`; the unit is not documented, so it is carried
+    #: through as the server's own number rather than converted.
+    data_rate: float | None = None
+    #: The camera's last reported error, if any (research §10).
+    last_error: str | None = None
+    #: Human-readable description of :attr:`last_error` (research §10).
+    #: ``None`` whenever :attr:`last_error` is ``None`` -- the pair is decoded
+    #: together, so a description never outlives its code.
+    last_error_description: str | None = None
 
     @classmethod
     def from_api(cls, payload: dict[str, object]) -> Camera | None:
@@ -575,6 +659,9 @@ class Camera:
         if number is None:
             _LOGGER.debug("Skipping camera entry with a non-numeric camera number")
             return None
+        current_fps = _as_float(payload.get("current-fps"))
+        data_rate = _as_float(payload.get("data-rate"))
+        last_error = _as_error_code(payload.get("last-error"))
         return cls(
             number=number,
             name=_as_str(payload.get("name")) or f"Camera {number}",
@@ -583,6 +670,12 @@ class Camera:
             permissions=max(_as_int(payload.get("permissions")) or 0, 0),
             capture_modes=CaptureModes.from_api(payload),
             schedules=CameraScheduleAssignment.from_api(payload),
+            current_fps=current_fps if current_fps is not None and current_fps >= 0 else None,
+            data_rate=data_rate if data_rate is not None and data_rate >= 0 else None,
+            last_error=last_error,
+            last_error_description=(
+                _as_str(payload.get("last-error-description")) if last_error is not None else None
+            ),
         )
 
     @property
@@ -606,6 +699,69 @@ class Camera:
             f"permissions={self.permissions}, "
             f"capture_modes={self.capture_modes.mode_string!r}, "
             f"schedules={self.schedules!r})"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CameraStatus:
+    """One camera's entry from the cheap ``++camStatus`` poll (research §2.2).
+
+    ``++camStatus`` is a 794-byte alternative to ``++systemInfo``'s 27 KB: a
+    consumer that only needs to notice a camera going offline or erroring can
+    poll this on every cycle instead of decoding the full inventory.
+
+    ``enabled``, ``online`` and ``open`` are three independent booleans, never
+    collapsed into one state -- the same rule :class:`CaptureModes` follows for
+    the three capture modes.
+    """
+
+    number: int
+    enabled: bool
+    online: bool
+    open: bool
+    #: The camera's current error code, if any. Named to match
+    #: :attr:`Camera.last_error` -- the wire key is ``err``, but the two
+    #: surfaces are the same concept.
+    error: str | None = None
+    #: Human-readable description of :attr:`error`. Named to match
+    #: :attr:`Camera.last_error_description`; the wire key is ``errDesc``.
+    #: ``None`` whenever :attr:`error` is ``None`` -- the pair is decoded
+    #: together, so a description never outlives its code.
+    error_description: str | None = None
+
+    @classmethod
+    def from_api(cls, payload: dict[str, object]) -> CameraStatus | None:
+        """Decode one ``++camStatus`` array entry.
+
+        Args:
+            payload: A single entry from the ``++camStatus`` array.
+
+        Returns:
+            The decoded status, or ``None`` when the entry has no usable
+            camera number and must be skipped -- the same precedent
+            :meth:`Camera.from_api` follows.
+
+        """
+        number = _as_int(payload.get("num"))
+        if number is None:
+            _LOGGER.debug(
+                "Skipping camStatus entry with an unusable camera number: %r",
+                payload.get("num"),
+            )
+            return None
+        error = _as_error_code(payload.get("err"))
+        return cls(
+            number=number,
+            enabled=_as_bool(payload.get("enabled")),
+            online=_as_bool(payload.get("online")),
+            open=_as_bool(payload.get("open")),
+            error=error,
+            # Paired with `error`, never decoded independently: a description
+            # without a code would make `if status.error is not None` -- the
+            # documented idiom -- disagree with a consumer that reads the
+            # description on its own, and a stale description would then read
+            # as a live fault on a healthy camera.
+            error_description=_as_str(payload.get("errDesc")) if error is not None else None,
         )
 
 
@@ -659,6 +815,30 @@ class ServerInfo:
     #: Read-only view; ``ServerInfo`` is frozen and its inventory is not
     #: mutable through this attribute.
     cameras: Mapping[int, Camera] = field(default_factory=lambda: MappingProxyType({}))
+    #: Server CPU usage (research §10). ``None`` when absent, unparseable, or
+    #: negative -- a negative usage has no legitimate reading.
+    cpu_usage: float | None = None
+    #: Server memory pressure (research §10). Same fallback rule as
+    #: :attr:`cpu_usage`.
+    memory_pressure: float | None = None
+    #: Days until the server's certificate expires (research §10). Deliberately
+    #: **not** clamped on a negative value: a negative count is what an
+    #: already-expired certificate reports, and hiding it would suppress the
+    #: more urgent diagnosable state. Not a datetime -- it is a day count, not
+    #: a timestamp.
+    cert_expiry_days: int | None = None
+    #: The version the server is offering to update to (research §10).
+    #: ``None`` both when ``new-version`` is absent and when it is the empty
+    #: string SecuritySpy sends to mean "no update offered" -- never compared
+    #: against :attr:`version`, since an empty ``new-version`` is the only
+    #: "no update" signal the API documents.
+    #:
+    #: ``[ASSUMPTION]`` The research records only that an up-to-date server
+    #: sends ``new-version`` empty; it does not establish that the server never
+    #: *echoes* the installed version. If it does, a consumer reading this field
+    #: alone would show a spurious "update available", and the comparison this
+    #: field deliberately omits would have to be reinstated.
+    update_version: str | None = None
 
     @classmethod
     def from_api(cls, payload: object) -> ServerInfo:
@@ -704,6 +884,9 @@ class ServerInfo:
             camera_count = None
         if camera_count is not None and camera_count != len(cameras):
             _LOGGER.debug("Server reports %s cameras but %s decoded", camera_count, len(cameras))
+
+        cpu_usage = _as_float(server.get("cpu-usage"))
+        memory_pressure = _as_float(server.get("memory-pressure"))
         return cls(
             uuid=_as_str(server.get("uuid")) or "",
             name=_decode_server_name(server),
@@ -711,6 +894,16 @@ class ServerInfo:
             version_info=version_info,
             camera_count=camera_count if camera_count is not None else len(cameras),
             cameras=MappingProxyType(cameras),
+            cpu_usage=cpu_usage if cpu_usage is not None and cpu_usage >= 0 else None,
+            memory_pressure=(
+                memory_pressure if memory_pressure is not None and memory_pressure >= 0 else None
+            ),
+            # Not clamped on a negative value; see the field's own docstring.
+            cert_expiry_days=_as_int(server.get("cert-expiry-days")),
+            # `.strip()`: an empty `new-version` is the server's "no update"
+            # signal, and a whitespace-only one is that same signal padded --
+            # `_as_str` keeps it because it is truthy.
+            update_version=(_as_str(server.get("new-version")) or "").strip() or None,
         )
 
     @staticmethod

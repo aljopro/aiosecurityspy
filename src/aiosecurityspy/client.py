@@ -23,6 +23,7 @@ from .const import (
     CAPTURE_FILTERS,
     DEFAULT_PORT,
     DEFAULT_TIMEOUT,
+    ENDPOINT_CAM_STATUS,
     ENDPOINT_CAPTURE_LIST,
     ENDPOINT_SET_SCHEDULE,
     ENDPOINT_SETTINGS_CAMERAS,
@@ -36,6 +37,7 @@ from .models import (
     SETTINGS_PAGE_KEYS,
     ArmOverride,
     CameraSettings,
+    CameraStatus,
     Capture,
     ServerInfo,
     arm_override,
@@ -214,6 +216,19 @@ def _capture_entries(payload: object) -> list[object] | None:
             named = payload.get(key)  # pyright: ignore[reportUnknownVariableType]
             if isinstance(named, list):
                 return list(named)  # pyright: ignore[reportUnknownArgumentType]
+    return None
+
+
+def _camera_status_entries(payload: object) -> list[object] | None:
+    """Locate the status array in a ``++camStatus`` body, or return ``None``.
+
+    Research §2.2 records a bare JSON array (``[{num, enabled, online, open,
+    err, errDesc}]``); nothing else is documented, so unlike
+    :func:`_capture_entries` this accepts only that shape rather than guessing
+    at a wrapped envelope no observation supports.
+    """
+    if isinstance(payload, list):
+        return list(payload)  # pyright: ignore[reportUnknownArgumentType]
     return None
 
 
@@ -406,6 +421,59 @@ class SecuritySpyClient:
         """
         payload = await self._request_json(ENDPOINT_SYSTEM_INFO, {"format": "json"})
         return ServerInfo.from_api(payload)
+
+    async def async_get_camera_status(self) -> tuple[CameraStatus, ...]:
+        """Read the cheap per-camera health poll from ``++camStatus``.
+
+        This is the low-cost alternative to :meth:`async_get_server_info`: the
+        response is 794 B for 11 cameras versus ``++systemInfo``'s 27 KB
+        (research §2.2), so a consumer that only needs to notice a camera going
+        offline, closing, or erroring can poll this on every cycle instead of
+        decoding the full inventory.
+
+        ``[ASSUMPTION]`` This endpoint is called without ``format=json``,
+        unlike :meth:`async_get_server_info`, because the one capture of it the
+        project holds returns JSON unconditionally (research addendum §8.12).
+        If a live server turns out to honour ``format`` here too, this call
+        raises :class:`SecuritySpyConnectError` on every poll and the parameter
+        must be added. A stub pins the request shape -- the client tests assert
+        this call sends no query parameters -- but only a live server can
+        settle whether that shape is the right one.
+
+        Raises:
+            SecuritySpyConnectError: The server was unreachable, timed out,
+                answered with an unexpected status, or sent a body that was not
+                a JSON array.
+            SecuritySpyAuthError: The credentials were rejected (401/403).
+
+        Returns:
+            The decoded per-camera status, one entry per camera the server
+            reported. An entry with no usable camera number is skipped; the
+            rest still decode.
+
+        """
+        payload = await self._request_json(ENDPOINT_CAM_STATUS)
+        entries = _camera_status_entries(payload)
+        if entries is None:
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "server response was not a camera status list",
+            )
+        statuses: list[CameraStatus] = []
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                _LOGGER.debug(
+                    "Skipping camStatus entry %d: expected an object, got %s",
+                    index,
+                    type(entry).__name__,
+                )
+                continue
+            mapping = {str(key): item for key, item in entry.items()}  # pyright: ignore[reportUnknownVariableType]
+            status = CameraStatus.from_api(mapping)
+            if status is not None:
+                statuses.append(status)
+        return tuple(statuses)
 
     async def async_get_captures(  # noqa: PLR0913 - the camera set, the two date bounds and the two filter forms are irreducible; everything but `cameras` is keyword-only
         self,

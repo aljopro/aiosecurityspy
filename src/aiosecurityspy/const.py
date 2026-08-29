@@ -57,6 +57,7 @@ __all__ = [
     "DEFAULT_DETECTION_THRESHOLD",
     "DEFAULT_PORT",
     "DEFAULT_TIMEOUT",
+    "ENDPOINT_CAM_STATUS",
     "ENDPOINT_CAPTURE_LIST",
     "ENDPOINT_EVENT_STREAM",
     "ENDPOINT_PREFIX",
@@ -130,6 +131,19 @@ ENDPOINT_EVENT_STREAM: Final = f"{ENDPOINT_PREFIX}eventStream"
 
 #: Capture-history endpoint (research §4). One request covers many cameras.
 ENDPOINT_CAPTURE_LIST: Final = f"{ENDPOINT_PREFIX}caplist"
+
+#: Cheap per-camera status poll (research §2.2). 794 B for 11 cameras vs
+#: ``++systemInfo``'s 27 KB, so a consumer that only needs
+#: enabled/online/open/error state does not have to decode the heavy payload on
+#: every cycle. The saving scales with camera count; the measured pair is the
+#: only one recorded.
+#:
+#: The response shape (a bare JSON array) is not in the published web-server
+#: spec; it comes from a HAR capture of the official web client against a live
+#: server (research addendum §8.12, which records the endpoint as verified
+#: working there). So the shape is observed rather than guessed, but it is
+#: undocumented by the vendor and carries no compatibility promise.
+ENDPOINT_CAM_STATUS: Final = f"{ENDPOINT_PREFIX}camStatus"
 
 #: Per-camera settings page (research §8.0). Read with ``?cameraNum=N&format=json``;
 #: written with a ``POST`` to the **bare** path -- the query form returns 404.

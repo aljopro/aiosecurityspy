@@ -432,6 +432,48 @@ Booleans read back from SecuritySpy as JSON `true`/`false` but must be *written*
 `1`/`0`. That asymmetry is absorbed inside the library, so a call site only ever sees
 `bool`.
 
+### Check server and camera health
+
+`ServerInfo` and `Camera` (from `async_get_server_info()`) carry a handful of health
+fields alongside the identity and permission ones: server `cpu_usage`, `memory_pressure`,
+`cert_expiry_days` and `update_version`, and per-camera `current_fps`, `data_rate`,
+`last_error` and `last_error_description`. Every one of them is `None` when the server
+omits it, sends something unparseable, or — for the fields where only a non-negative
+number means anything (CPU usage, memory pressure, frame rate, data rate) — sends a
+negative one; decoding never raises over a missing or malformed health reading.
+`cert_expiry_days` is the one exception to the non-negative rule: a *negative* count is
+exactly what an already-expired certificate reports, so it is passed through rather than
+clamped to `None`. `update_version` is `None` both when `new-version` is absent and when
+it is the empty string SecuritySpy sends to mean "no update offered" — it is never
+compared against `version`, since an empty `new-version` is the only "no update" signal
+the API documents.
+
+For a cheap health poll on every cycle, `async_get_camera_status()` reads `++camStatus` —
+794 B for 11 cameras versus `++systemInfo`'s 27 KB — and returns one typed `CameraStatus` per camera the
+server reports:
+
+```python
+statuses = await client.async_get_camera_status()
+for status in statuses:
+    state = "online" if status.online else "offline"
+    print(f"camera {status.number}: {state}, enabled={status.enabled}, open={status.open}")
+    if status.error is not None:
+        print(f"  error: {status.error} ({status.error_description})")
+```
+
+`enabled`, `online` and `open` are three independent booleans, never collapsed into one
+state. `CameraStatus.error`/`error_description` decode the wire's `err`/`errDesc` keys and
+mirror `Camera.last_error`/`last_error_description` in naming. A healthy camera reports
+*zero* on this surface, not an empty string — the one live capture of `++camStatus` sends
+`"err":0` — so both an empty and a zero error code decode to `None`, and the
+`if status.error is not None` test above means "this camera is actually reporting an
+error". A non-zero code is carried through as the server's own string. The description is
+decoded with its code, never independently: when the code folds to `None`, so does
+`error_description`, so a description can never outlive the fault it describes.
+`Camera.last_error`/`last_error_description` follow both rules, since research §10 lists
+the two as one error surface. An entry with no usable camera number is skipped, the same precedent
+`Camera.from_api` follows, and the rest of the response still decodes.
+
 ### Anonymize a diagnostics dump before you publish it
 
 The library keeps credentials out of its own models, logs, URLs and exceptions. What it

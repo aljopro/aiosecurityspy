@@ -29,6 +29,7 @@ import pytest
 import aiosecurityspy
 from aiosecurityspy import (
     ARM_OVERRIDE_ARMED_2_HOURS,
+    ENDPOINT_CAM_STATUS,
     ENDPOINT_CAPTURE_LIST,
     ENDPOINT_EVENT_STREAM,
     ENDPOINT_SETTINGS_CAMERAS,
@@ -80,6 +81,7 @@ MINIMUM_DEBUG_RECORDS: Final = 12
 #: gone from ``__all__`` and the URL claim silently untested for them.
 EXPECTED_ENDPOINT_NAMES: Final = frozenset(
     {
+        "ENDPOINT_CAM_STATUS",
         "ENDPOINT_CAPTURE_LIST",
         "ENDPOINT_EVENT_STREAM",
         "ENDPOINT_SETTINGS_CAMERAS",
@@ -122,6 +124,19 @@ def settings_page() -> dict[str, object]:
 CAPTURE_LIST: Final = [
     {"c": 3, "f": "2026-08-09", "s": 63319, "d": 30, "t": 1, "o": 1, "n": PAYLOAD_MARKER}
 ]
+
+CAM_STATUS: Final = [
+    {"num": 3, "enabled": True, "online": True, "open": False, "err": "", "errDesc": ""}
+]
+
+#: ``(url suffix, JSON body)`` pairs `FakeServer._respond` checks in order, kept
+#: as a table rather than a chain of `if`s so a new endpoint costs one row.
+_ENDPOINT_BODIES: Final[tuple[tuple[str, object], ...]] = (
+    (ENDPOINT_SYSTEM_INFO, SYSTEM_INFO),
+    (ENDPOINT_SETTINGS_CAMERAS, settings_page()),
+    (ENDPOINT_CAPTURE_LIST, CAPTURE_LIST),
+    (ENDPOINT_CAM_STATUS, CAM_STATUS),
+)
 
 
 class BufferedContent:
@@ -232,12 +247,9 @@ class FakeServer:
             return FakeResponse(self.status, [MOTION_RECORD, SILENCE])
         if self.body is not None:
             return FakeResponse(self.status, self.body.encode())
-        if url.endswith(ENDPOINT_SYSTEM_INFO):
-            return FakeResponse(self.status, json.dumps(SYSTEM_INFO).encode())
-        if url.endswith(ENDPOINT_SETTINGS_CAMERAS):
-            return FakeResponse(self.status, json.dumps(settings_page()).encode())
-        if url.endswith(ENDPOINT_CAPTURE_LIST):
-            return FakeResponse(self.status, json.dumps(CAPTURE_LIST).encode())
+        for suffix, payload in _ENDPOINT_BODIES:
+            if url.endswith(suffix):
+                return FakeResponse(self.status, json.dumps(payload).encode())
         return FakeResponse(self.status, b"OK")
 
 
@@ -267,6 +279,7 @@ async def drive_every_path(server: FakeServer) -> list[SecuritySpyError]:
     errors: list[SecuritySpyError] = []
     calls: tuple[Callable[[], Any], ...] = (
         client.async_get_server_info,
+        client.async_get_camera_status,
         lambda: client.async_get_camera_settings(CAMERA),
         lambda: client.async_set_camera_settings(
             CAMERA, CameraSettingsPatch(overlay_text=PAYLOAD_MARKER)

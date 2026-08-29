@@ -26,6 +26,7 @@ from aiosecurityspy import (
     PERM_SCHED,
     PERM_TRIGGER,
     Camera,
+    CameraStatus,
     Capture,
     SecuritySpyUnsupportedVersionError,
     ServerInfo,
@@ -752,3 +753,303 @@ def test_an_out_of_range_second_of_day_rolls_over_rather_than_raising() -> None:
     )
     assert capture is not None
     assert capture.start == datetime(2026, 8, 10, 0, 1, 1, tzinfo=UTC)
+
+
+# --- server and camera health decoding (spec 1.8) ---------------------------
+
+FIXTURE_CPU_USAGE = 17.0
+FIXTURE_MEMORY_PRESSURE = 22.0
+FIXTURE_CERT_EXPIRY_DAYS = 61
+FIXTURE_DRIVEWAY_DATA_RATE = 1024.0
+
+
+def test_full_health_payload_decodes_every_new_field() -> None:
+    """Every row-one field of the I/O matrix: server and camera health, present."""
+    info = ServerInfo.from_api(load_system_info())
+    assert info.cpu_usage == FIXTURE_CPU_USAGE
+    assert info.memory_pressure == FIXTURE_MEMORY_PRESSURE
+    assert info.cert_expiry_days == FIXTURE_CERT_EXPIRY_DAYS
+    # The fixture's `new-version` is "" -- see test_empty_new_version_is_none.
+
+    driveway = info.cameras[1]
+    assert driveway.data_rate == FIXTURE_DRIVEWAY_DATA_RATE
+    assert driveway.last_error is None
+    assert driveway.last_error_description is None
+
+    back = info.cameras[7]
+    assert back.last_error == "timeout"
+    assert back.last_error_description == "Connection timed out"
+    assert back.data_rate == 0.0
+
+
+def test_current_fps_decodes_from_fixture() -> None:
+    """`current-fps` was already on the fixture before this story; still typed."""
+    info = ServerInfo.from_api(load_system_info())
+    assert info.cameras[0].current_fps == 15.0  # noqa: PLR2004 - the fixture's own value
+    assert info.cameras[1].current_fps == 10.0  # noqa: PLR2004 - the fixture's own value
+
+
+def test_health_fields_absent_decode_to_none() -> None:
+    """A payload minus every new key must still decode, with the new fields None."""
+    server = dict(SERVER)
+    camera = {"number": "1", "name": "Bare"}
+    info = ServerInfo.from_api(wrap(server, [camera]))
+    assert info.cpu_usage is None
+    assert info.memory_pressure is None
+    assert info.cert_expiry_days is None
+    assert info.update_version is None
+    bare = info.cameras[1]
+    assert bare.current_fps is None
+    assert bare.data_rate is None
+    assert bare.last_error is None
+    assert bare.last_error_description is None
+    # Existing fields are unaffected by the absence of the new ones.
+    assert bare.name == "Bare"
+
+
+def test_empty_new_version_is_none_not_empty_string() -> None:
+    """`update_version` folds "" to `None`, matching the existing `_as_str` rule."""
+    info = ServerInfo.from_api(wrap({**SERVER, "new-version": ""}, []))
+    assert info.update_version is None
+
+
+def test_non_empty_new_version_decodes() -> None:
+    info = ServerInfo.from_api(wrap({**SERVER, "new-version": "6.21"}, []))
+    assert info.update_version == "6.21"
+
+
+def test_new_version_is_never_compared_against_version() -> None:
+    """An offered version equal to the current one is still a real offer."""
+    info = ServerInfo.from_api(wrap({**SERVER, "new-version": "6.20"}, []))
+    assert info.update_version == "6.20"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cpu-usage", "n/a"),
+        ("cpu-usage", "-5"),
+        ("memory-pressure", "n/a"),
+        ("memory-pressure", "-1"),
+    ],
+)
+def test_malformed_or_negative_server_health_fields_are_none(field: str, value: str) -> None:
+    """Malformed or negative health readings fall back to `None`; decode still succeeds."""
+    info = ServerInfo.from_api(wrap({**SERVER, field: value}, []))
+    assert getattr(info, field.replace("-", "_")) is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("current-fps", "-5"),
+        ("current-fps", "abc"),
+        ("data-rate", "abc"),
+        ("data-rate", "-1"),
+    ],
+)
+def test_malformed_or_negative_camera_health_fields_are_none(field: str, value: str) -> None:
+    camera = Camera.from_api({"number": 1, field: value})
+    assert camera is not None
+    assert getattr(camera, field.replace("-", "_")) is None
+
+
+def test_cert_expiry_days_is_not_clamped_on_a_negative_value() -> None:
+    """A negative day count means an already-expired certificate -- meaningful, not noise."""
+    info = ServerInfo.from_api(wrap({**SERVER, "cert-expiry-days": "-3"}, []))
+    assert info.cert_expiry_days == -3  # noqa: PLR2004 - the value under test
+
+
+def test_cert_expiry_days_malformed_is_none() -> None:
+    info = ServerInfo.from_api(wrap({**SERVER, "cert-expiry-days": "soon"}, []))
+    assert info.cert_expiry_days is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cpu-usage", -5),
+        ("cpu-usage", -5.0),
+    ],
+)
+def test_negative_native_number_server_health_field_is_none(field: str, value: object) -> None:
+    """A negative reading as a native JSON int/float, not a string, still folds to `None`."""
+    info = ServerInfo.from_api(wrap({**SERVER, field: value}, []))
+    assert getattr(info, field.replace("-", "_")) is None
+
+
+def test_oversized_integer_health_field_does_not_raise() -> None:
+    """Guard against `float()`/`math.isfinite()` overflowing on an oversized value.
+
+    `json.loads` permits arbitrarily large integers; the decode must still fall
+    back to `None`, not crash.
+    """
+    info = ServerInfo.from_api(wrap({**SERVER, "cpu-usage": 10**400}, []))
+    assert info.cpu_usage is None
+
+
+# --- CameraStatus decoding (spec 1.8) ----------------------------------------
+
+
+def test_camera_status_decodes_full_entry() -> None:
+    status = CameraStatus.from_api(
+        {"num": 0, "enabled": True, "online": True, "open": False, "err": "", "errDesc": ""}
+    )
+    assert status is not None
+    assert status.number == 0
+    assert status.enabled is True
+    assert status.online is True
+    assert status.open is False
+    assert status.error is None
+    assert status.error_description is None
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("online", [True, False])
+@pytest.mark.parametrize("open_", [True, False])
+def test_camera_status_independent_booleans_are_not_collapsed(
+    *, enabled: bool, online: bool, open_: bool
+) -> None:
+    """enabled/online/open are three independent states; all eight combinations decode."""
+    status = CameraStatus.from_api(
+        {
+            "num": 1,
+            "enabled": enabled,
+            "online": online,
+            "open": open_,
+            "err": "e1",
+            "errDesc": "bad",
+        }
+    )
+    assert status is not None
+    assert status.enabled is enabled
+    assert status.online is online
+    assert status.open is open_
+    assert status.error == "e1"
+    assert status.error_description == "bad"
+
+
+def test_camera_status_numeric_zero_error_decodes_to_none() -> None:
+    """The one live capture sends ``"err":0`` on a healthy camera, not ``""``."""
+    status = CameraStatus.from_api(
+        {"num": 0, "enabled": True, "online": True, "open": True, "err": 0, "errDesc": ""}
+    )
+    assert status is not None
+    assert status.error is None
+    assert status.error_description is None
+
+
+@pytest.mark.parametrize("raw", [0, 0.0, "0", "0.0", "-0"])
+def test_camera_status_zero_error_spellings_decode_to_none(raw: object) -> None:
+    """Every spelling of a zero error code means "no error", not error "0"."""
+    status = CameraStatus.from_api({"num": 1, "err": raw})
+    assert status is not None
+    assert status.error is None
+
+
+@pytest.mark.parametrize("raw", [1, "1", "e1", "-2"])
+def test_camera_status_non_zero_error_is_carried_through(raw: object) -> None:
+    """A real error code survives the zero-sentinel rule as the server's own string."""
+    status = CameraStatus.from_api({"num": 1, "err": raw})
+    assert status is not None
+    assert status.error == str(raw)
+
+
+def test_camera_last_error_zero_decodes_to_none() -> None:
+    """``last-error`` is the same error surface as ``camStatus``'s ``err`` (research §10)."""
+    camera = Camera.from_api({"number": "3", "last-error": 0, "last-error-description": ""})
+    assert camera is not None
+    assert camera.last_error is None
+    assert camera.last_error_description is None
+
+
+@pytest.mark.parametrize("raw", ["1_0", "1_0.5"])
+def test_underscore_literals_are_not_honoured_for_float_health_fields(raw: str) -> None:
+    """`_as_float` matches `_as_int`'s strictness: "1_0" is not 10.0 on the wire."""
+    camera = Camera.from_api({"number": "1", "current-fps": raw})
+    assert camera is not None
+    assert camera.current_fps is None
+
+
+def test_camera_status_empty_error_fields_decode_to_none() -> None:
+    status = CameraStatus.from_api(
+        {"num": 2, "enabled": True, "online": True, "open": False, "err": "", "errDesc": ""}
+    )
+    assert status is not None
+    assert status.error is None
+    assert status.error_description is None
+
+
+@pytest.mark.parametrize("num", ["x", None, 1.5, True])
+def test_camera_status_entry_with_no_usable_number_is_skipped(num: object) -> None:
+    """Same precedent as `Camera.from_api`: an unusable number skips the entry."""
+    payload = {"num": num, "enabled": True, "online": True, "open": False}
+    assert CameraStatus.from_api(payload) is None
+
+
+def test_camera_status_string_booleans_decode() -> None:
+    """Prove `camStatus` tolerates string-token booleans, not just native JSON ones.
+
+    `system_info.json`'s own fixture shows SecuritySpy sometimes serializes
+    booleans as string tokens (`"connected": "yes"`).
+    """
+    status = CameraStatus.from_api(
+        {"num": 3, "enabled": "yes", "online": "no", "open": "1", "err": "", "errDesc": ""}
+    )
+    assert status is not None
+    assert status.enabled is True
+    assert status.online is False
+    assert status.open is True
+
+
+def test_camera_status_missing_error_keys_decode_to_none() -> None:
+    """Absent `err`/`errDesc` keys, not just empty-string values, still fold to `None`."""
+    status = CameraStatus.from_api({"num": 4, "enabled": True, "online": True, "open": False})
+    assert status is not None
+    assert status.error is None
+    assert status.error_description is None
+
+
+@pytest.mark.parametrize("raw", [0, "0", "", "   "])
+def test_camera_status_description_never_outlives_a_cleared_code(raw: object) -> None:
+    """A description paired with a no-error code is not a live fault to report."""
+    status = CameraStatus.from_api(
+        {"num": 4, "enabled": True, "online": True, "open": True, "err": raw, "errDesc": "OK"}
+    )
+    assert status is not None
+    assert status.error is None
+    assert status.error_description is None
+
+
+def test_camera_status_description_survives_a_real_code() -> None:
+    """The pairing rule must not swallow the description of an actual error."""
+    status = CameraStatus.from_api(
+        {"num": 4, "enabled": True, "online": True, "open": False, "err": 7, "errDesc": "no signal"}
+    )
+    assert status is not None
+    assert status.error == "7"
+    assert status.error_description == "no signal"
+
+
+def test_camera_last_error_description_never_outlives_a_cleared_code() -> None:
+    """`Camera` follows the same pairing rule as `CameraStatus` (research §10)."""
+    camera = Camera.from_api(
+        {"number": "3", "last-error": "0", "last-error-description": "stale text"}
+    )
+    assert camera is not None
+    assert camera.last_error is None
+    assert camera.last_error_description is None
+
+
+@pytest.mark.parametrize("raw", ["   ", "\t"])
+def test_whitespace_only_error_code_is_not_an_error(raw: str) -> None:
+    """A padded empty code is the empty code, not a fault on every poll."""
+    camera = Camera.from_api({"number": "3", "last-error": raw})
+    assert camera is not None
+    assert camera.last_error is None
+
+
+def test_whitespace_only_new_version_offers_no_update() -> None:
+    """A padded empty `new-version` is still the server's "no update" signal."""
+    info = ServerInfo.from_api(wrap({**SERVER, "new-version": "   "}, []))
+    assert info.update_version is None
