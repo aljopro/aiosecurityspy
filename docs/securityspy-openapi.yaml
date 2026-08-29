@@ -82,6 +82,15 @@ paths:
           The camera array is `camera-list` at the TOP LEVEL, not `cameralist.camera`.
           Assuming the latter yields an empty inventory from a healthy server — the defect
           behind story 1.12.
+        - >-
+          A camera DISABLED in SecuritySpy is omitted from `camera-list` entirely, and
+          `server.camera-count` drops to match. `++camStatus` still reports it. The two
+          endpoints enumerate different sets; they are not interchangeable inventories.
+        - >-
+          `camera-list[].permissions` is NOT static. A camera that is offline loses the
+          capability bits it cannot currently satisfy (observed: `PERM_AUDIORCV`,
+          `PERM_AUDIOSND`) and regains them on reconnect. Never cache the mask, and never
+          read an absent bit as a withheld right without checking the camera is online.
       parameters:
         - $ref: "#/components/parameters/Format"
       responses:
@@ -102,6 +111,15 @@ paths:
         794 bytes for 11 cameras, against ~26 KB for `++systemInfo`. Returns JSON
         unconditionally — `format=json` is not required and is not sent.
       x-verification: live-6.21
+      x-quirks:
+        - >-
+          Reports DISABLED cameras, which `++systemInfo` omits. A consumer that builds its
+          inventory from `++systemInfo` and polls health here will receive status for a
+          camera it has no entity for.
+        - >-
+          A disabled camera reads `enabled:false, online:false, open:false, err:0`; an
+          unreachable one reads `enabled:true, online:false, err:64 "Host is down"`. The
+          three booleans are independent and distinguish the two states.
       responses:
         "200":
           description: One entry per camera.
@@ -121,6 +139,12 @@ paths:
       x-quirks:
         - "Returns a bare top-level array."
         - "Without a date range the result is an empty array, not an error."
+        - >-
+          `startDate`/`endDate` accept `YYYY-MM-DD` ONLY. A full ISO instant
+          (`2026-08-20T00:00:00`) or a compact `20260820000000` returns an empty array —
+          success with silent zero results, never an error.
+        - >-
+          Still returns the recordings of a camera that has since been disabled.
       parameters:
         - $ref: "#/components/parameters/Format"
         - name: cams
@@ -155,11 +179,19 @@ paths:
       description: |
         `++getfilehb` and `++getfilelb` are the same operation at high and low bandwidth.
         The served content type is whatever the server sends; do not assume one per variant.
-      x-verification: research-only
+        Observed live: `video/quicktime` from `++getfile` and `++getfilehb`, `video/mp4`
+        from `++getfilelb`. Range requests are honoured (`206`).
+      x-verification: live-6.21
       x-quirks:
         - >-
           `filename` MUST be percent-encoded. Live filenames contain spaces
           (`08-29-2026 5-52-31 AM M Living Room.mov`); unencoded they break the URL.
+        - >-
+          ⚠ A `401` here does NOT reliably mean bad credentials. An account without the
+          captures permission gets a `401` that is BYTE-IDENTICAL to a wrong-password `401`
+          — same status, same `WWW-Authenticate`, same 16-byte body. Disambiguate out of
+          band (e.g. re-read `++systemInfo`) before reporting an authentication failure, or
+          a permitted-to-view user is sent round a reauth loop forever. Story 1.14.
       parameters:
         - $ref: "#/components/parameters/CameraPath"
         - $ref: "#/components/parameters/FolderDate"
@@ -185,11 +217,15 @@ paths:
         a literal `?`, then the capture triple, then a SECOND `?` before `archive`. Build the
         URL from `x-raw-url-template` verbatim. Treating `archive` as an ordinary query
         parameter produces a URL the server does not understand.
-      x-verification: research-only
+      x-verification: live-6.21
+      x-quirks:
+        - >-
+          ⚠ Same `401` ambiguity as `++getfile` — a permission denial is indistinguishable
+          from bad credentials. See that operation's quirks and story 1.14.
       x-raw-url-template: "/++getpreview?/{camera}/{folderDate}/{urlEncodedFilename}?archive={0|1}"
       responses:
         "200":
-          description: JPEG thumbnail (~95 KB observed).
+          description: JPEG thumbnail (30 KB observed live; ~95 KB previously reported).
           content:
             image/jpeg:
               schema: { type: string, format: binary }
