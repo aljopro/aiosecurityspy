@@ -237,6 +237,9 @@ paths:
       tags: [settings]
       summary: One camera's settings page as flat JSON.
       description: |
+        `format=json` is REQUIRED. Without it the server returns the settings page as
+        ~85 KB of `text/html`, not JSON.
+      description: |
         ⚠ The response contains the camera device's `username` and `password` in plaintext.
         Never log this body, and redact credential-shaped keys before publishing it anywhere.
       x-verification: live-6.21
