@@ -472,8 +472,8 @@ async def main() -> None:
             ),
         )
 
-        # Arming: three independent booleans, so all eight combinations are
-        # expressible -- including all-false, which disarms all three.
+        # Arming: the three booleans select which capture modes the write
+        # targets; an all-false set is refused before any request.
         try:
             require_permission(camera, "schedule")
         except SecuritySpyPermissionError as err:

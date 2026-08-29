@@ -61,6 +61,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `"settings"`/`"schedule"` permission and the camera on a `403`. Every other
   endpoint still raises `SecuritySpyPermissionError` on `403`, without a name it
   cannot honestly supply. `401` behaviour, message and type are unchanged.
+- **BREAKING: `async_set_camera_arming` now treats its capture modes as the set
+  the write *targets* and applies `override` to exactly those modes.** Verified
+  live (research §5.14), `mode` on `++ssSetSchedule` selects *which* of the
+  three capture modes a write applies to — it is not their armed state — and
+  `override` is the value applied to the selected modes. An all-false mode set
+  now raises `ValueError` before any request, instead of sending a silent no-op
+  `mode=` that the server answered with `200 OK` having done nothing; a consumer
+  relying on the old all-false call was relying on a no-op. `200 OK` now
+  documents as *accepted*, not *applied*: the server returns it even when
+  nothing changed, and the library performs no read-back to confirm an effect.
+  `schedule=` is still never sent (AD-7).
 
 ### Fixed
 

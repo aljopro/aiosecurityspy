@@ -1371,11 +1371,14 @@ class SecuritySpyClient:
         *,
         override: ArmOverride | int = ARM_OVERRIDE_UNCHANGED,
     ) -> None:
-        """Arm or disarm a camera's three capture modes (research §5).
+        """Apply an override to a selected set of capture modes (research §5.14).
 
-        The three modes are independent booleans, so all eight combinations are
-        expressible -- including all-false, which sends an empty ``mode`` and is
-        the legal instruction "disarm all three", not a missing value.
+        ``mode`` selects **which** of the three capture modes a write applies to
+        -- the target -- and ``override`` is the value applied to exactly those
+        modes. It is not an armed state: there is no mode combination that
+        "disarms all three", and an empty target is refused before any request,
+        because the server answers ``200 OK`` having done nothing and no caller
+        could detect it.
 
         The ``schedule`` query parameter is **never sent** (AD-7).
         ``++ssSetSchedule`` accepts one that permanently reassigns the camera's
@@ -1384,18 +1387,32 @@ class SecuritySpyClient:
         *transient and bounded*: it suspends the schedule for a stated duration,
         after which the schedule resumes.
 
+        ``200 OK`` means the request was *accepted*, not that anything was
+        applied: the server returns ``OK`` even for a write that changed no
+        field (verified live, research §5.14), and this library performs no
+        read-back to confirm an effect.
+
+        To disarm a mode, target it and apply one of the
+        ``ARM_OVERRIDE_DISARMED_*`` overrides (or ``ARM_OVERRIDE_NONE`` to
+        clear an override and let the schedule rule); there is no all-false
+        target. Note that ``modes`` read back from ``++systemInfo`` are the
+        camera's *armed state* -- re-targeting those booleans is a different
+        instruction than restoring that state, so the two are not
+        interchangeable without reinterpretation.
+
         Args:
-            camera_number: The camera to arm or disarm.
-            modes: The three capture modes to set.
-            override: A transient schedule override. Defaults to
-                ``ARM_OVERRIDE_UNCHANGED``, which leaves any existing override
-                alone. Accepts an ``ARM_OVERRIDE_*`` value or the typed
-                :class:`~aiosecurityspy.ArmOverride` record.
+            camera_number: The camera whose capture modes to write.
+            modes: The capture modes the write targets. At least one must be
+                true; an all-false set raises before any request.
+            override: A transient schedule override to apply to the selected
+                modes. Defaults to ``ARM_OVERRIDE_UNCHANGED``, which leaves any
+                existing override alone. Accepts an ``ARM_OVERRIDE_*`` value or
+                the typed :class:`~aiosecurityspy.ArmOverride` record.
 
         Raises:
-            ValueError: ``camera_number`` is not a non-negative integer, or the
-                override is not a value research §5.2 publishes. Raised before
-                any request is issued.
+            ValueError: ``camera_number`` is not a non-negative integer, no
+                capture modes are targeted, or the override is not a value
+                research §5.2 publishes. Raised before any request is issued.
             SecuritySpyConnectError: The server was unreachable, timed out, or
                 answered with an unexpected status.
             SecuritySpyAuthError: The credentials were rejected (401), or a
@@ -1411,6 +1428,17 @@ class SecuritySpyClient:
 
         """
         number = _validated_camera_number(camera_number)
+        target = modes.mode_string
+        # An empty mode set targets no capture modes, and the server answers
+        # `200 OK` even for a write that changed no field -- so the resulting
+        # no-op would be undetectable downstream. Refuse it here, before any
+        # request is issued.
+        if target == "":
+            message = (
+                "no capture modes targeted: an empty mode set would return "
+                "200 OK having done nothing"
+            )
+            raise ValueError(message)
         # Every override goes through `arm_override`, whichever branch it
         # arrived on. `ArmOverride` is public and freely constructible, so a
         # hand-built `ArmOverride(value=15, ...)` would otherwise reach the wire
@@ -1421,7 +1449,7 @@ class SecuritySpyClient:
             ENDPOINT_SET_SCHEDULE,
             {
                 "cameraNum": str(number),
-                "mode": modes.mode_string,
+                "mode": target,
                 "override": str(record.value),
             },
             permission=PERMISSION_NAMES[PERM_SCHED],

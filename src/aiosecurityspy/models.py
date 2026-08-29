@@ -358,12 +358,14 @@ def _as_arm_mode(value: object) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class CaptureModes:
-    """The three independent capture modes of one camera (research §5.1).
+    """The three capture modes of one camera (research §5.1).
 
     Continuous capture, motion capture and actions are **independent
-    booleans**, not a single armed/disarmed state: all eight combinations are
-    legal, including all-false. That is precisely why arming is expressed as a
-    concatenated letter string rather than as one enumerated state.
+    booleans**, so all eight combinations are legal. Their meaning is
+    direction-dependent: decoded from the server (:meth:`from_api`) they are
+    the camera's current armed state per mode; used as the ``mode`` of a
+    ``++ssSetSchedule`` write they select *which* modes the write applies to
+    -- a target set, never the armed state being assigned.
     """
 
     continuous: bool = False
@@ -374,10 +376,15 @@ class CaptureModes:
     def mode_string(self) -> str:
         """The ``++ssSetSchedule?mode=`` value for these three booleans.
 
-        Letters are always emitted in ``C``, ``M``, ``A`` order so the request
+        Letters are always emitted in ``C``, ``M``, ``A`` order so the value
         is a function of the *set* of modes rather than of construction order.
-        All three false yields ``""`` -- an empty ``mode`` is the instruction
-        "disarm all three", not a missing value.
+        Decoded from the server they describe the camera's current armed state
+        (an all-false camera has no mode armed); sent as a write target they
+        select which capture modes the write applies to. An all-false target
+        yields ``""``, which the client refuses before any request -- the
+        server would answer ``200 OK`` having applied it to nothing, and no
+        caller could tell. It is not the instruction "disarm all three" and
+        never reaches the wire.
         """
         return (
             (MODE_CONTINUOUS if self.continuous else "")

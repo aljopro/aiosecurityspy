@@ -205,8 +205,10 @@ CAPTURE_FILE_BANDWIDTH_LOW: Final = 2
 SETTINGS_FORM_SENTINEL: Final = "formData"
 
 # `++ssSetSchedule?mode=` letters (research §5.1). The three capture modes are
-# independent booleans concatenated in this order, so `mode=CMA` sets all three
-# and `mode=` (empty) disarms all three -- both are legal instructions.
+# independent booleans concatenated in this order, so `mode=CMA` targets all
+# three. The letters select which modes a write applies to; they are not an
+# armed state -- an empty string targets nothing and is refused by
+# `async_set_camera_arming` before any request.
 MODE_CONTINUOUS: Final = "C"  # continuous capture
 MODE_MOTION: Final = "M"  # motion capture
 MODE_ACTIONS: Final = "A"  # actions

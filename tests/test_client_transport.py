@@ -23,6 +23,7 @@ from aiohttp.test_utils import TestServer as AiohttpTestServer  # aliased: pytes
 
 from aiosecurityspy import (
     ARM_OVERRIDE_ARMED_2_HOURS,
+    ARM_OVERRIDE_ARMED_UNTIL_NEXT,
     CameraSettingsPatch,
     CaptureModes,
     SecuritySpyAuthError,
@@ -410,18 +411,20 @@ async def test_real_arming_carries_mode_and_override_and_never_a_schedule() -> N
 
 
 @pytest.mark.asyncio
-async def test_real_disarming_all_three_sends_a_present_but_empty_mode() -> None:
-    """All-false is an instruction, not a missing value.
+async def test_real_arming_single_mode_survives_query_encoding() -> None:
+    """A one-letter ``mode=A`` reaches the socket intact.
 
-    It is the library's one semantic that differs from every other client. The
-    stub cannot prove it survives yarl's query encoding to a real socket, and a
-    dropped ``mode=`` would silently leave the camera armed.
+    The story's flagship case (research §5.14 step 5: ``override=2&mode=A``
+    moved ``a-schedule-override`` alone) is a *single*-mode write. The stub
+    asserts the params dict it was handed; only a real socket proves yarl
+    encodes ``mode=A`` un-dropped, the same concern the retired empty-mode
+    transport test existed for.
     """
     seen: dict[str, str] = {}
 
     async def handle(request: web.Request) -> web.Response:
-        seen["query_string"] = request.query_string
         seen["mode"] = request.query["mode"]
+        seen["override"] = request.query["override"]
         return web.Response(text="OK")
 
     app = web.Application()
@@ -432,13 +435,45 @@ async def test_real_disarming_all_three_sends_a_present_but_empty_mode() -> None
         async with aiohttp.ClientSession() as session:
             await make_client(session, arming_server).async_set_camera_arming(
                 3,
-                CaptureModes(continuous=False, motion=False, actions=False),
+                CaptureModes(actions=True),
+                override=ARM_OVERRIDE_ARMED_UNTIL_NEXT,
             )
     finally:
         await arming_server.close()
 
-    assert seen["mode"] == ""
-    assert "mode=" in seen["query_string"]
+    assert seen == {"mode": "A", "override": "2"}
+
+
+@pytest.mark.asyncio
+async def test_real_arming_refuses_an_empty_mode_set_before_the_socket() -> None:
+    """An all-false target must not reach a real socket.
+
+    The server answers ``200 OK`` even for a write that changed nothing
+    (research §5.14), so a no-op request is undetectable downstream -- the
+    library refuses it before any request is issued, and the handler below is
+    never invoked.
+    """
+    seen: dict[str, str] = {}
+
+    async def handle(request: web.Request) -> web.Response:
+        seen["mode"] = request.query["mode"]
+        return web.Response(text="OK")
+
+    app = web.Application()
+    app.router.add_get("/++ssSetSchedule", handle)
+    arming_server = AiohttpTestServer(app)
+    await arming_server.start_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            with pytest.raises(ValueError, match="no capture modes targeted"):
+                await make_client(session, arming_server).async_set_camera_arming(
+                    3,
+                    CaptureModes(continuous=False, motion=False, actions=False),
+                )
+    finally:
+        await arming_server.close()
+
+    assert seen == {}
 
 
 @pytest.mark.asyncio

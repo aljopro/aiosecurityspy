@@ -17,6 +17,7 @@ import pytest
 from aiosecurityspy import (
     ARM_OVERRIDE_ARMED_2_HOURS,
     ARM_OVERRIDE_ARMED_UNTIL_NEXT,
+    ARM_OVERRIDE_DISARMED_UNTIL_NEXT,
     ARM_OVERRIDE_NONE,
     ARM_OVERRIDE_UNCHANGED,
     ARM_OVERRIDES,
@@ -649,16 +650,71 @@ async def test_arming_all_three_modes_sends_cma() -> None:
 
 
 @pytest.mark.asyncio
-async def test_arming_none_sends_an_empty_but_present_mode() -> None:
+async def test_arming_rejects_an_empty_mode_set_before_any_request() -> None:
     session = FakeSession(body="OK")
-    await make_client(session).async_set_camera_arming(
-        3,
-        CaptureModes(False, False, False),  # noqa: FBT003 - the positional all-false form must stay expressible
-    )
+    with pytest.raises(ValueError, match="no capture modes targeted"):
+        await make_client(session).async_set_camera_arming(
+            3,
+            CaptureModes(False, False, False),  # noqa: FBT003 - the positional all-false form must stay constructible so this test can prove it is refused
+        )
+    assert session.calls == []
+
+
+@pytest.mark.parametrize(
+    ("modes", "override", "expected_mode", "expected_override"),
+    [
+        # Override lands on exactly one mode; the other two are untouched.
+        (
+            CaptureModes(actions=True),
+            ARM_OVERRIDE_ARMED_UNTIL_NEXT,
+            "A",
+            "2",
+        ),
+        # Override lands on all three.
+        (
+            CaptureModes(continuous=True, motion=True, actions=True),
+            ARM_OVERRIDE_DISARMED_UNTIL_NEXT,
+            "CMA",
+            "1",
+        ),
+        # Override 0 clears the overrides on all three modes.
+        (
+            CaptureModes(continuous=True, motion=True, actions=True),
+            ARM_OVERRIDE_NONE,
+            "CMA",
+            "0",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_arming_applies_the_override_to_exactly_the_selected_modes(
+    *,
+    modes: CaptureModes,
+    override: int,
+    expected_mode: str,
+    expected_override: str,
+) -> None:
+    session = FakeSession(body="OK")
+    await make_client(session).async_set_camera_arming(3, modes, override=override)
 
     params = session.calls[0][2]["params"]
-    assert "mode" in params
-    assert params["mode"] == ""
+    assert params == {"cameraNum": "3", "mode": expected_mode, "override": expected_override}
+    assert "schedule" not in params
+
+
+@pytest.mark.asyncio
+async def test_arming_never_reads_back_after_an_ok_write() -> None:
+    """A ``200 OK`` receipt is not confirmed by a follow-up read.
+
+    The server answers ``OK`` even when it changed nothing (research §5.14), so
+    the status cannot be treated as confirmation of an effect -- and the library
+    performs no read-back to check, either: exactly one request is made.
+    """
+    session = FakeSession(body="OK")
+    await make_client(session).async_set_camera_arming(
+        3, CaptureModes(continuous=True), override=ARM_OVERRIDE_ARMED_2_HOURS
+    )
+    assert len(session.calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -726,7 +782,9 @@ async def test_arming_accepts_a_typed_override_record() -> None:
 async def test_undocumented_override_is_refused_before_any_request() -> None:
     session = FakeSession(body="OK")
     with pytest.raises(ValueError, match="ARM_OVERRIDE"):
-        await make_client(session).async_set_camera_arming(3, CaptureModes(), override=15)
+        await make_client(session).async_set_camera_arming(
+            3, CaptureModes(motion=True), override=15
+        )
     assert session.calls == []
 
 
