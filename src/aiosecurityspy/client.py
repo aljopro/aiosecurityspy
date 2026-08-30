@@ -646,6 +646,21 @@ class SecuritySpyClient:
         FR-16a): both are simply absent from ``++systemInfo`` and so absent
         from the result.
 
+        **Visibility requires live video.** ``++systemInfo`` scopes its
+        inventory to :data:`~aiosecurityspy.PERM_LIVEVIDEO` specifically, not
+        to "holds any permission" -- verified on 6.21 against an account given a
+        different single permission on each of eleven cameras: only the three
+        granted live video appeared. A camera the account may pan, trigger,
+        configure, download captures from or speak through is **absent** unless
+        live video is also granted.
+
+        This is the server's rule, and this library reports it rather than
+        working around it: an account without live video on a camera does not
+        see that camera. A consumer building per-camera entities should
+        therefore treat live video as the prerequisite permission and document
+        it as such -- a least-privileged account is still viable, but it must
+        include live video on every camera it is expected to manage.
+
         Raises:
             SecuritySpyConnectError: Either read failed at the transport
                 level; see :meth:`async_get_server_info` and

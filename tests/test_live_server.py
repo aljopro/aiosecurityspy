@@ -131,6 +131,10 @@ async def test_live_permission_masks_decode_and_are_reported(
     for camera in info.cameras.values():
         names = sorted(camera.permission_names)
         _report(f"  {role} camera {camera.number}: mask={camera.permissions} -> {names}")
+        # Live video is the visibility predicate, not merely a common grant --
+        # see `test_live_inventory_is_scoped_to_live_video` for the measurement
+        # and DW-5 for the decision that the library reports this rather than
+        # working around it.
         assert camera.has_permission("live_video"), (
             f"{role} camera {camera.number} is in the inventory without live_video"
         )
@@ -151,6 +155,41 @@ async def test_live_unnamed_bit_1_is_still_set_on_live_cameras(
     with_bit = [n for n, c in info.cameras.items() if c.permissions & UNNAMED_BIT_1]
     _report(f"  bit 1 set on {len(with_bit)}/{len(info.cameras)} cameras: {with_bit}")
     assert info.cameras
+
+
+@pytest.mark.asyncio
+async def test_live_inventory_is_scoped_to_live_video(
+    session: aiohttp.ClientSession,
+) -> None:
+    """`++systemInfo` admits a camera only when the account holds live video on it.
+
+    Measured on 6.21 with a per-camera-custom-permissions account holding a
+    different single permission on each of eleven cameras: only the three
+    granted "Get live video and images" appeared. Cameras granted PTZ control,
+    trigger, set-camera-settings, capture download, capture deletion, PTZ
+    presets or two-way audio were absent despite holding permissions the API
+    honours.
+
+    The project's decision (DW-5) is that this is the server's rule and the
+    library reports it: live video is the prerequisite permission for a camera
+    to be manageable at all, and NFR-9's least-privileged account must include
+    it on every camera it is expected to cover. This test is what keeps that
+    decision honest -- if a future server admits a camera without live video,
+    the premise every consumer builds on has changed and this fails.
+    """
+    info = await _client(session, "PERCAM").async_get_server_info()
+    if not info.cameras:
+        pytest.skip("the per-camera account sees no cameras")
+
+    without = [n for n, c in info.cameras.items() if not c.has_permission("live_video")]
+    _report(
+        f"  inventory admitted {len(info.cameras)} camera(s): {sorted(info.cameras)}; "
+        f"{len(without)} lack live_video"
+    )
+    assert not without, (
+        f"cameras {without} are in the inventory without live_video; the visibility "
+        "predicate has changed and DW-5's decision needs revisiting"
+    )
 
 
 @pytest.mark.asyncio
