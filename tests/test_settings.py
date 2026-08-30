@@ -8,6 +8,7 @@ is the library's first non-GET request and its *body* is the contract.
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import json
 from typing import TYPE_CHECKING, Any, Self, cast
 from urllib.parse import unquote
@@ -601,7 +602,9 @@ async def test_permission_denied_settings_write_names_the_settings_permission() 
 async def test_permission_denied_arming_names_the_schedule_permission() -> None:
     session = FakeSession(status=403, body="")
     with pytest.raises(SecuritySpyPermissionError) as err:
-        await make_client(session).async_set_camera_arming(CAMERA, CaptureModes(motion=True))
+        await make_client(session).async_set_camera_arming(
+            CAMERA, CaptureModes(motion=True), override=ARM_OVERRIDE_ARMED_2_HOURS
+        )
     assert err.value.permission == "schedule"
     assert err.value.camera_number == CAMERA
 
@@ -640,7 +643,9 @@ async def test_settings_payload_is_never_logged_at_any_level(
 async def test_arming_all_three_modes_sends_cma() -> None:
     session = FakeSession(body="OK")
     await make_client(session).async_set_camera_arming(
-        3, CaptureModes(continuous=True, motion=True, actions=True)
+        3,
+        CaptureModes(continuous=True, motion=True, actions=True),
+        override=ARM_OVERRIDE_ARMED_2_HOURS,
     )
 
     method, url, kwargs = session.calls[0]
@@ -656,6 +661,7 @@ async def test_arming_rejects_an_empty_mode_set_before_any_request() -> None:
         await make_client(session).async_set_camera_arming(
             3,
             CaptureModes(False, False, False),  # noqa: FBT003 - the positional all-false form must stay constructible so this test can prove it is refused
+            override=ARM_OVERRIDE_ARMED_2_HOURS,
         )
     assert session.calls == []
 
@@ -751,7 +757,9 @@ def test_the_eight_mode_strings_are_all_different() -> None:
 async def test_arming_never_sends_a_schedule_parameter() -> None:
     session = FakeSession(body="OK")
     client = make_client(session)
-    await client.async_set_camera_arming(3, CaptureModes(motion=True))
+    await client.async_set_camera_arming(
+        3, CaptureModes(motion=True), override=ARM_OVERRIDE_UNCHANGED
+    )
     await client.async_set_camera_arming(
         4, CaptureModes(continuous=True), override=ARM_OVERRIDE_ARMED_2_HOURS
     )
@@ -763,9 +771,21 @@ async def test_arming_never_sends_a_schedule_parameter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_arming_defaults_to_the_unchanged_override() -> None:
+async def test_arming_has_no_override_default() -> None:
+    # `override` is the only value this method applies, so a defaulted call
+    # would target modes and apply nothing -- the undetectable no-op the empty
+    # target is refused for. The signature must not supply one.
+    signature = inspect.signature(SecuritySpyClient.async_set_camera_arming)
+    assert signature.parameters["override"].default is inspect.Parameter.empty
+
+
+@pytest.mark.asyncio
+async def test_arming_still_accepts_an_explicit_unchanged_override() -> None:
+    # Legal, but now something the caller states rather than inherits.
     session = FakeSession(body="OK")
-    await make_client(session).async_set_camera_arming(3, CaptureModes(motion=True))
+    await make_client(session).async_set_camera_arming(
+        3, CaptureModes(motion=True), override=ARM_OVERRIDE_UNCHANGED
+    )
     assert session.calls[0][2]["params"]["override"] == "-1"
 
 
@@ -1003,7 +1023,9 @@ async def test_bad_camera_number_is_refused_by_every_new_method(number: object) 
     with pytest.raises(ValueError, match="camera numbers must be non-negative"):
         await client.async_set_camera_settings(bad, CameraSettingsPatch(brightness=1))
     with pytest.raises(ValueError, match="camera numbers must be non-negative"):
-        await client.async_set_camera_arming(bad, CaptureModes())
+        await client.async_set_camera_arming(
+            bad, CaptureModes(), override=ARM_OVERRIDE_ARMED_2_HOURS
+        )
     with pytest.raises(ValueError, match="camera numbers must be non-negative"):
         await client.async_set_camera_enabled(bad, enabled=True)
 
@@ -1300,7 +1322,9 @@ async def test_a_malformed_write_receipt_does_not_fail_the_write(
     client = make_client(session)
 
     await client.async_set_camera_settings(CAMERA, CameraSettingsPatch(overlay_text="Front Gate"))
-    await client.async_set_camera_arming(CAMERA, CaptureModes(motion=True))
+    await client.async_set_camera_arming(
+        CAMERA, CaptureModes(motion=True), override=ARM_OVERRIDE_ARMED_2_HOURS
+    )
 
     assert [method for method, _, _ in session.calls] == ["POST", "GET"]
 

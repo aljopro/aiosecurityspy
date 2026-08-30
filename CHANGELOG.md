@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: `async_set_camera_arming`'s `override` argument is now required
+  and has no default.** It previously defaulted to `ARM_OVERRIDE_UNCHANGED`
+  (`-1`), which research §5.15.5 confirms on the wire is the server's "leave
+  as-is" sentinel. Because `schedule=` is never sent (AD-7), `override` is the
+  only value this method ever applies -- so a defaulted call sent
+  `mode=<target>&override=-1`, targeted capture modes, applied nothing, and
+  returned `200 OK` having done nothing. That is exactly the undetectable no-op
+  the previous release refused an empty *target* for, left in place as an empty
+  *value*. Passing `ARM_OVERRIDE_UNCHANGED` explicitly is still legal; it is now
+  an instruction the caller states rather than one the signature supplies.
+  Callers relying on the default get a `TypeError` at the call site rather than
+  a silent no-op at runtime.
+
 - **BREAKING: `Capture.file_size` is renamed `Capture.file_size_mb` and is now
   decoded as a fractional count of megabytes (a `float`), exactly as the wire
   sends it.** `caplist.m` is a float in megabytes — verified live across 10,476

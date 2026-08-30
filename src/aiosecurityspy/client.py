@@ -18,7 +18,6 @@ import aiohttp
 
 from .connection import ConnectionSettings
 from .const import (
-    ARM_OVERRIDE_UNCHANGED,
     CAPTURE_FILE_BANDWIDTH_STANDARD,
     CAPTURE_FILTER_ALL,
     CAPTURE_FILTERS,
@@ -1369,7 +1368,7 @@ class SecuritySpyClient:
         camera_number: int,
         modes: CaptureModes,
         *,
-        override: ArmOverride | int = ARM_OVERRIDE_UNCHANGED,
+        override: ArmOverride | int,
     ) -> None:
         """Apply an override to a selected set of capture modes (research §5.14).
 
@@ -1404,10 +1403,17 @@ class SecuritySpyClient:
             camera_number: The camera whose capture modes to write.
             modes: The capture modes the write targets. At least one must be
                 true; an all-false set raises before any request.
-            override: A transient schedule override to apply to the selected
-                modes. Defaults to ``ARM_OVERRIDE_UNCHANGED``, which leaves any
-                existing override alone. Accepts an ``ARM_OVERRIDE_*`` value or
-                the typed :class:`~aiosecurityspy.ArmOverride` record.
+            override: The value to apply to the selected modes. **Required,
+                and deliberately without a default**: ``override`` is the only
+                value this method ever applies (``schedule`` is never sent,
+                AD-7), so a defaulted call would target modes, apply nothing,
+                and return ``200 OK`` having done nothing -- the undetectable
+                no-op an empty target is refused for. Passing
+                ``ARM_OVERRIDE_UNCHANGED`` is still legal, but it is now an
+                explicit "leave the existing override alone" the caller states
+                rather than one the signature supplies. Accepts an
+                ``ARM_OVERRIDE_*`` value or the typed
+                :class:`~aiosecurityspy.ArmOverride` record.
 
         Raises:
             ValueError: ``camera_number`` is not a non-negative integer, no

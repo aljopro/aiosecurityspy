@@ -503,7 +503,9 @@ Three things about this surface are worth stating plainly:
 
 - **The override is transient and bounded.** It suspends the camera's schedule for the
   stated duration and then the schedule resumes; it is not a permanent arm or disarm.
-  `ARM_OVERRIDE_UNCHANGED` (the default) leaves any existing override alone,
+  `override` is **required and has no default**: it is the only value this library ever
+  applies, so a defaulted call would target modes, apply nothing, and return `200 OK`
+  having done nothing. `ARM_OVERRIDE_UNCHANGED` leaves any existing override alone,
   `ARM_OVERRIDE_NONE` clears it, and the "until next scheduled event" values report
   `duration is None` with `until_next_scheduled` true. `arm_override()` rejects any value
   outside the published `-1`..`14` table rather than guessing.

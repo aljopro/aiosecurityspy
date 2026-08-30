@@ -469,6 +469,7 @@ async def test_real_arming_refuses_an_empty_mode_set_before_the_socket() -> None
                 await make_client(session, arming_server).async_set_camera_arming(
                     3,
                     CaptureModes(continuous=False, motion=False, actions=False),
+                    override=ARM_OVERRIDE_ARMED_2_HOURS,
                 )
     finally:
         await arming_server.close()
@@ -494,7 +495,7 @@ async def test_real_charsetless_write_receipt_does_not_fail_a_successful_write()
     try:
         async with aiohttp.ClientSession() as session:
             await make_client(session, arming_server).async_set_camera_arming(
-                3, CaptureModes(motion=True)
+                3, CaptureModes(motion=True), override=ARM_OVERRIDE_ARMED_2_HOURS
             )
     finally:
         await arming_server.close()

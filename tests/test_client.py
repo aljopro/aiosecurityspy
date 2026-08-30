@@ -16,6 +16,7 @@ import pytest
 import yarl
 
 from aiosecurityspy import (
+    ARM_OVERRIDE_ARMED_2_HOURS,
     CAPTURE_FILE_BANDWIDTH_HIGH,
     CAPTURE_FILE_BANDWIDTH_LOW,
     CAPTURE_FILE_BANDWIDTH_STANDARD,
@@ -2417,7 +2418,11 @@ async def test_schedule_write_401_without_perm_sched_is_reclassified() -> None:
     session = SequencedFakeSession([(401, ""), (200, fixture_body())])
     client = make_client(session)
     with pytest.raises(SecuritySpyPermissionError) as err:
-        await client.async_set_camera_arming(SCHEDULE_TEST_CAMERA, CaptureModes(continuous=True))
+        await client.async_set_camera_arming(
+            SCHEDULE_TEST_CAMERA,
+            CaptureModes(continuous=True),
+            override=ARM_OVERRIDE_ARMED_2_HOURS,
+        )
     assert err.value.permission == PERMISSION_NAMES[PERM_SCHED]
     assert err.value.camera_number == SCHEDULE_TEST_CAMERA
     assert len(session.calls) == TWO_STATUSES
