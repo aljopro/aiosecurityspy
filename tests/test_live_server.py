@@ -38,6 +38,7 @@ import pytest_asyncio
 
 import live_env
 from aiosecurityspy import (
+    ARM_OVERRIDE_ARMED_1_HOUR,
     ARM_OVERRIDE_UNCHANGED,
     PERM_CAMCONTROL,
     PERM_SCHED,
@@ -211,11 +212,12 @@ async def test_live_control_tier_reveals_whether_control_implies_schedule(
 async def test_live_arming_write_from_a_live_only_account_is_refused(
     session: aiohttp.ClientSession,
 ) -> None:
-    """The expensive failure: a disarm that reports success while changing nothing.
+    """An effective arming write from an account without `schedule` must be refused.
 
-    A "Live" account can see the camera but must not be able to arm it. If this
-    write returns cleanly, the library is reporting success for a write the
-    server refused, and every arming control built on it is lying to the user.
+    Verified against 6.21: the server answers such a write with **401**, not 403
+    (research 5.9), and the disambiguating probe reclassifies it as a permission
+    denial -- so a consumer does not open a reauth flow at a user whose password
+    is fine. This is story 1.11 and 1.14 working end to end on a real server.
     """
     camera = _test_camera()
     client = _client(session, "LIVE")
@@ -229,11 +231,44 @@ async def test_live_arming_write_from_a_live_only_account_is_refused(
         "it must be a 'Live' account for this test to mean anything"
     )
 
+    # An *arming* override, never a disarming one: if enforcement were broken,
+    # the camera would end up more armed rather than less.
     with pytest.raises(SecuritySpyPermissionError) as err:
         await client.async_set_camera_arming(
-            camera, CaptureModes(motion=True), override=ARM_OVERRIDE_UNCHANGED
+            camera, CaptureModes(motion=True), override=ARM_OVERRIDE_ARMED_1_HOUR
         )
     assert err.value.permission == "schedule"
+
+
+@pytest.mark.asyncio
+async def test_live_unchanged_override_is_a_no_op_the_server_accepts(
+    session: aiohttp.ClientSession,
+) -> None:
+    """`override=ARM_OVERRIDE_UNCHANGED` succeeds even without the schedule permission.
+
+    Not a permission bypass: -1 means "leave the existing override alone", and
+    `mode` is a target selector rather than state to assign (story 1.16), so the
+    call applies nothing and the server has nothing to authorize. It answers
+    `200 OK` where the same call with a real override answers 401.
+
+    Recorded because the asymmetry is surprising -- the same method, account and
+    camera raises for one override and not another -- and because
+    `async_set_camera_arming` already refuses the *other* way of producing an
+    undetectable no-op (an empty mode set) with the reasoning "would return 200
+    OK having done nothing". That guard has no twin for this case, so a caller
+    can read success here as evidence of a permission it does not hold.
+    """
+    camera = _test_camera()
+    client = _client(session, "LIVE")
+
+    info = await client.async_get_server_info()
+    if camera not in info.cameras:
+        pytest.skip(f"camera {camera} is not visible to the live-only account")
+
+    await client.async_set_camera_arming(
+        camera, CaptureModes(motion=True), override=ARM_OVERRIDE_UNCHANGED
+    )
+    _report(f"  camera {camera}: override=UNCHANGED accepted without the schedule permission")
 
 
 @pytest.mark.asyncio
