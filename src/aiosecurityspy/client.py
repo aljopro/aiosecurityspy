@@ -50,12 +50,14 @@ from .models import (
     CameraSettings,
     CameraSettingsPatch,
     CameraStatus,
+    CameraView,
     Capture,
     CaptureFileBandwidth,
     CapturePreview,
     ServerInfo,
     arm_override,
     capture_file_bandwidth,
+    visible_camera_views,
 )
 from .stream import SecuritySpyEventStream
 
@@ -624,6 +626,81 @@ class SecuritySpyClient:
             if status is not None:
                 statuses.append(status)
         return tuple(statuses)
+
+    async def async_get_visible_cameras(self) -> tuple[CameraView, ...]:
+        """Answer "which cameras may this account see, and how are they now?".
+
+        Composes :meth:`async_get_server_info` -- the only permission-scoped
+        surface (research gap G8) -- with :meth:`async_get_camera_status`,
+        which returns every camera on the server to any authenticated
+        account regardless of permission. The two reads happen because this
+        call asked for both; nothing here is fetched implicitly to serve a
+        decode (story 1.13's rule). The composition itself is
+        :func:`~aiosecurityspy.visible_camera_views`, a pure function: a
+        ``++camStatus`` row for a camera absent from ``++systemInfo`` is
+        discarded there, at the point of receipt, and never reaches the
+        result or a log line by number.
+
+        A camera that is disabled and a camera whose permission has been
+        withdrawn are indistinguishable here, by design (research gap G8,
+        FR-16a): both are simply absent from ``++systemInfo`` and so absent
+        from the result.
+
+        Raises:
+            SecuritySpyConnectError: Either read failed at the transport
+                level; see :meth:`async_get_server_info` and
+                :meth:`async_get_camera_status`.
+            SecuritySpyAuthError: The credentials were rejected.
+            SecuritySpyPermissionError: The account lacks a required
+                permission.
+            SecuritySpyUnsupportedVersionError: The server or payload shape
+                was unsupported.
+
+        Returns:
+            One :class:`~aiosecurityspy.CameraView` per camera this account
+            may see, current as of this call. Never more entries than
+            ``++systemInfo`` reported membership for.
+
+        """
+        server_info = await self.async_get_server_info()
+        statuses = await self.async_get_camera_status()
+        return visible_camera_views(server_info, statuses)
+
+    async def async_refresh_camera_status(self, server_info: ServerInfo) -> tuple[CameraView, ...]:
+        """Refresh health for cameras this account already knows it may see.
+
+        Unlike :meth:`async_get_visible_cameras`, this issues **only**
+        ``++camStatus`` -- no re-read of ``++systemInfo``. A coordinator
+        polling on a cycle cannot afford ``++systemInfo``'s 27 KB per tick
+        (research §2.2); this is the cheap path for a caller that already
+        holds membership from a prior :meth:`async_get_server_info` or
+        :meth:`async_get_visible_cameras` call.
+
+        The library retains no state between calls, so that membership is
+        not read from anywhere internal -- it is the caller's own
+        ``server_info``, passed back in. Its cameras are used only to filter
+        and pair; passing a stale ``server_info`` will not surface a camera
+        that has since vanished from ``++systemInfo``, but this call cannot
+        know that without the read it exists to avoid.
+
+        Args:
+            server_info: A previously fetched permission-scoped inventory.
+                Its ``cameras`` mapping is treated as the current membership.
+
+        Raises:
+            SecuritySpyConnectError: The ``++camStatus`` read failed at the
+                transport level.
+            SecuritySpyAuthError: The credentials were rejected.
+            SecuritySpyPermissionError: The account lacks a required
+                permission.
+
+        Returns:
+            One :class:`~aiosecurityspy.CameraView` per camera in
+            ``server_info.cameras``, with health as of this call.
+
+        """
+        statuses = await self.async_get_camera_status()
+        return visible_camera_views(server_info, statuses)
 
     async def async_get_captures(  # noqa: PLR0913 - the camera set, the two date bounds and the two filter forms are irreducible; everything but `cameras` is keyword-only
         self,

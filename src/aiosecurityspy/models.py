@@ -51,7 +51,7 @@ from .const import (
 from .exceptions import SecuritySpyPermissionError, SecuritySpyUnsupportedVersionError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
     from datetime import tzinfo
 
 __all__ = [
@@ -62,6 +62,7 @@ __all__ = [
     "CameraSettings",
     "CameraSettingsPatch",
     "CameraStatus",
+    "CameraView",
     "Capture",
     "CaptureFileBandwidth",
     "CaptureModes",
@@ -70,6 +71,7 @@ __all__ = [
     "arm_override",
     "capture_file_bandwidth",
     "require_permission",
+    "visible_camera_views",
 ]
 
 _LOGGER: Final = logging.getLogger(__name__)
@@ -739,6 +741,33 @@ class Camera:
         """
         return permission in self.permission_names
 
+    @property
+    def can_receive_audio(self) -> bool | None:
+        """Whether this camera currently grants ``audio_receive``.
+
+        The audio bits are not static: SecuritySpy clears ``PERM_AUDIORCV``
+        while a camera is disconnected and restores it on reconnect (research
+        §5.11). So while :attr:`connected` is ``False`` the bit's absence
+        answers nothing -- it is returned as ``None`` here rather than
+        ``False``, so "the camera is unplugged" can never be read as "you are
+        not allowed". Only while the camera is connected does an absent bit
+        mean an actual permission denial.
+        """
+        if not self.connected:
+            return None
+        return self.has_permission("audio_receive")
+
+    @property
+    def can_send_audio(self) -> bool | None:
+        """Whether this camera currently grants ``audio_send``.
+
+        Same liveness-vs-permission distinction as :attr:`can_receive_audio`,
+        for ``PERM_AUDIOSND`` (research §5.11).
+        """
+        if not self.connected:
+            return None
+        return self.has_permission("audio_send")
+
     def __repr__(self) -> str:
         """Return a representation that cannot carry credentials."""
         return (
@@ -811,6 +840,72 @@ class CameraStatus:
             # as a live fault on a healthy camera.
             error_description=_as_str(payload.get("errDesc")) if error is not None else None,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CameraView:
+    """One camera the account may see, paired with its current health.
+
+    Produced only by :func:`visible_camera_views`, never constructed from a
+    ``++camStatus`` row alone -- membership already comes from
+    :class:`ServerInfo`, so this pairing can never widen to a camera the
+    account may not see.
+    """
+
+    camera: Camera
+    #: ``None`` when ``++camStatus`` reported nothing for this member camera
+    #: (a decoding failure, or a status poll that simply omitted it) -- never
+    #: a permission signal, since membership was already decided by
+    #: :class:`ServerInfo` before this pairing was built.
+    status: CameraStatus | None
+
+
+def visible_camera_views(
+    server_info: ServerInfo, statuses: Iterable[CameraStatus]
+) -> tuple[CameraView, ...]:
+    """Pair ``++systemInfo`` membership with ``++camStatus`` health.
+
+    ``++systemInfo`` is the only permission-scoped surface (research gap G8):
+    ``++camStatus`` returns every camera on the server to any authenticated
+    account, regardless of what that account may see. This function is the
+    intersection that keeps the cheap poll from widening membership -- a
+    status row with no matching camera in ``server_info.cameras`` is
+    discarded here, at the point of receipt, and never appears in the
+    result. Order follows ``server_info.cameras``, not ``statuses``, so a
+    result never carries more entries than there are member cameras.
+
+    A count of discarded rows may be logged; the discarded camera numbers
+    themselves never are (they belong to the other side of the permission
+    boundary this function exists to enforce).
+
+    Args:
+        server_info: The permission-scoped inventory. Its ``cameras`` mapping
+            is the complete membership; nothing outside it is ever surfaced.
+        statuses: Status rows from
+            :meth:`~aiosecurityspy.SecuritySpyClient.async_get_camera_status`,
+            in any order, from any account.
+
+    Returns:
+        One :class:`CameraView` per member camera, in ``server_info.cameras``
+        order. A member with no matching status row gets ``status=None``.
+
+    """
+    status_by_number: dict[int, CameraStatus] = {}
+    discarded = 0
+    for status in statuses:
+        if status.number in server_info.cameras:
+            status_by_number[status.number] = status
+        else:
+            discarded += 1
+    if discarded:
+        _LOGGER.debug(
+            "Discarded %d camStatus row(s) for cameras outside this account's membership",
+            discarded,
+        )
+    return tuple(
+        CameraView(camera=camera, status=status_by_number.get(number))
+        for number, camera in server_info.cameras.items()
+    )
 
 
 def _decode_server_name(server: dict[str, object]) -> str:

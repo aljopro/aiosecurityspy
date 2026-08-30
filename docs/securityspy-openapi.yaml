@@ -99,6 +99,14 @@ paths:
           capability bits it cannot currently satisfy (observed: `PERM_AUDIORCV`,
           `PERM_AUDIOSND`) and regains them on reconnect. Never cache the mask, and never
           read an absent bit as a withheld right without checking the camera is online.
+        - >-
+          `++systemInfo` is the ONLY permission-scoped inventory surface (research gap G8).
+          An account permitted a single camera of eleven sees only that one camera here —
+          `++camStatus` returns all eleven to the same account (see that endpoint's quirks).
+          A camera absent from `camera-list` must be treated as invisible to this account,
+          whether the cause is being disabled or being de-permissioned: the two are
+          indistinguishable by design (FR-16a), since this endpoint carries no signal that
+          tells them apart and guessing wrong leaks the camera's existence.
       parameters:
         - $ref: "#/components/parameters/Format"
       responses:
@@ -132,6 +140,14 @@ paths:
           A disabled camera reads `enabled:false, online:false, open:false, err:0`; an
           unreachable one reads `enabled:true, online:false, err:64 "Host is down"`. The
           three booleans are independent and distinguish the two states.
+        - >-
+          NOT permission-scoped at all (research gap G8): an account permitted exactly one
+          camera still receives full health for every camera on the server, including its
+          number, name-independent identity, and live status. A consumer must intersect
+          these rows against `++systemInfo`'s `camera-list` and discard any row for a camera
+          absent from it — never return or log a non-member camera's number. This is the
+          entire reason `aiosecurityspy.visible_camera_views()` exists; do not read this
+          endpoint's response as an inventory on its own.
       responses:
         "200":
           description: One entry per camera.

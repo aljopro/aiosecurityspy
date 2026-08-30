@@ -42,7 +42,7 @@ from aiosecurityspy import (
     SecuritySpyUnsupportedVersionError,
 )
 from aiosecurityspy import client as client_module
-from aiosecurityspy.models import Capture, capture_file_bandwidth
+from aiosecurityspy.models import Capture, ServerInfo, capture_file_bandwidth
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1295,6 +1295,156 @@ async def test_camera_status_auth_failure_maps_to_auth_error() -> None:
     session = FakeSession(401, "")
     with pytest.raises(SecuritySpyAuthError):
         await make_client(session).async_get_camera_status()
+
+
+# --- visible cameras: permission-scoped list + health (spec 1.18, gap G8) ----
+
+SYSTEM_INFO_URL = f"http://{HOST}:{PORT}/++systemInfo"
+
+
+def restricted_system_info_body(*, permitted_number: int) -> str:
+    """Build a minimal ``++systemInfo`` body reporting one member camera."""
+    return json.dumps(
+        {
+            "server": {
+                "version": "6.20",
+                "uuid": "1D3A5C7E-9B21-4F60-8A44-0C2E6F1B7D93",
+                "camera-count": "1",
+            },
+            "camera": [
+                {
+                    "number": str(permitted_number),
+                    "name": "Driveway",
+                    "connected": "yes",
+                    "enabled": "yes",
+                    "permissions": "1",
+                }
+            ],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_visible_cameras_restricted_account_drops_non_member_rows(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An account permitted only camera 1 of eleven, per gap G8.
+
+    ``++camStatus`` returns every camera on the server regardless of
+    permission; membership from ``++systemInfo`` is exactly camera 1. The
+    other ten must appear in no returned value and no log record -- this is
+    the row that protects story 2.7.
+    """
+    other_numbers = tuple(range(11))
+    session = SequencedFakeSession(
+        [
+            (200, restricted_system_info_body(permitted_number=1)),
+            (
+                200,
+                cam_status_body(
+                    [
+                        {"num": number, "enabled": True, "online": True, "open": False}
+                        for number in other_numbers
+                    ]
+                ),
+            ),
+        ]
+    )
+    with caplog.at_level("DEBUG"):
+        views = await make_client(session).async_get_visible_cameras()
+    assert len(session.calls) == TWO_STATUSES
+    assert session.calls[0][0] == SYSTEM_INFO_URL
+    assert session.calls[1][0] == CAM_STATUS_URL
+    numbers = {view.camera.number for view in views}
+    assert numbers == {1}
+    # Only the models-layer intersection log is in scope here -- transport
+    # logs legitimately mention the host/port, which contain digits.
+    intersection_messages = [
+        record.getMessage() for record in caplog.records if record.name == "aiosecurityspy.models"
+    ]
+    assert intersection_messages == [
+        "Discarded 10 camStatus row(s) for cameras outside this account's membership"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_visible_cameras_unknown_status_row_is_discarded_and_only_counted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A camStatus row with no matching member is discarded, never raises."""
+    session = SequencedFakeSession(
+        [
+            (200, fixture_body()),
+            (
+                200,
+                cam_status_body(
+                    [
+                        {"num": 0, "enabled": True, "online": True, "open": False},
+                        {"num": 1, "enabled": True, "online": True, "open": False},
+                        {"num": 7, "enabled": True, "online": True, "open": False},
+                        {"num": 99, "enabled": True, "online": True, "open": False},
+                    ]
+                ),
+            ),
+        ]
+    )
+    with caplog.at_level("DEBUG"):
+        views = await make_client(session).async_get_visible_cameras()
+    assert {view.camera.number for view in views} == {0, 1, 7}
+    # Only the models-layer intersection log is in scope here -- transport
+    # logs legitimately mention the host/port, which contain digits.
+    intersection_messages = [
+        record.getMessage() for record in caplog.records if record.name == "aiosecurityspy.models"
+    ]
+    combined = "\n".join(intersection_messages)
+    assert "99" not in combined
+
+
+@pytest.mark.asyncio
+async def test_visible_cameras_ordinary_account_returns_all_members_with_status() -> None:
+    session = SequencedFakeSession(
+        [
+            (200, fixture_body()),
+            (
+                200,
+                cam_status_body(
+                    [
+                        {"num": 0, "enabled": True, "online": True, "open": False},
+                        {"num": 1, "enabled": True, "online": False, "open": True, "err": "e"},
+                        {"num": 7, "enabled": False, "online": False, "open": False},
+                    ]
+                ),
+            ),
+        ]
+    )
+    views = await make_client(session).async_get_visible_cameras()
+    by_number = {view.camera.number: view for view in views}
+    assert set(by_number) == {0, 1, 7}
+    assert by_number[0].status is not None
+    assert by_number[0].status.online is True
+    assert by_number[1].status is not None
+    assert by_number[1].status.error == "e"
+    assert by_number[7].status is not None
+    assert by_number[7].status.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_camera_status_issues_only_camstatus() -> None:
+    """A caller that already holds membership refreshes health with one call."""
+    session = FakeSession(
+        200, cam_status_body([{"num": 0, "enabled": True, "online": True, "open": False}])
+    )
+    client = make_client(session)
+    server_info = ServerInfo.from_api(json.loads(fixture_body()))
+    views = await client.async_refresh_camera_status(server_info)
+    assert len(session.calls) == 1
+    assert session.calls[0][0] == CAM_STATUS_URL
+    by_number = {view.camera.number: view for view in views}
+    assert set(by_number) == {0, 1, 7}
+    assert by_number[0].status is not None
+    assert by_number[0].status.online is True
+    assert by_number[1].status is None
+    assert by_number[7].status is None
 
 
 # --- capture media fetch: preview and file (spec 1.9) ------------------------

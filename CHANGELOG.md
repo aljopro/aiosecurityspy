@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`SecuritySpyClient.async_get_visible_cameras()`** answers "which cameras
+  may this account see, and how are they right now?" in one call. It composes
+  `async_get_server_info()` -- the only permission-scoped inventory surface
+  (research gap G8) -- with `async_get_camera_status()`, which returns every
+  camera on the server to any authenticated account regardless of permission,
+  and intersects them via the new `visible_camera_views()` so a camera absent
+  from `++systemInfo` can never reach the result. A disabled camera and a
+  de-permissioned camera are indistinguishable here, by design (FR-16a): both
+  are simply absent.
+- **`SecuritySpyClient.async_refresh_camera_status(server_info)`** is the
+  cheap-poll counterpart: given a `ServerInfo` the caller already holds, it
+  issues only `++camStatus` -- no re-read of `++systemInfo` -- so a
+  coordinator polling on a cycle is not forced to pay for a 27 KB read every
+  tick.
+- **`aiosecurityspy.visible_camera_views(server_info, statuses)`** is the pure
+  intersection behind both of the above: `CameraStatus` rows for cameras
+  outside `server_info.cameras` are discarded at the point of receipt, never
+  returned and never logged by number -- only a discard count may be logged.
+  Returns a tuple of the new `CameraView(camera, status)` pairs, one per
+  member camera, in `server_info.cameras` order.
+- **`Camera.can_receive_audio` / `Camera.can_send_audio`** are pure
+  properties that separate permission from liveness for the two audio bits
+  that SecuritySpy clears while a camera is disconnected and restores on
+  reconnect (research §5.11). Each returns `None` while the camera is
+  disconnected -- never `False` -- so "the camera is unplugged" can never be
+  read as "you are not allowed".
 - **`ServerInfo.utc_offset`** decodes the server's own UTC offset from
   `seconds-from-gmt` on `++systemInfo` (research §5.7), exposed as a `timedelta`.
   `None` when the field is absent, non-integral, or beyond +/-24h -- never coerced

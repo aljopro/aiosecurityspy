@@ -152,6 +152,7 @@ from .models import (
     CameraSettings,
     CameraSettingsPatch,
     CameraStatus,
+    CameraView,
     Capture,
     CaptureFileBandwidth,
     CaptureModes,
@@ -160,6 +161,7 @@ from .models import (
     arm_override,
     capture_file_bandwidth,
     require_permission,
+    visible_camera_views,
 )
 from .stream import EventCallback, LifecycleCallback, SecuritySpyEventStream
 
@@ -274,6 +276,7 @@ __all__ = [
     "CameraSettings",
     "CameraSettingsPatch",
     "CameraStatus",
+    "CameraView",
     "Capture",
     "CaptureFileBandwidth",
     "CaptureFileStream",
@@ -318,4 +321,5 @@ __all__ = [
     "parse_event_line",
     "redact_url",
     "require_permission",
+    "visible_camera_views",
 ]

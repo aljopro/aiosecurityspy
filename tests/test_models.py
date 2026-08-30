@@ -37,6 +37,7 @@ from aiosecurityspy import (
     class_slug,
     decode_object_classes,
     decode_permissions,
+    visible_camera_views,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -197,6 +198,183 @@ def test_partial_bitmask_and_helper() -> None:
 def test_unknown_permission_bits_are_ignored_not_rejected() -> None:
     assert decode_permissions(1 | 1 << 20) == {"live_video"}
     assert decode_permissions(0) == frozenset()
+
+
+# --- liveness vs permission predicates (spec 1.18, research §5.11) ----------
+
+
+def test_audio_predicates_true_when_connected_and_permitted() -> None:
+    camera = Camera(
+        number=0,
+        name="Front Door",
+        connected=True,
+        enabled=True,
+        permissions=PERM_LIVEVIDEO | PERM_AUDIORCV | PERM_AUDIOSND,
+    )
+    assert camera.can_receive_audio is True
+    assert camera.can_send_audio is True
+
+
+def test_audio_predicates_false_when_connected_and_not_permitted() -> None:
+    camera = Camera(
+        number=0,
+        name="Front Door",
+        connected=True,
+        enabled=True,
+        permissions=PERM_LIVEVIDEO,
+    )
+    assert camera.can_receive_audio is False
+    assert camera.can_send_audio is False
+
+
+def test_audio_predicates_are_none_when_offline_never_read_as_denial() -> None:
+    """An offline camera loses the audio bits from its mask (research §5.11).
+
+    That absence must not be reported as "not permitted" -- it must be
+    distinguishable from an actual permission denial, hence ``None`` rather
+    than ``False``.
+    """
+    offline_camera = Camera(
+        number=7,
+        name="Back Garden",
+        connected=False,
+        enabled=False,
+        # The mask a disconnected camera actually reports (research §5.11):
+        # the audio bits are cleared even though live video remains.
+        permissions=PERM_LIVEVIDEO,
+    )
+    assert offline_camera.can_receive_audio is None
+    assert offline_camera.can_send_audio is None
+    # And this is exactly why `has_permission` alone would get it wrong:
+    assert offline_camera.has_permission("audio_receive") is False
+
+
+def test_live_video_predicate_true_when_permitted() -> None:
+    camera = Camera(
+        number=0, name="Front Door", connected=True, enabled=True, permissions=PERM_LIVEVIDEO
+    )
+    assert camera.has_permission("live_video") is True
+
+
+# --- visible_camera_views: the ++systemInfo / ++camStatus intersection -----
+
+
+def _status(
+    number: int, *, enabled: bool = True, online: bool = True, open_: bool = False
+) -> CameraStatus:
+    return CameraStatus(number=number, enabled=enabled, online=online, open=open_)
+
+
+def test_visible_camera_views_ordinary_account_all_permitted() -> None:
+    info = ServerInfo.from_api(load_system_info())
+    statuses = tuple(_status(number) for number in info.cameras)
+    views = visible_camera_views(info, statuses)
+    assert {view.camera.number for view in views} == set(info.cameras)
+    for view in views:
+        assert view.status is not None
+        assert view.status.number == view.camera.number
+
+
+def test_visible_camera_views_restricted_account_drops_non_member_rows() -> None:
+    """Membership from ``++systemInfo`` wins; camStatus cannot widen it.
+
+    Camera 1 is the only member here; camStatus (as it would for any
+    account, per gap G8) reports every camera on the server. The other two
+    must not appear in the result by any path.
+    """
+    full_info = ServerInfo.from_api(load_system_info())
+    driveway = full_info.cameras[1]
+    restricted_info = ServerInfo(
+        uuid=full_info.uuid,
+        name=full_info.name,
+        version=full_info.version,
+        version_info=full_info.version_info,
+        camera_count=1,
+        cameras={1: driveway},
+    )
+    all_server_statuses = tuple(_status(number) for number in full_info.cameras)
+    views = visible_camera_views(restricted_info, all_server_statuses)
+    assert len(views) == 1
+    assert views[0].camera.number == 1
+    numbers = {view.camera.number for view in views}
+    assert numbers == {1}
+
+
+def test_visible_camera_views_disabled_and_depermissioned_are_indistinguishable() -> None:
+    """Both simply absent from membership -- by construction, not accident."""
+    full_info = ServerInfo.from_api(load_system_info())
+    driveway = full_info.cameras[1]
+    # Camera 0 ("disabled" stand-in) and camera 7 ("de-permissioned"
+    # stand-in) are both absent from this account's `++systemInfo` view --
+    # the only signal `visible_camera_views` is allowed to consult.
+    membership = ServerInfo(
+        uuid=full_info.uuid,
+        name=full_info.name,
+        version=full_info.version,
+        version_info=full_info.version_info,
+        camera_count=1,
+        cameras={1: driveway},
+    )
+    disabled_camstatus = (
+        _status(0, enabled=False),  # stands in for the disabled camera
+        _status(1),
+        _status(7, enabled=True),  # stands in for the de-permissioned camera
+    )
+    depermissioned_camstatus = (
+        _status(0, enabled=True),
+        _status(1),
+        _status(7, enabled=True),
+    )
+    result_a = visible_camera_views(membership, disabled_camstatus)
+    result_b = visible_camera_views(membership, depermissioned_camstatus)
+    assert result_a == result_b
+    assert {view.camera.number for view in result_a} == {1}
+
+
+def test_visible_camera_views_unknown_status_row_discarded_never_raises() -> None:
+    info = ServerInfo.from_api(load_system_info())
+    statuses = (*[_status(number) for number in info.cameras], _status(9999))
+    views = visible_camera_views(info, statuses)
+    assert {view.camera.number for view in views} == set(info.cameras)
+
+
+def test_visible_camera_views_member_with_no_status_row_gets_none() -> None:
+    info = ServerInfo.from_api(load_system_info())
+    numbers = list(info.cameras)
+    statuses = tuple(_status(number) for number in numbers[:-1])
+    views = visible_camera_views(info, statuses)
+    by_number = {view.camera.number: view for view in views}
+    assert by_number[numbers[-1]].status is None
+
+
+def test_visible_camera_views_empty_statuses_returns_all_members_unstatused() -> None:
+    """A transient empty ``++camStatus`` response must not fabricate status."""
+    info = ServerInfo.from_api(load_system_info())
+    views = visible_camera_views(info, ())
+    assert {view.camera.number for view in views} == set(info.cameras)
+    assert all(view.status is None for view in views)
+
+
+def test_visible_camera_views_discards_count_logged_not_number(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    info = ServerInfo.from_api(load_system_info())
+    driveway = info.cameras[1]
+    membership = ServerInfo(
+        uuid=info.uuid,
+        name=info.name,
+        version=info.version,
+        version_info=info.version_info,
+        camera_count=1,
+        cameras={1: driveway},
+    )
+    statuses = tuple(_status(number) for number in info.cameras)
+    with caplog.at_level("DEBUG"):
+        visible_camera_views(membership, statuses)
+    combined = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Discarded 2" in combined  # the count of dropped rows
+    assert "0" not in combined  # camera 0's number never appears
+    assert "7" not in combined  # camera 7's number never appears
 
 
 def test_camera_inventory_is_not_mutable_through_the_model() -> None:
