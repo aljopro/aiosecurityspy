@@ -360,15 +360,19 @@ def _decode_payload(event_type: str, info: str) -> EventPayload | None:
     return None
 
 
-def parse_event_line(line: str, *, server_timezone: tzinfo = UTC) -> StreamEvent | None:
+def parse_event_line(line: str, *, server_timezone: tzinfo) -> StreamEvent | None:
     """Decode one event-stream record.
 
     Args:
         line: A single record with its CR terminator already removed.
         server_timezone: The timezone the server's wall-clock timestamps are
-            expressed in. **[ASSUMPTION]** No SecuritySpy endpoint in the
-            protocol research exposes the server's timezone, so this defaults
-            to UTC and a consumer that knows better must say so.
+            expressed in. ``systemInfo.server`` publishes this as
+            ``seconds-from-gmt`` (see :attr:`ServerInfo.utc_offset`), so a
+            caller must decode or otherwise obtain a zone and pass it -- there
+            is no correct default. A fixed UTC offset is only exact for the
+            instant it was read at; a caller who knows the server's real IANA
+            zone should pass a :class:`~zoneinfo.ZoneInfo` instead for
+            DST-correct decoding of historical records.
             :attr:`StreamEvent.raw_timestamp` preserves the original string
             either way.
 

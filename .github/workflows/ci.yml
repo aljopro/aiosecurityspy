@@ -35,8 +35,37 @@ jobs:
       - name: Pytest
         run: uv run pytest -q
 
+      - name: Validate the OpenAPI description
+        run: |
+          uv run python - <<'PY'
+          from openapi_spec_validator import validate
+          from openapi_spec_validator.readers import read_from_filename
+
+          spec, _ = read_from_filename("docs/securityspy-openapi.yaml")
+          validate(spec)
+
+          # Every operation must state its evidence, or the description quietly
+          # decays from "what the server does" into "what we assumed it does".
+          allowed = {"live-6.21", "client-source", "research-only"}
+          missing = [
+              f"{method.upper()} {path}"
+              for path, ops in spec["paths"].items()
+              for method, op in ops.items()
+              if isinstance(op, dict) and op.get("x-verification") not in allowed
+          ]
+          assert not missing, f"operations missing a valid x-verification: {missing}"
+          print(f"OpenAPI description valid; {len(spec['paths'])} paths, all marked")
+          PY
+
       - name: Build distributions
         run: uv build
+
+      - name: Verify the sdist ships the OpenAPI description
+        run: |
+          set -euo pipefail
+          sdist="$(ls dist/*.tar.gz)"
+          tar -tzf "$sdist" | grep -q 'docs/securityspy-openapi.yaml'
+          echo "OpenAPI description present in ${sdist}"
 
       - name: Verify the wheel ships py.typed
         run: |

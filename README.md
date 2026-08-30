@@ -22,6 +22,23 @@ credential-safe diagnostics — as an ordinary PyPI package usable from any scri
   an HTTP session. The caller owns session lifetime and passes one in.
 - **Typed.** A `py.typed` marker ships with the wheel; the source passes `mypy --strict`.
 
+## The API this wraps
+
+SecuritySpy's HTTP API is undocumented by the vendor. This library's description of it lives
+in [`docs/securityspy-openapi.yaml`](docs/securityspy-openapi.yaml) — an OpenAPI 3.1 file
+that ships in the sdist and is schema-validated in CI.
+
+Read its header before generating anything from it. OpenAPI cannot express several things
+this server does, and the file marks them rather than normalising them away: `++getpreview`'s
+URL carries a literal `?` inside the path and a second one before `archive`; every settings
+POST body must begin with a bare `formData` token that is not a key=value pair; checkbox
+fields are keyed by HTML element id and their order matters. A generated client that ignores
+those annotations will be broken in ways the description looks like it endorses.
+
+Every operation carries an `x-verification` marker — `live-6.21`, `client-source` or
+`research-only` — so you can tell which parts were observed from a running server and which
+are still inherited belief. CI fails if an operation lacks one.
+
 ## Usage
 
 The caller creates and owns the `aiohttp` session. `aiosecurityspy` never creates,
@@ -72,6 +89,7 @@ raises is logged and swallowed rather than killing the stream.
 
 ```python
 import asyncio
+from datetime import UTC, timezone
 
 import aiohttp
 
@@ -89,6 +107,12 @@ async def main() -> None:
             use_https=True,
         )
 
+        # server_timezone is required: SecuritySpy's event-stream records carry a
+        # bare local wall clock with no offset, so the library will not guess.
+        # Decode it from the server's own published offset (see "Timezones" below).
+        info = await client.async_get_server_info()
+        server_timezone = timezone(info.utc_offset) if info.utc_offset is not None else UTC
+
         def on_event(event: StreamEvent) -> None:
             if isinstance(event.payload, ClassificationPayload):
                 print(f"camera {event.camera}: {dict(event.payload.classes)}")
@@ -99,6 +123,7 @@ async def main() -> None:
             on_disconnected=lambda: print("stream lost; reconnecting"),
             on_reconnected=lambda: print("stream back; reconcile state"),
             on_auth_failed=lambda: print("credentials rejected; call resume() to retry"),
+            server_timezone=server_timezone,
         )
         await stream.connect()
         try:
@@ -134,6 +159,52 @@ A few things the protocol makes non-obvious:
 `disconnect()` is idempotent, is safe to call from inside a callback, and leaves no task,
 timer, or socket behind. Your session is untouched either way.
 
+### Timezones
+
+Every decode entry point that turns a SecuritySpy wall clock into a `datetime` --
+`event_stream()`, `async_get_captures()`, and the lower-level `parse_event_line()` and
+`SecuritySpyEventStream()` -- takes a **required** `server_timezone` keyword argument.
+There is no default, and passing none is a `mypy --strict` failure as well as a runtime
+`TypeError`: the wire format sends a bare local wall clock (`YYYYMMDDHHMMSS`, or a folder
+date plus seconds-since-midnight) with no offset, and the library will not silently guess
+UTC.
+
+`ServerInfo.utc_offset` decodes the server's own answer, `seconds-from-gmt` off
+`++systemInfo`, as a `timedelta`:
+
+```python
+from datetime import UTC, timezone
+
+info = await client.async_get_server_info()
+server_timezone = timezone(info.utc_offset) if info.utc_offset is not None else UTC
+```
+
+`utc_offset` is `None` — never coerced to zero — when the server did not publish a usable
+value; zero itself is a legitimate real offset (the server is on UTC) and stays
+distinguishable from "unknown". The library never fetches `++systemInfo` on your behalf to
+fill this in: caching or auto-fetching a timezone behind your back would be hidden state
+with an ordering dependency, so it is you who reads `ServerInfo.utc_offset` and passes it
+along.
+
+**An offset is not a timezone.** `seconds-from-gmt` is only the offset in force when it
+was read — it does not encode daylight-saving rules, and SecuritySpy never publishes an
+IANA zone name. A fixed offset built from it is exact for events decoded around the same
+time, but a `caplist` window spanning weeks or months can cross a DST transition, and a
+fixed offset silently keeps assuming whichever side of the transition it started on. If
+you know the server's real IANA zone — Home Assistant callers usually do, via
+`hass.config.time_zone` — pass a `zoneinfo.ZoneInfo` instead of a fixed offset for
+DST-correct historical decoding:
+
+```python
+from zoneinfo import ZoneInfo
+
+server_timezone = ZoneInfo("America/Chicago")
+```
+
+**Breaking change:** prior releases defaulted `server_timezone` to `UTC` on these four
+entry points, which silently produced the wrong instant on any server that is not
+actually on UTC. Every call site must now state a zone explicitly.
+
 ### Reduce `CLASSIFY` frames into detection episodes
 
 `CLASSIFY` is a per-frame inference stream, not a detection event: 191 records on one
@@ -148,7 +219,7 @@ forever. This is the one obligation that fails silently if you skip it.
 
 ```python
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import aiohttp
 
@@ -195,7 +266,11 @@ async def main() -> None:
                     f"peak={episode.peak_confidence:.0f} signals={episode.signal_count}"
                 )
 
-        stream = client.event_stream(on_event=lambda event: report(reducer.feed(event)))
+        info = await client.async_get_server_info()
+        server_timezone = timezone(info.utc_offset) if info.utc_offset is not None else UTC
+        stream = client.event_stream(
+            on_event=lambda event: report(reducer.feed(event)), server_timezone=server_timezone
+        )
         await stream.connect()
         try:
             while True:
@@ -254,7 +329,7 @@ cameras × classes.
 
 ```python
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import aiohttp
 
@@ -272,6 +347,14 @@ async def main() -> None:
             use_https=True,
         )
 
+        # server_timezone is required: `caplist` folder dates plus seconds-since-
+        # midnight are a local wall clock, so the library will not guess the offset.
+        # For DST-correct historical decoding, pass the server's real IANA zone
+        # (e.g. `ZoneInfo("America/Chicago")`) if you know it -- a fixed offset is
+        # only exact for the instant it was read at.
+        info = await client.async_get_server_info()
+        server_timezone = timezone(info.utc_offset) if info.utc_offset is not None else UTC
+
         today = datetime.now(UTC).date()
         try:
             captures = await client.async_get_captures(
@@ -279,6 +362,7 @@ async def main() -> None:
                 start_date=today - timedelta(days=1),
                 end_date=today,
                 object_class="human",
+                server_timezone=server_timezone,
             )
         except SecuritySpyError as err:
             print(f"could not read capture history: {err}")
@@ -314,8 +398,8 @@ Worth knowing:
   A wide window over many cameras with no filter can exceed the cap and fail; narrowing
   the window or the filter is the fix.
 - **`Capture.start` is a timezone-aware UTC instant** reconstructed from the folder date
-  plus seconds-since-midnight, because the wire format carries no absolute time. Pass
-  `server_timezone=` if your server does not run in UTC. An unreconstructable time is
+  plus seconds-since-midnight, because the wire format carries no absolute time.
+  `server_timezone=` is required (see "Timezones" below). An unreconstructable time is
   `None` — never epoch, never zero — and those captures sort last. The wire format sends
   a wall-clock second-of-day with no fold bit, so on the one ambiguous local hour of a
   DST fall-back the earlier instant is chosen, and on a spring-forward day two captures
@@ -355,16 +439,19 @@ async def main() -> None:
 
         # `require_permission` is a pure guard: it costs no round trip, so run
         # it before touching a plane, and guard each call with the permission
-        # that call actually needs. `"camera_control"` covers the settings page
-        # -- both reading it and writing it; `"schedule"` covers arming. They
-        # are separate grants, so holding one says nothing about the other.
+        # that call actually needs. `"settings"` covers the settings page --
+        # both reading it and writing it; `"schedule"` covers arming. They are
+        # separate grants, so holding one says nothing about the other. A
+        # server that answers a settings or arming call with 403 raises this
+        # same `SecuritySpyPermissionError` even if you skip the guard --
+        # `require_permission` just avoids the round trip.
         info = await client.async_get_server_info()
         camera = info.cameras.get(3)
         if camera is None:
             print("camera 3 is not on this server")
             return
         try:
-            require_permission(camera, "camera_control")
+            require_permission(camera, "settings")
         except SecuritySpyPermissionError as err:
             print(err)
             return
@@ -385,8 +472,8 @@ async def main() -> None:
             ),
         )
 
-        # Arming: three independent booleans, so all eight combinations are
-        # expressible -- including all-false, which disarms all three.
+        # Arming: the three booleans select which capture modes the write
+        # targets; an all-false set is refused before any request.
         try:
             require_permission(camera, "schedule")
         except SecuritySpyPermissionError as err:
@@ -416,13 +503,23 @@ Three things about this surface are worth stating plainly:
 
 - **The override is transient and bounded.** It suspends the camera's schedule for the
   stated duration and then the schedule resumes; it is not a permanent arm or disarm.
-  `ARM_OVERRIDE_UNCHANGED` (the default) leaves any existing override alone,
+  `override` is **required and has no default**: it is the only value this library ever
+  applies, so a defaulted call would target modes, apply nothing, and return `200 OK`
+  having done nothing. `ARM_OVERRIDE_UNCHANGED` leaves any existing override alone,
   `ARM_OVERRIDE_NONE` clears it, and the "until next scheduled event" values report
   `duration is None` with `until_next_scheduled` true. `arm_override()` rejects any value
   outside the published `-1`..`14` table rather than guessing.
 - **Schedules are read-only.** `Camera.schedules` reports the ids SecuritySpy assigned,
   and no method in this library reassigns one: the arming request sends `cameraNum`,
-  `mode` and `override`, and never `schedule=`.
+  `mode` and `override`, and never `schedule=`. The ids resolve to human-readable names
+  without a second request: `ServerInfo.schedules` is a read-only id-to-name map decoded
+  from the server's `schedule-list`, and `camera.schedules.resolve_names(info.schedules)`
+  returns the three names in `(continuous, motion, actions)` order. Schedules are
+  user-editable, so an id missing from the map resolves to `None` rather than raising.
+- **A camera can be taken in or out of service.** `async_set_camera_enabled(3,
+  enabled=False)` writes the settings page's `enabled` checkbox, through the same verified
+  partial-write path as `async_set_camera_settings` — only the one field is sent, and the
+  read-as-bool/write-as-`1`/`0` asymmetry is absorbed by the library.
 - **A settings payload contains the camera's device credentials in plaintext.**
   `CameraSettings` therefore keeps only a declared, curated set of non-credential fields —
   the raw payload is dropped at decode, never retained, and never logged at any level
@@ -431,6 +528,93 @@ Three things about this surface are worth stating plainly:
 Booleans read back from SecuritySpy as JSON `true`/`false` but must be *written* as
 `1`/`0`. That asymmetry is absorbed inside the library, so a call site only ever sees
 `bool`.
+
+### Check server and camera health
+
+`ServerInfo` and `Camera` (from `async_get_server_info()`) carry a handful of health
+fields alongside the identity and permission ones: server `cpu_usage`, `memory_pressure`,
+`cert_expiry_days` and `update_version`, and per-camera `current_fps`, `data_rate`,
+`last_error` and `last_error_description`. Every one of them is `None` when the server
+omits it, sends something unparseable, or — for the fields where only a non-negative
+number means anything (CPU usage, memory pressure, frame rate, data rate) — sends a
+negative one; decoding never raises over a missing or malformed health reading.
+`cert_expiry_days` is the one exception to the non-negative rule: a *negative* count is
+exactly what an already-expired certificate reports, so it is passed through rather than
+clamped to `None`. `update_version` is `None` both when `new-version` is absent and when
+it is the empty string SecuritySpy sends to mean "no update offered" — it is never
+compared against `version`, since an empty `new-version` is the only "no update" signal
+the API documents.
+
+For a cheap health poll on every cycle, `async_get_camera_status()` reads `++camStatus` —
+794 B for 11 cameras versus `++systemInfo`'s 27 KB — and returns one typed `CameraStatus` per camera the
+server reports:
+
+```python
+statuses = await client.async_get_camera_status()
+for status in statuses:
+    state = "online" if status.online else "offline"
+    print(f"camera {status.number}: {state}, enabled={status.enabled}, open={status.open}")
+    if status.error is not None:
+        print(f"  error: {status.error} ({status.error_description})")
+```
+
+`enabled`, `online` and `open` are three independent booleans, never collapsed into one
+state. `CameraStatus.error`/`error_description` decode the wire's `err`/`errDesc` keys and
+mirror `Camera.last_error`/`last_error_description` in naming. A healthy camera reports
+*zero* on this surface, not an empty string — the one live capture of `++camStatus` sends
+`"err":0` — so both an empty and a zero error code decode to `None`, and the
+`if status.error is not None` test above means "this camera is actually reporting an
+error". A non-zero code is carried through as the server's own string. The description is
+decoded with its code, never independently: when the code folds to `None`, so does
+`error_description`, so a description can never outlive the fault it describes.
+`Camera.last_error`/`last_error_description` follow both rules, since research §10 lists
+the two as one error surface. An entry with no usable camera number is skipped, the same precedent
+`Camera.from_api` follows, and the rest of the response still decodes.
+
+### Fetch capture previews and recordings
+
+`async_get_capture_preview()` returns the JPEG thumbnail for a capture as raw bytes, and
+`async_get_capture_file()` returns a streaming handle to the recorded file. Both derive
+their URL entirely from a `Capture` -- no caller-supplied path, folder date, or raw query
+parameter.
+
+```python
+# Get the thumbnail for a capture
+preview = await client.async_get_capture_preview(capture)
+# preview.data is the JPEG bytes, preview.content_type is "image/jpeg"
+
+# Stream the recorded file (never fully buffered)
+async with await client.async_get_capture_file(capture) as stream:
+    async for chunk in stream:
+        process(chunk)  # each chunk is a bounded slice of the file body
+```
+
+A few things the protocol makes non-obvious:
+
+- **The `archive` flag is derived from `Capture.archived` by default.** Both calls work
+  from the `Capture` alone. An explicit `archive=True` or `archive=False` on the file fetch
+  overrides it.
+- **`getpreview`'s `archive` flag travels inside the path string.** The URL is
+  `++getpreview?/{camera}/{folderDate}/{filename}?archive={0|1}` -- a literal second `?`,
+  not `&`. The library assembles this correctly so you never have to think about it.
+- **Bandwidth selects one of three endpoint paths.** `CaptureFileBandwidth.STANDARD` (the
+  default) uses `++getfile`, `HIGH` uses `++getfilehb`, and `LOW` uses `++getfilelb`. Pass
+  a `CAPTURE_FILE_BANDWIDTH_*` constant or a `CaptureFileBandwidth` record.
+- **`stream.content_type` is what the server sent.** The variants usually differ
+  (`++getfilelb` typically serves `video/mp4`, the others QuickTime), but the library
+  reports the response's own content type rather than asserting one from the bandwidth you
+  asked for, so it cannot drift from what is actually on the wire.
+- **The file stream never buffers the full body.** Bytes are read and yielded in bounded
+  chunks, so even a multi-gigabyte recording stays at one chunk in memory at a time. There
+  is no total deadline, so a large transfer is not cut short, but the per-read socket
+  timeout is bounded: a server that sends headers and then stalls fails instead of hanging.
+- **Release the stream if you do not drain it.** Iterating to the end releases the response
+  for you. If you stop early, or never iterate at all, use `async with` (as above) or call
+  `await stream.aclose()` -- otherwise the connection stays checked out of your session's
+  pool. Re-iterating a stream raises `RuntimeError`: the body is consumed as it is read, so
+  a second pass could only yield a truncated remainder.
+- **Transport errors during streaming are wrapped.** A connection drop mid-iteration raises
+  `SecuritySpyConnectError`, not a bare `aiohttp.ClientError` or `TimeoutError`.
 
 ### Anonymize a diagnostics dump before you publish it
 
@@ -514,6 +698,12 @@ account, and grant it only the per-camera permissions you actually need — typi
 control**, and **arm/disarm** unless a feature you use requires them. Each camera's
 granted permissions are decoded for you into `Camera.permission_names`, so you can check
 capability before attempting an operation.
+
+A least-privileged account that lacks a permission a call needs gets `SecuritySpyPermissionError`,
+not `SecuritySpyAuthError` — the server answers with a `403`, and a `403` means the
+credentials were *accepted*, not that they were wrong. Catch `SecuritySpyAuthError` to
+detect a bad username or password (`401`) and `SecuritySpyPermissionError` to detect a
+missing grant; re-prompting for credentials on the latter will not fix anything.
 
 ### Prefer HTTPS
 

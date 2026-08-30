@@ -11,42 +11,61 @@ import json
 import logging
 import ssl
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, NoReturn, cast
 from urllib.parse import quote
 
 import aiohttp
 
 from .connection import ConnectionSettings
 from .const import (
-    ARM_OVERRIDE_UNCHANGED,
+    CAPTURE_FILE_BANDWIDTH_STANDARD,
     CAPTURE_FILTER_ALL,
     CAPTURE_FILTERS,
     DEFAULT_PORT,
     DEFAULT_TIMEOUT,
+    ENDPOINT_CAM_STATUS,
     ENDPOINT_CAPTURE_LIST,
+    ENDPOINT_GET_PREVIEW,
     ENDPOINT_SET_SCHEDULE,
     ENDPOINT_SETTINGS_CAMERAS,
     ENDPOINT_SYSTEM_INFO,
+    PERM_FILES,
+    PERM_SCHED,
+    PERM_SETTINGS,
+    PERMISSION_NAMES,
     SETTINGS_FORM_SENTINEL,
     capture_filter_for_class,
 )
-from .exceptions import SecuritySpyAuthError, SecuritySpyCertificateError, SecuritySpyConnectError
+from .exceptions import (
+    SecuritySpyAuthError,
+    SecuritySpyCertificateError,
+    SecuritySpyConnectError,
+    SecuritySpyError,
+    SecuritySpyPermissionError,
+)
 from .models import (
     SETTINGS_PAGE_KEY_QUORUM,
     SETTINGS_PAGE_KEYS,
     ArmOverride,
     CameraSettings,
+    CameraSettingsPatch,
+    CameraStatus,
+    CameraView,
     Capture,
+    CaptureFileBandwidth,
+    CapturePreview,
     ServerInfo,
     arm_override,
+    capture_file_bandwidth,
+    visible_camera_views,
 )
 from .stream import SecuritySpyEventStream
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import AsyncIterator, Iterable, Mapping
     from datetime import tzinfo
 
-    from .models import CameraSettingsPatch, CaptureModes
+    from .models import CaptureModes
     from .stream import EventCallback, LifecycleCallback
 
 __all__ = ["SecuritySpyClient"]
@@ -55,6 +74,13 @@ _LOGGER: Final = logging.getLogger(__name__)
 
 _HTTP_UNAUTHORIZED: Final = 401
 _HTTP_FORBIDDEN: Final = 403
+
+#: The permission name reported when a `403` lands on an endpoint whose
+#: required permission this library does not know. `SecuritySpyPermissionError`
+#: takes a required `permission: str` -- there is no unnamed/optional form to
+#: fall back to -- so this is the one honest thing to say: the account lacks
+#: *some* permission, and which one is not knowable from the status code alone.
+_PERMISSION_UNKNOWN: Final = "unknown"
 _HTTP_OK_MIN: Final = 200
 _HTTP_OK_MAX: Final = 299
 _HTTP_REDIRECT_MIN: Final = 300
@@ -81,6 +107,110 @@ _CAPTURE_LIST_KEYS: Final = ("captures", "caplist", "files", "file")
 
 #: Content type every ``settings-*`` write carries (research §8.0).
 _FORM_CONTENT_TYPE: Final = "application/x-www-form-urlencoded"
+
+#: Size of one chunk yielded by :class:`CaptureFileStream`, in bytes. Named
+#: rather than inlined so the memory bound the streaming API is built on is a
+#: reviewable constant, not a literal buried in a read loop: a recording can be
+#: gigabytes, and this is the only thing keeping any of it out of the process.
+_STREAM_CHUNK_BYTES: Final = 64 * 1024
+
+
+class CaptureFileStream:
+    """An async-iterable stream of bytes from a capture file fetch.
+
+    The response body is never fully buffered: bytes are read and yielded in
+    bounded chunks of :data:`_STREAM_CHUNK_BYTES`. Iteration wraps transport
+    errors into :class:`~aiosecurityspy.SecuritySpyConnectError` and releases
+    the response when the body is exhausted or on error.
+
+    A consumer that does not drain the stream must release it explicitly,
+    either with ``await stream.aclose()`` or by using it as an async context
+    manager::
+
+        async with await client.async_get_capture_file(capture) as stream:
+            async for chunk in stream:
+                ...
+
+    Relying on garbage collection is not enough: a stream that is created and
+    never iterated never builds the generator whose ``finally`` releases the
+    response, so the connection would stay checked out of the caller's pool.
+    """
+
+    def __init__(
+        self,
+        response: aiohttp.ClientResponse,
+        host: str,
+        port: int,
+        content_type: str,
+    ) -> None:
+        """Store the response and connection details."""
+        self._response = response
+        self._host = host
+        self._port = port
+        self.content_type = content_type
+        self._released = False
+        self._iterated = False
+
+    def _release(self) -> None:
+        """Release the response if not already released."""
+        if not self._released:
+            self._released = True
+            self._response.release()
+
+    async def aclose(self) -> None:
+        """Release the underlying response.
+
+        Idempotent, and safe to call whether or not the stream was iterated.
+        """
+        self._release()
+
+    async def __aenter__(self) -> CaptureFileStream:
+        """Return the stream itself, for use in an ``async with`` block."""
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        """Release the response on leaving the ``async with`` block."""
+        await self.aclose()
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        """Return the async iterator over the response body.
+
+        Raises:
+            RuntimeError: Iteration was already started. The body is consumed
+                as it is read, so a second pass could only yield the unread
+                remainder -- silently producing a truncated file. A caller that
+                needs the bytes twice must buffer them, and a caller retrying a
+                failed transfer must issue a new request. This is a caller
+                mistake, so it stays outside the typed hierarchy, matching the
+                convention stated in :mod:`aiosecurityspy.exceptions`.
+
+        """
+        if self._iterated:
+            message = (
+                "this CaptureFileStream has already been iterated; its body is "
+                "consumed as it is read, so re-iterating would truncate. Issue "
+                "a new async_get_capture_file call instead."
+            )
+            raise RuntimeError(message)
+        self._iterated = True
+        return self._aiter()
+
+    async def _aiter(self) -> AsyncIterator[bytes]:
+        """Yield bounded chunks of the response body, catching transport errors."""
+        try:
+            while True:
+                chunk = await self._response.content.read(_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                yield chunk
+        except (aiohttp.ClientError, TimeoutError, OSError) as err:
+            raise SecuritySpyConnectError(
+                self._host,
+                self._port,
+                f"stream failure ({type(err).__name__})",
+            ) from err
+        finally:
+            self._release()
 
 
 def _tls_reason(err: BaseException) -> str:
@@ -217,7 +347,20 @@ def _capture_entries(payload: object) -> list[object] | None:
     return None
 
 
-def _tiebreak(capture: Capture) -> tuple[int, str, str, int, int]:
+def _camera_status_entries(payload: object) -> list[object] | None:
+    """Locate the status array in a ``++camStatus`` body, or return ``None``.
+
+    Research §2.2 records a bare JSON array (``[{num, enabled, online, open,
+    err, errDesc}]``); nothing else is documented, so unlike
+    :func:`_capture_entries` this accepts only that shape rather than guessing
+    at a wrapped envelope no observation supports.
+    """
+    if isinstance(payload, list):
+        return list(payload)  # pyright: ignore[reportUnknownArgumentType]
+    return None
+
+
+def _tiebreak(capture: Capture) -> tuple[int, str, str, int, float]:
     """Total ordering key for captures the primary key cannot separate.
 
     Every field a caller can observe participates, so two entries share a key
@@ -229,7 +372,7 @@ def _tiebreak(capture: Capture) -> tuple[int, str, str, int, int]:
         capture.filename,
         capture.folder_date,
         capture.capture_type if capture.capture_type is not None else -1,
-        capture.file_size if capture.file_size is not None else -1,
+        capture.file_size_mb if capture.file_size_mb is not None else -1,
     )
 
 
@@ -343,7 +486,7 @@ class SecuritySpyClient:
         on_disconnected: LifecycleCallback | None = None,
         on_reconnected: LifecycleCallback | None = None,
         on_auth_failed: LifecycleCallback | None = None,
-        server_timezone: tzinfo = UTC,
+        server_timezone: tzinfo,
     ) -> SecuritySpyEventStream:
         """Create an event-stream reader bound to this client's server.
 
@@ -361,8 +504,9 @@ class SecuritySpyClient:
             on_auth_failed: Called on 401/403, after which reconnection pauses
                 until ``resume()`` is called.
             server_timezone: Timezone of the server's wall-clock timestamps.
-                **[ASSUMPTION]** No SecuritySpy endpoint exposes it, so this
-                defaults to UTC.
+                ``systemInfo.server`` publishes this as ``seconds-from-gmt``
+                (see :attr:`ServerInfo.utc_offset`); there is no correct
+                default, so it must be supplied.
 
         Returns:
             A stopped :class:`~aiosecurityspy.SecuritySpyEventStream`.
@@ -391,11 +535,26 @@ class SecuritySpyClient:
     async def async_get_server_info(self) -> ServerInfo:
         """Read the server and camera inventory from ``++systemInfo``.
 
+        This is also the disambiguating probe :meth:`_map_status` issues on a
+        `401` from another endpoint (research §5.9): the account is known to
+        be able to reach this endpoint whenever its credentials are valid at
+        all, so a clean success here on the heels of someone else's `401`
+        means that `401` was a permission denial, not rejected credentials.
+
+        A `401` from *this* call is never itself disambiguated: probing
+        ``++systemInfo`` with another read of ``++systemInfo`` would answer
+        nothing new and could recurse, so this call always passes
+        ``disambiguate=False`` down to the shared status mapping. That also
+        means calling this method directly issues exactly one request even
+        when it 401s.
+
         Raises:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 failed TLS, answered with an unexpected status, or sent a body
                 that was not JSON.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403).
             SecuritySpyUnsupportedVersionError: The server is older than the
                 supported minimum, or the payload shape is not locatable.
 
@@ -404,8 +563,144 @@ class SecuritySpyClient:
             number.
 
         """
-        payload = await self._request_json(ENDPOINT_SYSTEM_INFO, {"format": "json"})
+        payload = await self._request_json(
+            ENDPOINT_SYSTEM_INFO, {"format": "json"}, disambiguate=False
+        )
         return ServerInfo.from_api(payload)
+
+    async def async_get_camera_status(self) -> tuple[CameraStatus, ...]:
+        """Read the cheap per-camera health poll from ``++camStatus``.
+
+        This is the low-cost alternative to :meth:`async_get_server_info`: the
+        response is 794 B for 11 cameras versus ``++systemInfo``'s 27 KB
+        (research §2.2), so a consumer that only needs to notice a camera going
+        offline, closing, or erroring can poll this on every cycle instead of
+        decoding the full inventory.
+
+        ``[ASSUMPTION]`` This endpoint is called without ``format=json``,
+        unlike :meth:`async_get_server_info`, because the one capture of it the
+        project holds returns JSON unconditionally (research addendum §8.12).
+        If a live server turns out to honour ``format`` here too, this call
+        raises :class:`SecuritySpyConnectError` on every poll and the parameter
+        must be added. A stub pins the request shape -- the client tests assert
+        this call sends no query parameters -- but only a live server can
+        settle whether that shape is the right one.
+
+        Raises:
+            SecuritySpyConnectError: The server was unreachable, timed out,
+                answered with an unexpected status, or sent a body that was not
+                a JSON array.
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403), or a `401` that a
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
+
+        Returns:
+            The decoded per-camera status, one entry per camera the server
+            reported. An entry with no usable camera number is skipped; the
+            rest still decode.
+
+        """
+        payload = await self._request_json(ENDPOINT_CAM_STATUS)
+        entries = _camera_status_entries(payload)
+        if entries is None:
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "server response was not a camera status list",
+            )
+        statuses: list[CameraStatus] = []
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                _LOGGER.debug(
+                    "Skipping camStatus entry %d: expected an object, got %s",
+                    index,
+                    type(entry).__name__,
+                )
+                continue
+            mapping = {str(key): item for key, item in entry.items()}  # pyright: ignore[reportUnknownVariableType]
+            status = CameraStatus.from_api(mapping)
+            if status is not None:
+                statuses.append(status)
+        return tuple(statuses)
+
+    async def async_get_visible_cameras(self) -> tuple[CameraView, ...]:
+        """Answer "which cameras may this account see, and how are they now?".
+
+        Composes :meth:`async_get_server_info` -- the only permission-scoped
+        surface (research gap G8) -- with :meth:`async_get_camera_status`,
+        which returns every camera on the server to any authenticated
+        account regardless of permission. The two reads happen because this
+        call asked for both; nothing here is fetched implicitly to serve a
+        decode (story 1.13's rule). The composition itself is
+        :func:`~aiosecurityspy.visible_camera_views`, a pure function: a
+        ``++camStatus`` row for a camera absent from ``++systemInfo`` is
+        discarded there, at the point of receipt, and never reaches the
+        result or a log line by number.
+
+        A camera that is disabled and a camera whose permission has been
+        withdrawn are indistinguishable here, by design (research gap G8,
+        FR-16a): both are simply absent from ``++systemInfo`` and so absent
+        from the result.
+
+        Raises:
+            SecuritySpyConnectError: Either read failed at the transport
+                level; see :meth:`async_get_server_info` and
+                :meth:`async_get_camera_status`.
+            SecuritySpyAuthError: The credentials were rejected.
+            SecuritySpyPermissionError: The account lacks a required
+                permission.
+            SecuritySpyUnsupportedVersionError: The server or payload shape
+                was unsupported.
+
+        Returns:
+            One :class:`~aiosecurityspy.CameraView` per camera this account
+            may see, current as of this call. Never more entries than
+            ``++systemInfo`` reported membership for.
+
+        """
+        server_info = await self.async_get_server_info()
+        statuses = await self.async_get_camera_status()
+        return visible_camera_views(server_info, statuses)
+
+    async def async_refresh_camera_status(self, server_info: ServerInfo) -> tuple[CameraView, ...]:
+        """Refresh health for cameras this account already knows it may see.
+
+        Unlike :meth:`async_get_visible_cameras`, this issues **only**
+        ``++camStatus`` -- no re-read of ``++systemInfo``. A coordinator
+        polling on a cycle cannot afford ``++systemInfo``'s 27 KB per tick
+        (research §2.2); this is the cheap path for a caller that already
+        holds membership from a prior :meth:`async_get_server_info` or
+        :meth:`async_get_visible_cameras` call.
+
+        The library retains no state between calls, so that membership is
+        not read from anywhere internal -- it is the caller's own
+        ``server_info``, passed back in. Its cameras are used only to filter
+        and pair; passing a stale ``server_info`` will not surface a camera
+        that has since vanished from ``++systemInfo``, but this call cannot
+        know that without the read it exists to avoid.
+
+        Args:
+            server_info: A previously fetched permission-scoped inventory.
+                Its ``cameras`` mapping is treated as the current membership.
+
+        Raises:
+            SecuritySpyConnectError: The ``++camStatus`` read failed at the
+                transport level.
+            SecuritySpyAuthError: The credentials were rejected.
+            SecuritySpyPermissionError: The account lacks a required
+                permission.
+
+        Returns:
+            One :class:`~aiosecurityspy.CameraView` per camera in
+            ``server_info.cameras``, with health as of this call.
+
+        """
+        statuses = await self.async_get_camera_status()
+        return visible_camera_views(server_info, statuses)
 
     async def async_get_captures(  # noqa: PLR0913 - the camera set, the two date bounds and the two filter forms are irreducible; everything but `cameras` is keyword-only
         self,
@@ -415,7 +710,7 @@ class SecuritySpyClient:
         end_date: date,
         object_class: str | None = None,
         capture_filter: int | None = None,
-        server_timezone: tzinfo = UTC,
+        server_timezone: tzinfo,
     ) -> tuple[Capture, ...]:
         """Read capture history for many cameras in **one** request.
 
@@ -453,8 +748,9 @@ class SecuritySpyClient:
                 so on). Mutually exclusive with ``object_class``.
             server_timezone: Timezone of the server's wall clock, used to turn
                 ``f`` plus seconds-since-midnight into a UTC instant.
-                **[ASSUMPTION]** No SecuritySpy endpoint exposes it, so this
-                defaults to UTC.
+                ``systemInfo.server`` publishes this as ``seconds-from-gmt``
+                (see :attr:`ServerInfo.utc_offset`); there is no correct
+                default, so it must be supplied.
 
         Raises:
             ValueError: A caller mistake -- a non-integer or negative camera
@@ -466,7 +762,13 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 answered with an unexpected status, or sent a body that was
                 neither a list of captures nor a mapping containing one.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403), or a `401` that a
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
 
         Returns:
             The decoded captures, newest first. Empty when nothing matched.
@@ -532,6 +834,461 @@ class SecuritySpyClient:
                 captures.append(capture)
         return _ordered_newest_first(captures)
 
+    async def async_get_capture_preview(self, capture: Capture) -> CapturePreview:
+        """Fetch the JPEG thumbnail for a capture from ``++getpreview``.
+
+        The URL is derived entirely from the ``Capture``: no caller-supplied
+        path, folder date, or raw query parameter. The ``archive`` flag is
+        taken from ``capture.archived``.
+
+        Args:
+            capture: The capture whose preview to fetch.
+
+        Raises:
+            SecuritySpyConnectError: The server was unreachable, timed out,
+                answered with an unexpected status, or sent a body exceeding
+                the 8 MiB preview cap.
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- ``++getpreview`` answers a
+                missing 'files' permission with 401, not 403).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403), or a `401` that a
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
+
+        Returns:
+            The JPEG thumbnail bytes and content type.
+
+        """
+        if not capture.path:
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "capture has no addressable file path",
+            )
+        archive = 1 if capture.archived else 0
+        # The getpreview URL uses a literal second '?' (research §4.3): the
+        # archive flag is part of the path string, not a separate query param.
+        # The filename is percent-encoded per the existing precedent in client.py.
+        encoded_path = "/".join(quote(part, safe="") for part in capture.path.split("/", 2))
+        path = f"{ENDPOINT_GET_PREVIEW}?/{encoded_path}?archive={archive}"
+        body, content_type = await self._request_bytes(
+            path, permission=PERMISSION_NAMES[PERM_FILES], camera_number=capture.camera
+        )
+        return CapturePreview(data=body, content_type=content_type)
+
+    async def async_get_capture_file(
+        self,
+        capture: Capture,
+        *,
+        bandwidth: CaptureFileBandwidth | int = CAPTURE_FILE_BANDWIDTH_STANDARD,
+        archive: bool | None = None,
+    ) -> CaptureFileStream:
+        """Fetch the recorded file for a capture from ``++getfile``.
+
+        The path is derived entirely from the ``Capture``: no caller-supplied
+        folder date or raw query parameter. The ``archive`` flag defaults to
+        ``capture.archived`` but can be overridden.
+
+        The returned stream is an async iterable that yields the body in bounded
+        chunks without ever buffering the full file. Its ``content_type``
+        indicates the media type (e.g. ``"video/quicktime"``).
+
+        Args:
+            capture: The capture whose file to fetch.
+            bandwidth: The bandwidth variant. Accepts a
+                ``CAPTURE_FILE_BANDWIDTH_*`` constant or a
+                :class:`~aiosecurityspy.CaptureFileBandwidth` record. Defaults
+                to standard bandwidth.
+            archive: Override the ``archive`` flag. ``None`` (the default) uses
+                ``capture.archived``; an explicit ``True`` or ``False``
+                overrides it.
+
+        Raises:
+            ValueError: ``bandwidth`` is not a valid bandwidth selector.
+                Raised before any request is issued.
+            SecuritySpyConnectError: The server was unreachable, timed out,
+                answered with an unexpected status, or the connection dropped
+                mid-stream.
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- ``++getfile``/``++getfilehb``/
+                ``++getfilelb`` answer a missing 'files' permission with 401,
+                not 403).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403), or a `401` that a
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
+
+        Returns:
+            An async-iterable stream whose ``content_type`` is the media type
+            and whose iteration yields bounded chunks of the file body.
+
+        """
+        if not capture.path:
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "capture has no addressable file path",
+            )
+        bw = (
+            bandwidth
+            if isinstance(bandwidth, CaptureFileBandwidth)
+            else capture_file_bandwidth(bandwidth)
+        )
+        archive_flag = capture.archived if archive is None else archive
+        params = {"archive": "1" if archive_flag else "0"}
+        return await self._stream_bytes(
+            bw.endpoint,
+            params,
+            path_suffix=capture.path,
+            permission=PERMISSION_NAMES[PERM_FILES],
+            camera_number=capture.camera,
+        )
+
+    def _request_kwargs(self, timeout: aiohttp.ClientTimeout) -> dict[str, Any]:
+        """Return the shared per-request kwargs, so no verb can drift.
+
+        Credentials, the TLS flag and the redirect policy are decided here once
+        for every request this library issues. ``allow_redirects=False``:
+        SecuritySpy 301-redirects plain HTTP to its HTTPS *port*, and a
+        different port is a different origin, so aiohttp strips the
+        Authorization header when following it -- turning a "wrong scheme"
+        mistake into a 401 that blames the user's password.
+        """
+        return {
+            "ssl": self._connection.verify_ssl,
+            "timeout": timeout,
+            "allow_redirects": False,
+        }
+
+    async def _map_status(
+        self,
+        status: int,
+        *,
+        permission: str | None = None,
+        camera_number: int | None = None,
+        disambiguate: bool = True,
+    ) -> None:
+        """Map an HTTP status to this library's typed exceptions.
+
+        The single place that decides what a status means. Every transport path
+        -- buffered text, buffered bytes and streamed bytes -- calls this, so a
+        401 or a stray redirect cannot come to mean different things depending
+        on which accessor the caller reached for.
+
+        `401` is **endpoint-dependent** and is not reliably "credentials
+        rejected". Verified against a live 6.21 server (research §5.9): an
+        account with a valid password but a missing permission gets `401` --
+        not `403` -- from ``++getfile``, ``++getfilehb``, ``++getfilelb``,
+        ``++getpreview`` and ``++ssSetSchedule``, byte-identical to what a
+        genuinely wrong password produces on the same endpoints. `403` remains
+        reliable: verified for the settings pages (research §4.1, §5.2), it
+        means the credentials were *accepted* and the account merely lacks a
+        permission bit. Neither the response body (a fixed string, no
+        permission named in it) nor the reason phrase (unreliable -- a `403`
+        arrives as `403 OK`) is consulted; the status code alone decides
+        (research §7.1).
+
+        Because a `401` cannot be told apart from its response alone, a `401`
+        (unless ``disambiguate`` is ``False``) triggers one follow-up read of
+        ``++systemInfo`` -- an endpoint the account is known to be allowed to
+        reach if its credentials are valid at all. A clean success there means
+        the credentials are fine and this was a permission denial, reclassified
+        as :class:`SecuritySpyPermissionError`. Any other outcome -- another
+        `401`, or the probe itself failing to give a clean answer -- leaves the
+        original :class:`SecuritySpyAuthError` verdict unchanged; an
+        inconclusive probe must never upgrade or downgrade the verdict.
+
+        Args:
+            status: The HTTP status code the server answered with.
+            permission: The permission name implied by the endpoint that was
+                called, when the caller knows one (e.g. `"settings"` for a
+                `settings-*` write). ``None`` when it does not.
+            camera_number: The camera the request targeted, when known.
+            disambiguate: Whether a `401` may trigger the ``++systemInfo``
+                probe described above. ``True`` for every endpoint except
+                ``++systemInfo`` itself, which always passes ``False``:
+                probing ``++systemInfo`` with another read of ``++systemInfo``
+                would answer nothing new, so this is what stops the probe
+                from ever triggering a second probe of itself.
+
+        Raises:
+            SecuritySpyAuthError: The credentials were rejected (401), or the
+                401 was ambiguous and the disambiguating probe could not
+                confirm it was a permission denial.
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403), or a `401` that the
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
+            SecuritySpyConnectError: The server redirected, or answered with a
+                status outside the 2xx range.
+
+        """
+        if status == _HTTP_UNAUTHORIZED:
+            if disambiguate and await self._probe_confirms_permission_denial():
+                raise SecuritySpyPermissionError(
+                    permission if permission is not None else _PERMISSION_UNKNOWN,
+                    camera_number,
+                )
+            raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
+        if status == _HTTP_FORBIDDEN:
+            raise SecuritySpyPermissionError(
+                permission if permission is not None else _PERMISSION_UNKNOWN,
+                camera_number,
+            )
+        if _HTTP_REDIRECT_MIN <= status <= _HTTP_REDIRECT_MAX:
+            # Almost always "you asked for http, this server wants https".
+            # Say so, rather than reporting a bare 301.
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"server redirected (HTTP {status}); if the server uses TLS, "
+                "construct the client with use_https=True",
+            )
+        if not _HTTP_OK_MIN <= status <= _HTTP_OK_MAX:
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"unexpected HTTP status {status}",
+            )
+
+    async def _probe_confirms_permission_denial(self) -> bool:
+        """Disambiguate a `401` with one follow-up read of ``++systemInfo``.
+
+        Called only from :meth:`_map_status`'s `401` branch, and never on
+        ``++systemInfo``'s own `401` -- :meth:`async_get_server_info` always
+        calls the shared status mapping with ``disambiguate=False``, which is
+        what stops this probe from ever triggering a second probe of itself.
+        Adds exactly one request, and only on an already-failed call -- a
+        successful response never reaches here.
+
+        No result is cached and none is returned to the caller beyond the
+        boolean verdict: the moment a probe's payload were retained or reused,
+        it would become the kind of hidden state story 1.13 forbids acquiring
+        behind a caller's back.
+
+        Returns:
+            ``True`` when the probe cleanly succeeded, meaning the credentials
+            are valid and the original `401` was a permission denial.
+            ``False`` for every other outcome -- another `401`, a `403`, a
+            connect or TLS failure, an unexpected status, or a body that would
+            not decode -- none of which is a clean confirmation, so the
+            original :class:`SecuritySpyAuthError` verdict must stand.
+
+        """
+        try:
+            await self.async_get_server_info()
+        except SecuritySpyError:
+            return False
+        return True
+
+    def _raise_transport_error(self, err: BaseException) -> NoReturn:
+        """Re-raise a transport failure as this library's typed equivalent.
+
+        The single place that decides what a TLS, timeout or socket failure
+        means. Order matters and is the reason this is one function rather than
+        an except-ladder repeated per call site: ``aiohttp.ClientSSLError`` is a
+        subclass of both ``aiohttp.ClientError`` and ``OSError``, and
+        ``ssl.SSLError`` is an ``OSError`` too, so a certificate failure tested
+        late would be swallowed whole by a generic clause.
+
+        Raises:
+            SecuritySpyCertificateError: The server's certificate failed
+                verification -- the one failure the caller can answer by
+                turning verification off.
+            SecuritySpyConnectError: Every other TLS, timeout, transport or
+                socket failure.
+
+        """
+        if isinstance(err, aiohttp.ClientConnectorCertificateError | ssl.SSLCertVerificationError):
+            # Deliberately narrow: only a failed *verification* is a certificate
+            # problem the caller can answer by turning verification off. Both
+            # forms are caught because a TLS failure raised outside aiohttp's
+            # connector wrapper arrives as the bare `ssl` exception.
+            raise SecuritySpyCertificateError(
+                self._connection.host, self._connection.port, _tls_reason(err)
+            ) from err
+        if isinstance(err, aiohttp.ClientSSLError | ssl.SSLError):
+            # Reported separately from the certificate case because the advice
+            # differs: speaking TLS to a plain-HTTP listener raises
+            # `WRONG_VERSION_NUMBER` here, and disabling certificate
+            # verification does not help it.
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"the TLS handshake failed ({_tls_reason(err)}); if the server speaks "
+                "plain HTTP on this port, connect without TLS or use the server's "
+                "HTTPS port",
+            ) from err
+        if isinstance(err, TimeoutError):
+            raise SecuritySpyConnectError(
+                self._connection.host, self._connection.port, "request timed out"
+            ) from err
+        if isinstance(err, aiohttp.ClientError):
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"transport failure ({type(err).__name__})",
+            ) from err
+        if isinstance(err, OSError):
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                f"connection failure ({type(err).__name__})",
+            ) from err
+        raise err
+
+    def _check_declared_length(self, declared: int | None) -> None:
+        """Reject a body the server declares as larger than the cap, before reading it.
+
+        Raises:
+            SecuritySpyConnectError: The declared ``Content-Length`` exceeds the cap.
+
+        """
+        if declared is not None and declared > _MAX_BODY_BYTES:
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "server response body was too large",
+            )
+
+    async def _request_bytes(
+        self,
+        path: str,
+        *,
+        permission: str | None = None,
+        camera_number: int | None = None,
+    ) -> tuple[bytes, str]:
+        """Issue one authenticated GET and return the raw body bytes + content type.
+
+        Used by ``async_get_capture_preview`` for a buffered read with the
+        existing 8 MiB cap. No text decode.
+
+        The ``archive`` flag of a preview is baked into ``path`` itself
+        (research §4.3's double-``?`` form), so this helper deliberately takes
+        no ``params``: a caller passing one would put the flag in both the path
+        and the query, and SecuritySpy's last-``?`` parser would silently pick
+        the wrong one.
+
+        Raises:
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403), or a `401` that a
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
+            SecuritySpyConnectError: The server redirected, answered with an
+                unexpected status, sent a body over the cap, or the transport
+                failed.
+
+        """
+        url = self._connection.build_url(path)
+        _LOGGER.debug(
+            "Requesting %s from %s:%s", path, self._connection.host, self._connection.port
+        )
+        try:
+            async with self._connection.session.get(
+                url,
+                headers={"Authorization": self._connection.auth_header},
+                **self._request_kwargs(self._connection.request_timeout()),
+            ) as response:
+                if not _HTTP_OK_MIN <= response.status <= _HTTP_OK_MAX:
+                    # Release before interpreting the status: on a 401 the
+                    # mapping below fires a second request to disambiguate
+                    # it, and that must not run while this failed response
+                    # is still holding a connection out of the caller's pool.
+                    response.release()
+                await self._map_status(
+                    response.status, permission=permission, camera_number=camera_number
+                )
+                self._check_declared_length(response.content_length)
+                content_type = response.content_type or "application/octet-stream"
+                chunks: list[bytes] = []
+                chunk = b""
+                total = 0
+                result = b""
+                try:
+                    while chunk := await response.content.read(_MAX_BODY_BYTES + 1 - total):
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        if total > _MAX_BODY_BYTES:
+                            raise SecuritySpyConnectError(
+                                self._connection.host,
+                                self._connection.port,
+                                "server response body was too large",
+                            )
+                    result = b"".join(chunks)
+                finally:
+                    chunks.clear()
+                    chunk = b""
+                return result, content_type
+        except (aiohttp.ClientError, TimeoutError, OSError) as err:
+            self._raise_transport_error(err)
+
+    async def _stream_bytes(
+        self,
+        endpoint: str,
+        params: Mapping[str, str],
+        *,
+        path_suffix: str,
+        permission: str | None = None,
+        camera_number: int | None = None,
+    ) -> CaptureFileStream:
+        """Issue one authenticated GET and return an async-iterable stream.
+
+        The response is never fully buffered: bytes are read and yielded in
+        bounded chunks. ``media_timeout()`` leaves ``total`` unbounded so a
+        large transfer is not cut short, while bounding ``sock_read`` so a
+        server that stalls mid-body cannot hang the reader forever.
+
+        ``path_suffix`` is percent-encoded here, per component: it carries a
+        capture's filename, which encodes the camera's name and is therefore
+        user-influenced. ``Capture.path`` is documented as *not* URL-encoded,
+        so a ``?`` or ``#`` in a camera name would otherwise truncate the path
+        and corrupt the query.
+
+        Raises:
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks a required permission (403), or a `401` that a
+                disambiguating probe confirmed was a permission denial rather
+                than rejected credentials.
+            SecuritySpyConnectError: The server redirected, answered with an
+                unexpected status, or the transport failed.
+
+        """
+        encoded_suffix = "/".join(quote(part, safe="") for part in path_suffix.split("/", 2))
+        path = f"{endpoint}/{encoded_suffix}"
+        url = self._connection.build_url(path)
+        _LOGGER.debug(
+            "Requesting %s from %s:%s", path, self._connection.host, self._connection.port
+        )
+        try:
+            response = await self._connection.session.get(
+                url,
+                headers={"Authorization": self._connection.auth_header},
+                params=dict(params),
+                **self._request_kwargs(self._connection.media_timeout()),
+            )
+        except (aiohttp.ClientError, TimeoutError, OSError) as err:
+            self._raise_transport_error(err)
+        if not _HTTP_OK_MIN <= response.status <= _HTTP_OK_MAX:
+            # Release before interpreting the status: on a 401 the mapping
+            # below fires a second request to disambiguate it, and that must
+            # not run while this failed response is still holding a
+            # connection out of the caller's pool.
+            response.release()
+        await self._map_status(response.status, permission=permission, camera_number=camera_number)
+        content_type = response.content_type or "application/octet-stream"
+        return CaptureFileStream(
+            response, self._connection.host, self._connection.port, content_type
+        )
+
     async def async_get_camera_settings(self, camera_number: int) -> CameraSettings:
         """Read one camera's settings page (research §8.0).
 
@@ -551,7 +1308,13 @@ class SecuritySpyClient:
             SecuritySpyConnectError: The server was unreachable, timed out,
                 answered with an unexpected status, or sent a body that was not
                 a settings object.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks the 'settings' permission (403), or a `401` that
+                a disambiguating probe confirmed was a permission denial
+                rather than rejected credentials.
 
         Returns:
             The decoded, credential-free settings.
@@ -559,7 +1322,10 @@ class SecuritySpyClient:
         """
         number = _validated_camera_number(camera_number)
         payload = await self._request_json(
-            ENDPOINT_SETTINGS_CAMERAS, {"cameraNum": str(number), "format": "json"}
+            ENDPOINT_SETTINGS_CAMERAS,
+            {"cameraNum": str(number), "format": "json"},
+            permission=PERMISSION_NAMES[PERM_SETTINGS],
+            camera_number=number,
         )
         # The body is deliberately not echoed, and no local may still be holding
         # it on *any* exit: this endpoint's payload carries the camera's device
@@ -612,7 +1378,13 @@ class SecuritySpyClient:
                 patch is empty. Raised before any request is issued.
             SecuritySpyConnectError: The server was unreachable, timed out, or
                 answered with an unexpected status.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks the 'settings' permission (403), or a `401` that
+                a disambiguating probe confirmed was a permission denial
+                rather than rejected credentials.
 
         """
         number = _validated_camera_number(camera_number)
@@ -631,46 +1403,132 @@ class SecuritySpyClient:
         # The patch itself is not logged: it can carry a camera name or an
         # overlay string, and settings payloads are never logged (research §8.3).
         _LOGGER.debug("Writing %s settings field(s) to camera %s", len(fields), number)
-        await self._post_form(ENDPOINT_SETTINGS_CAMERAS, "&".join(parts))
+        await self._post_form(
+            ENDPOINT_SETTINGS_CAMERAS,
+            "&".join(parts),
+            permission=PERMISSION_NAMES[PERM_SETTINGS],
+            camera_number=number,
+        )
+
+    async def async_set_camera_enabled(self, camera_number: int, *, enabled: bool) -> None:
+        """Enable or disable a camera (FR-16, research §5.5).
+
+        Takes a camera in or out of service through the same verified
+        partial-write path as :meth:`async_set_camera_settings`, writing the
+        single ``enabled`` field. ``enabled`` is an id-only checkbox key on the
+        settings page, which is why it is absent from the named-field list in
+        research §8.1 (verification §5.5).
+
+        Args:
+            camera_number: The camera to enable or disable.
+            enabled: The new state. ``False`` takes the camera out of service.
+
+        Raises:
+            ValueError: ``camera_number`` is not a non-negative integer. Raised
+                before any request is issued.
+            SecuritySpyConnectError: The server was unreachable, timed out, or
+                answered with an unexpected status.
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial (research §5.9 -- 401 is endpoint-dependent).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks the 'settings' permission (403), or a `401` that
+                a disambiguating probe confirmed was a permission denial
+                rather than rejected credentials.
+
+        """
+        number = _validated_camera_number(camera_number)
+        await self.async_set_camera_settings(number, CameraSettingsPatch(enabled=enabled))
 
     async def async_set_camera_arming(
         self,
         camera_number: int,
         modes: CaptureModes,
         *,
-        override: ArmOverride | int = ARM_OVERRIDE_UNCHANGED,
+        override: ArmOverride | int,
     ) -> None:
-        """Arm or disarm a camera's three capture modes (research §5).
+        """Apply an override to a selected set of capture modes (research §5.14).
 
-        The three modes are independent booleans, so all eight combinations are
-        expressible -- including all-false, which sends an empty ``mode`` and is
-        the legal instruction "disarm all three", not a missing value.
+        ``mode`` selects **which** of the three capture modes a write applies to
+        -- the target -- and ``override`` is the value applied to exactly those
+        modes. It is not an armed state: there is no mode combination that
+        "disarms all three", and an empty target is refused before any request,
+        because the server answers ``200 OK`` having done nothing and no caller
+        could detect it.
 
-        The ``schedule`` query parameter is **never sent** (AD-7).
-        ``++ssSetSchedule`` accepts one that permanently reassigns the camera's
-        schedule; this library has no method that does that, and schedule ids
-        read back from ``++systemInfo`` are read-only data. The override is
-        *transient and bounded*: it suspends the schedule for a stated duration,
-        after which the schedule resumes.
+        This method never sends the ``schedule`` query parameter (AD-7). The
+        override is *transient and bounded*: it suspends the schedule for a
+        stated duration, after which the schedule resumes.
+
+        ``++ssSetSchedule`` also accepts a ``schedule`` that **permanently**
+        reassigns the camera's schedule. Under AD-7's 2026-08-29 split these
+        are two different operations, not one control: an override is what an
+        arming *switch* writes, and a persistent assignment is a separate,
+        explicitly invoked operation. This library does not implement that
+        second operation yet, so schedule ids read back from ``++systemInfo``
+        remain read-only data for now -- but a future method may assign one.
+        Nothing that assigns a schedule will ever be routed through *this*
+        method.
+
+        ``200 OK`` means the request was *accepted*, not that anything was
+        applied: the server returns ``OK`` even for a write that changed no
+        field (verified live, research §5.14), and this library performs no
+        read-back to confirm an effect.
+
+        To disarm a mode, target it and apply one of the
+        ``ARM_OVERRIDE_DISARMED_*`` overrides (or ``ARM_OVERRIDE_NONE`` to
+        clear an override and let the schedule rule); there is no all-false
+        target. Note that ``modes`` read back from ``++systemInfo`` are the
+        camera's *armed state* -- re-targeting those booleans is a different
+        instruction than restoring that state, so the two are not
+        interchangeable without reinterpretation.
 
         Args:
-            camera_number: The camera to arm or disarm.
-            modes: The three capture modes to set.
-            override: A transient schedule override. Defaults to
-                ``ARM_OVERRIDE_UNCHANGED``, which leaves any existing override
-                alone. Accepts an ``ARM_OVERRIDE_*`` value or the typed
+            camera_number: The camera whose capture modes to write.
+            modes: The capture modes the write targets. At least one must be
+                true; an all-false set raises before any request.
+            override: The value to apply to the selected modes. **Required,
+                and deliberately without a default**: ``override`` is the only
+                value this method ever applies (``schedule`` is never sent,
+                AD-7), so a defaulted call would target modes, apply nothing,
+                and return ``200 OK`` having done nothing -- the undetectable
+                no-op an empty target is refused for. Passing
+                ``ARM_OVERRIDE_UNCHANGED`` is still legal, but it is now an
+                explicit "leave the existing override alone" the caller states
+                rather than one the signature supplies. Accepts an
+                ``ARM_OVERRIDE_*`` value or the typed
                 :class:`~aiosecurityspy.ArmOverride` record.
 
         Raises:
-            ValueError: ``camera_number`` is not a non-negative integer, or the
-                override is not a value research §5.2 publishes. Raised before
-                any request is issued.
+            ValueError: ``camera_number`` is not a non-negative integer, no
+                capture modes are targeted, or the override is not a value
+                research §5.2 publishes. Raised before any request is issued.
             SecuritySpyConnectError: The server was unreachable, timed out, or
                 answered with an unexpected status.
-            SecuritySpyAuthError: The credentials were rejected (401/403).
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial. Verified live: ``++ssSetSchedule`` answers a
+                missing 'schedule' permission with 401, not 403 (research
+                §5.9).
+            SecuritySpyPermissionError: The credentials were accepted but the
+                account lacks the 'schedule' permission -- reported as `403`
+                on some servers, but verified live as `401` on 6.21
+                (research §5.9), reclassified here by the disambiguating
+                probe.
 
         """
         number = _validated_camera_number(camera_number)
+        target = modes.mode_string
+        # An empty mode set targets no capture modes, and the server answers
+        # `200 OK` even for a write that changed no field -- so the resulting
+        # no-op would be undetectable downstream. Refuse it here, before any
+        # request is issued.
+        if target == "":
+            message = (
+                "no capture modes targeted: an empty mode set would return "
+                "200 OK having done nothing"
+            )
+            raise ValueError(message)
         # Every override goes through `arm_override`, whichever branch it
         # arrived on. `ArmOverride` is public and freely constructible, so a
         # hand-built `ArmOverride(value=15, ...)` would otherwise reach the wire
@@ -681,18 +1539,34 @@ class SecuritySpyClient:
             ENDPOINT_SET_SCHEDULE,
             {
                 "cameraNum": str(number),
-                "mode": modes.mode_string,
+                "mode": target,
                 "override": str(record.value),
             },
+            permission=PERMISSION_NAMES[PERM_SCHED],
+            camera_number=number,
         )
 
-    async def _request_json(self, path: str, params: Mapping[str, str] | None = None) -> object:
+    async def _request_json(
+        self,
+        path: str,
+        params: Mapping[str, str] | None = None,
+        *,
+        permission: str | None = None,
+        camera_number: int | None = None,
+        disambiguate: bool = True,
+    ) -> object:
         """Issue one authenticated GET and return its parsed JSON body.
 
         A thin wrapper over :meth:`_request`; the only thing it adds is the
         JSON parse.
         """
-        body = await self._request(path, params=params)
+        body = await self._request(
+            path,
+            params=params,
+            permission=permission,
+            camera_number=camera_number,
+            disambiguate=disambiguate,
+        )
         try:
             return json.loads(body)
         except ValueError as err:
@@ -704,31 +1578,60 @@ class SecuritySpyClient:
                 self._connection.host, self._connection.port, "server response was not valid JSON"
             ) from err
 
-    async def _request_text(self, path: str, params: Mapping[str, str] | None = None) -> str:
+    async def _request_text(
+        self,
+        path: str,
+        params: Mapping[str, str] | None = None,
+        *,
+        permission: str | None = None,
+        camera_number: int | None = None,
+    ) -> str:
         """Issue one authenticated GET whose body is not JSON, and return it.
 
         Used by endpoints that acknowledge a write without a documented body
         shape. The response still goes through the shared status mapping and
         byte cap; only the JSON parse is skipped.
         """
-        return await self._request(path, params=params, strict_encoding=False)
+        return await self._request(
+            path,
+            params=params,
+            strict_encoding=False,
+            permission=permission,
+            camera_number=camera_number,
+        )
 
-    async def _post_form(self, path: str, body: str) -> str:
+    async def _post_form(
+        self,
+        path: str,
+        body: str,
+        *,
+        permission: str | None = None,
+        camera_number: int | None = None,
+    ) -> str:
         """POST an already-assembled ``application/x-www-form-urlencoded`` body.
 
         ``body`` is a string, never a mapping: SecuritySpy's settings pages
         require the literal ``formData`` sentinel *first* (research §8.0), and
         handing aiohttp a dict would let it choose its own ordering.
         """
-        return await self._request(path, form_body=body, strict_encoding=False)
+        return await self._request(
+            path,
+            form_body=body,
+            strict_encoding=False,
+            permission=permission,
+            camera_number=camera_number,
+        )
 
-    async def _request(  # noqa: PLR0912 - the branches are the transport seam itself; splitting them would give a second place to decide what a status or a TLS failure means
+    async def _request(  # noqa: PLR0913 - the transport seam's own kwargs plus the permission context threaded from call sites
         self,
         path: str,
         *,
         params: Mapping[str, str] | None = None,
         form_body: str | None = None,
         strict_encoding: bool = True,
+        permission: str | None = None,
+        camera_number: int | None = None,
+        disambiguate: bool = True,
     ) -> str:
         """Issue one authenticated request and return its decoded body text.
 
@@ -755,19 +1658,12 @@ class SecuritySpyClient:
             "Requesting %s from %s:%s", path, self._connection.host, self._connection.port
         )
         # Shared kwargs, so no verb can drift on credentials, TLS or timeout.
-        # `allow_redirects=False`: SecuritySpy 301-redirects plain HTTP to its
-        # HTTPS *port*, and a different port is a different origin, so aiohttp
-        # strips the Authorization header when following it (verified against
-        # aiohttp 3.12). Following the redirect therefore cannot succeed -- it
-        # just turns a "wrong scheme" mistake into a 401 that blames the user's
-        # password. Surface the redirect instead. Note that not following it is
-        # no credential safeguard either: over plain HTTP the Basic credential
-        # is already on the wire, which is why the README recommends HTTPS.
+        # Note that not following the redirect is no credential safeguard: over
+        # plain HTTP the Basic credential is already on the wire, which is why
+        # the README recommends HTTPS.
         shared: dict[str, Any] = {
             "params": dict(params or {}),
-            "ssl": self._connection.verify_ssl,
-            "timeout": self._connection.request_timeout(),
-            "allow_redirects": False,
+            **self._request_kwargs(self._connection.request_timeout()),
         }
         try:
             context = (
@@ -786,31 +1682,13 @@ class SecuritySpyClient:
                 )
             )
             async with context as response:
-                status = response.status
-                if status in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
-                    raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
-                if _HTTP_REDIRECT_MIN <= status <= _HTTP_REDIRECT_MAX:
-                    # Almost always "you asked for http, this server wants
-                    # https". Say so, rather than reporting a bare 301.
-                    raise SecuritySpyConnectError(
-                        self._connection.host,
-                        self._connection.port,
-                        f"server redirected (HTTP {status}); if the server uses TLS, "
-                        "construct the client with use_https=True",
-                    )
-                if not _HTTP_OK_MIN <= status <= _HTTP_OK_MAX:
-                    raise SecuritySpyConnectError(
-                        self._connection.host,
-                        self._connection.port,
-                        f"unexpected HTTP status {status}",
-                    )
-                declared = response.content_length
-                if declared is not None and declared > _MAX_BODY_BYTES:
-                    raise SecuritySpyConnectError(
-                        self._connection.host,
-                        self._connection.port,
-                        "server response body was too large",
-                    )
+                await self._map_status(
+                    response.status,
+                    permission=permission,
+                    camera_number=camera_number,
+                    disambiguate=disambiguate,
+                )
+                self._check_declared_length(response.content_length)
                 # Accumulate rather than issuing one `read(n)`: StreamReader.read
                 # returns whatever is currently buffered, not n bytes, so a
                 # single call silently truncates any body that spans more than
@@ -869,48 +1747,10 @@ class SecuritySpyClient:
                 self._connection.port,
                 "server response was not decodable text",
             ) from err
-        except (aiohttp.ClientConnectorCertificateError, ssl.SSLCertVerificationError) as err:
-            # Deliberately narrow: only a failed *verification* is a certificate
-            # problem the caller can answer by turning verification off. Both
-            # forms are caught because a TLS failure raised outside aiohttp's
-            # connector wrapper arrives as the bare `ssl` exception.
-            raise SecuritySpyCertificateError(
-                self._connection.host, self._connection.port, _tls_reason(err)
-            ) from err
-        except (aiohttp.ClientSSLError, ssl.SSLError) as err:
-            # Every other TLS failure. Reported separately from the certificate
-            # case because the advice differs: speaking TLS to a plain-HTTP
-            # listener raises `WRONG_VERSION_NUMBER` here, and disabling
-            # certificate verification does not help it -- verified against a
-            # live aiohttp server with `ssl=True` and `ssl=False` alike.
-            #
-            # This clause and the one above must both precede `TimeoutError`,
-            # `aiohttp.ClientError` and `OSError` below: `aiohttp.ClientSSLError`
-            # is a subclass of the latter two, and `ssl.SSLError` is an `OSError`
-            # too, so any of them would swallow a TLS failure whole.
-            raise SecuritySpyConnectError(
-                self._connection.host,
-                self._connection.port,
-                f"the TLS handshake failed ({_tls_reason(err)}); if the server speaks "
-                "plain HTTP on this port, connect without TLS or use the server's "
-                "HTTPS port",
-            ) from err
-        except TimeoutError as err:
-            raise SecuritySpyConnectError(
-                self._connection.host, self._connection.port, "request timed out"
-            ) from err
-        except aiohttp.ClientError as err:
-            raise SecuritySpyConnectError(
-                self._connection.host,
-                self._connection.port,
-                f"transport failure ({type(err).__name__})",
-            ) from err
-        except OSError as err:
-            raise SecuritySpyConnectError(
-                self._connection.host,
-                self._connection.port,
-                f"connection failure ({type(err).__name__})",
-            ) from err
+        except (aiohttp.ClientError, TimeoutError, OSError) as err:
+            # Ordering of the TLS / timeout / socket cases lives in
+            # `_raise_transport_error`, shared with the byte and stream paths.
+            self._raise_transport_error(err)
 
         return body
 

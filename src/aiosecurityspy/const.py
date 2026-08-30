@@ -36,6 +36,9 @@ __all__ = [
     "BACKOFF_JITTER",
     "BACKOFF_MAX",
     "BACKOFF_MULTIPLIER",
+    "CAPTURE_FILE_BANDWIDTH_HIGH",
+    "CAPTURE_FILE_BANDWIDTH_LOW",
+    "CAPTURE_FILE_BANDWIDTH_STANDARD",
     "CAPTURE_FILTERS",
     "CAPTURE_FILTER_ALL",
     "CAPTURE_FILTER_ANIMAL",
@@ -57,8 +60,13 @@ __all__ = [
     "DEFAULT_DETECTION_THRESHOLD",
     "DEFAULT_PORT",
     "DEFAULT_TIMEOUT",
+    "ENDPOINT_CAM_STATUS",
     "ENDPOINT_CAPTURE_LIST",
     "ENDPOINT_EVENT_STREAM",
+    "ENDPOINT_GET_FILE",
+    "ENDPOINT_GET_FILE_HIGH_BANDWIDTH",
+    "ENDPOINT_GET_FILE_LOW_BANDWIDTH",
+    "ENDPOINT_GET_PREVIEW",
     "ENDPOINT_PREFIX",
     "ENDPOINT_SETTINGS_CAMERAS",
     "ENDPOINT_SET_SCHEDULE",
@@ -83,6 +91,7 @@ __all__ = [
     "EVENT_TRIGGER_M",
     "HEARTBEAT_INTERVAL",
     "HEARTBEAT_MISSES_BEFORE_LOSS",
+    "IDENTIFYING_KEYS",
     "MIN_SERVER_VERSION",
     "MIN_SERVER_VERSION_TEXT",
     "MODE_ACTIONS",
@@ -96,8 +105,11 @@ __all__ = [
     "PERM_FILEDEL",
     "PERM_FILES",
     "PERM_LIVEVIDEO",
+    "PERM_NODOWNLOAD",
     "PERM_PTZSET",
+    "PERM_PUSH_STREAMS",
     "PERM_SCHED",
+    "PERM_SETTINGS",
     "PERM_TRIGGER",
     "REDACTED",
     "SETTINGS_FORM_SENTINEL",
@@ -131,6 +143,19 @@ ENDPOINT_EVENT_STREAM: Final = f"{ENDPOINT_PREFIX}eventStream"
 #: Capture-history endpoint (research §4). One request covers many cameras.
 ENDPOINT_CAPTURE_LIST: Final = f"{ENDPOINT_PREFIX}caplist"
 
+#: Cheap per-camera status poll (research §2.2). 794 B for 11 cameras vs
+#: ``++systemInfo``'s 27 KB, so a consumer that only needs
+#: enabled/online/open/error state does not have to decode the heavy payload on
+#: every cycle. The saving scales with camera count; the measured pair is the
+#: only one recorded.
+#:
+#: The response shape (a bare JSON array) is not in the published web-server
+#: spec; it comes from a HAR capture of the official web client against a live
+#: server (research addendum §8.12, which records the endpoint as verified
+#: working there). So the shape is observed rather than guessed, but it is
+#: undocumented by the vendor and carries no compatibility promise.
+ENDPOINT_CAM_STATUS: Final = f"{ENDPOINT_PREFIX}camStatus"
+
 #: Per-camera settings page (research §8.0). Read with ``?cameraNum=N&format=json``;
 #: written with a ``POST`` to the **bare** path -- the query form returns 404.
 ENDPOINT_SETTINGS_CAMERAS: Final = f"{ENDPOINT_PREFIX}settings-cameras"
@@ -145,6 +170,34 @@ ENDPOINT_SETTINGS_CAMERAS: Final = f"{ENDPOINT_PREFIX}settings-cameras"
 #: logging proxy is a known exposure rather than a surprise.
 ENDPOINT_SET_SCHEDULE: Final = f"{ENDPOINT_PREFIX}ssSetSchedule"
 
+#: Capture preview endpoint (research §4.3). The ``getpreview`` path carries
+#: the ``archive`` flag inside the path string itself (``?archive=``), not as
+#: a separate query parameter -- the server's parser splits on the *last* ``?``.
+ENDPOINT_GET_PREVIEW: Final = f"{ENDPOINT_PREFIX}getpreview"
+
+#: Standard-bandwidth capture file endpoint (research §4b.1). Returns
+#: ``video/quicktime``.
+ENDPOINT_GET_FILE: Final = f"{ENDPOINT_PREFIX}getfile"
+
+#: High-bandwidth capture file endpoint (research §4b.1). Returns
+#: ``video/quicktime``.
+ENDPOINT_GET_FILE_HIGH_BANDWIDTH: Final = f"{ENDPOINT_PREFIX}getfilehb"
+
+#: Low-bandwidth capture file endpoint (research §4b.1). Returns
+#: ``video/mp4``.
+ENDPOINT_GET_FILE_LOW_BANDWIDTH: Final = f"{ENDPOINT_PREFIX}getfilelb"
+
+#: Client-side bandwidth selector for :func:`capture_file_bandwidth`. Maps to
+#: one of the three ``getfile*`` endpoint paths and their content types
+#: (research §4b.1). The value itself is not sent on the wire.
+CAPTURE_FILE_BANDWIDTH_STANDARD: Final = 0
+
+#: High-bandwidth variant (research §4b.1).
+CAPTURE_FILE_BANDWIDTH_HIGH: Final = 1
+
+#: Low-bandwidth variant (research §4b.1).
+CAPTURE_FILE_BANDWIDTH_LOW: Final = 2
+
 #: Literal first token of every ``settings-*`` POST body (research §8.0 rule 2).
 #: The server's own client builds the body as
 #: ``let str='formData'; for(pair of formData.entries()) str+='&'+k+'='+v``, so
@@ -153,8 +206,10 @@ ENDPOINT_SET_SCHEDULE: Final = f"{ENDPOINT_PREFIX}ssSetSchedule"
 SETTINGS_FORM_SENTINEL: Final = "formData"
 
 # `++ssSetSchedule?mode=` letters (research §5.1). The three capture modes are
-# independent booleans concatenated in this order, so `mode=CMA` sets all three
-# and `mode=` (empty) disarms all three -- both are legal instructions.
+# independent booleans concatenated in this order, so `mode=CMA` targets all
+# three. The letters select which modes a write applies to; they are not an
+# armed state -- an empty string targets nothing and is refused by
+# `async_set_camera_arming` before any request.
 MODE_CONTINUOUS: Final = "C"  # continuous capture
 MODE_MOTION: Final = "M"  # motion capture
 MODE_ACTIONS: Final = "A"  # actions
@@ -198,26 +253,41 @@ MIN_SERVER_VERSION_TEXT: Final = ".".join(str(part) for part in MIN_SERVER_VERSI
 PERM_LIVEVIDEO: Final = 1  # bit 0  -- view live video
 PERM_FILES: Final = 4  # bit 2  -- access captured files
 PERM_FILEDEL: Final = 8  # bit 3  -- delete files
+PERM_SETTINGS: Final = 16  # bit 4  -- set camera settings (research §4.1)
 PERM_CAMCONTROL: Final = 64  # bit 6  -- camera control (incl. PTZ movement)
 PERM_SCHED: Final = 128  # bit 7  -- arm/disarm, set schedules
 PERM_PTZSET: Final = 256  # bit 8  -- save PTZ presets
 PERM_AUDIORCV: Final = 512  # bit 9  -- receive audio
 PERM_TRIGGER: Final = 1024  # bit 10 -- manually trigger
 PERM_AUDIOSND: Final = 2048  # bit 11 -- send audio (two-way talk)
+#: Deny-bit: set means *hide download options*, not "grant no-download"
+#: (research §4.1, §5.2). Deliberately excluded from `PERMISSION_NAMES` below --
+#: see that mapping's docstring for why.
+PERM_NODOWNLOAD: Final = 4096  # bit 12 -- deny: hide download options (inverted sense)
+PERM_PUSH_STREAMS: Final = 8192  # bit 13 -- receive push streams (research §4.1)
 
 #: Mapping of permission bit value to a stable, snake_case permission name.
 #: Exposed as a read-only view so a consumer cannot corrupt decoding globally.
+#:
+#: `PERM_NODOWNLOAD` is deliberately **not** included here. This mapping feeds
+#: `has_permission()`/`decode_permissions()`, both of which read as "the camera
+#: *grants* X". Bit 12 is an inverted, deny-shaped bit -- set means "hide
+#: download options" -- so reporting it here would have `has_permission` claim
+#: a camera grants a "no download" capability it does not. The constant is
+#: still exported so a consumer that wants to test the bit deliberately can.
 PERMISSION_NAMES: Final[Mapping[int, str]] = MappingProxyType(
     {
         PERM_LIVEVIDEO: "live_video",
         PERM_FILES: "files",
         PERM_FILEDEL: "file_delete",
+        PERM_SETTINGS: "settings",
         PERM_CAMCONTROL: "camera_control",
         PERM_SCHED: "schedule",
         PERM_PTZSET: "ptz_preset_set",
         PERM_AUDIORCV: "audio_receive",
         PERM_TRIGGER: "trigger",
         PERM_AUDIOSND: "audio_send",
+        PERM_PUSH_STREAMS: "push_streams",
     }
 )
 
@@ -437,6 +507,32 @@ CREDENTIAL_KEYS: Final[frozenset[str]] = frozenset(
         "passphrase",  # the spelling a key or certificate config uses
         "privatekey",  # covers `privateKey` and `private_key`
         "credentials",  # generic, and the plural form a consumer's config tends to use
+    }
+)
+
+#: Identifying network detail (AD-13 widening 2026-08-29).
+#:
+#: These keys name values that are not credentials but are personally identifying
+#: network information: a server's remote-access hostname, a camera's LAN IP, an
+#: ONVIF device UUID. A Home Assistant diagnostics dump is deliberately exported
+#: and routinely attached to public issues, so these values must not survive
+#: there in cleartext. They share the same "redacted" sentinel as credentials and
+#: the same exact-membership semantics as :data:`CREDENTIAL_KEYS`: normalized to
+#: lowercase with non-alphanumerics stripped, then tested for exact membership,
+#: so ``DDNSName``, ``ddns_name`` and ``ddns-name`` all reduce to ``ddnsname``
+#: while ``wan_port`` (the WAN-facing *port*, which is not a hostname or IP)
+#: stays readable.
+#:
+#: Membership is exact, never a substring: ``ip`` alone is too broad to list
+#: here -- a field named ``ipCount`` or ``displayIp`` is a count, not a LAN
+#: address. Identifying-detail fields that are *container* keys whose contents
+#: are wholly identifying (``deviceList``, whose every entry carries an IP and
+#: a UUID) belong here too.
+IDENTIFYING_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "wanaddress",  # research §5.11 -- the server's remote-access IP/hostname
+        "ddnsname",  # research §5.11 -- a personal `*.viewcam.me` hostname
+        "devicelist",  # research §5.17.2 -- ONVIF discovery: LAN IPs + UUIDs
     }
 )
 

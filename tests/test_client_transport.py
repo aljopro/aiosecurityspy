@@ -12,17 +12,20 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import ssl
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiohttp
 import pytest
 import pytest_asyncio
+import trustme
 from aiohttp import web
 from aiohttp.test_utils import TestServer as AiohttpTestServer  # aliased: pytest collects `Test*`
 
 from aiosecurityspy import (
     ARM_OVERRIDE_ARMED_2_HOURS,
+    ARM_OVERRIDE_ARMED_UNTIL_NEXT,
     CameraSettingsPatch,
     CaptureModes,
     SecuritySpyAuthError,
@@ -410,18 +413,20 @@ async def test_real_arming_carries_mode_and_override_and_never_a_schedule() -> N
 
 
 @pytest.mark.asyncio
-async def test_real_disarming_all_three_sends_a_present_but_empty_mode() -> None:
-    """All-false is an instruction, not a missing value.
+async def test_real_arming_single_mode_survives_query_encoding() -> None:
+    """A one-letter ``mode=A`` reaches the socket intact.
 
-    It is the library's one semantic that differs from every other client. The
-    stub cannot prove it survives yarl's query encoding to a real socket, and a
-    dropped ``mode=`` would silently leave the camera armed.
+    The story's flagship case (research §5.14 step 5: ``override=2&mode=A``
+    moved ``a-schedule-override`` alone) is a *single*-mode write. The stub
+    asserts the params dict it was handed; only a real socket proves yarl
+    encodes ``mode=A`` un-dropped, the same concern the retired empty-mode
+    transport test existed for.
     """
     seen: dict[str, str] = {}
 
     async def handle(request: web.Request) -> web.Response:
-        seen["query_string"] = request.query_string
         seen["mode"] = request.query["mode"]
+        seen["override"] = request.query["override"]
         return web.Response(text="OK")
 
     app = web.Application()
@@ -432,13 +437,46 @@ async def test_real_disarming_all_three_sends_a_present_but_empty_mode() -> None
         async with aiohttp.ClientSession() as session:
             await make_client(session, arming_server).async_set_camera_arming(
                 3,
-                CaptureModes(continuous=False, motion=False, actions=False),
+                CaptureModes(actions=True),
+                override=ARM_OVERRIDE_ARMED_UNTIL_NEXT,
             )
     finally:
         await arming_server.close()
 
-    assert seen["mode"] == ""
-    assert "mode=" in seen["query_string"]
+    assert seen == {"mode": "A", "override": "2"}
+
+
+@pytest.mark.asyncio
+async def test_real_arming_refuses_an_empty_mode_set_before_the_socket() -> None:
+    """An all-false target must not reach a real socket.
+
+    The server answers ``200 OK`` even for a write that changed nothing
+    (research §5.14), so a no-op request is undetectable downstream -- the
+    library refuses it before any request is issued, and the handler below is
+    never invoked.
+    """
+    seen: dict[str, str] = {}
+
+    async def handle(request: web.Request) -> web.Response:
+        seen["mode"] = request.query["mode"]
+        return web.Response(text="OK")
+
+    app = web.Application()
+    app.router.add_get("/++ssSetSchedule", handle)
+    arming_server = AiohttpTestServer(app)
+    await arming_server.start_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            with pytest.raises(ValueError, match="no capture modes targeted"):
+                await make_client(session, arming_server).async_set_camera_arming(
+                    3,
+                    CaptureModes(continuous=False, motion=False, actions=False),
+                    override=ARM_OVERRIDE_ARMED_2_HOURS,
+                )
+    finally:
+        await arming_server.close()
+
+    assert seen == {}
 
 
 @pytest.mark.asyncio
@@ -459,7 +497,7 @@ async def test_real_charsetless_write_receipt_does_not_fail_a_successful_write()
     try:
         async with aiohttp.ClientSession() as session:
             await make_client(session, arming_server).async_set_camera_arming(
-                3, CaptureModes(motion=True)
+                3, CaptureModes(motion=True), override=ARM_OVERRIDE_ARMED_2_HOURS
             )
     finally:
         await arming_server.close()
@@ -516,3 +554,124 @@ async def test_real_write_rejection_maps_to_a_typed_error() -> None:
                 )
     finally:
         await settings_server.close()
+
+
+# --- real TLS ----------------------------------------------------------------
+#
+# Every test above runs over plain HTTP, which leaves `ssl=` -- the one kwarg
+# `verify_ssl` exists to control -- as the only transport flag never exercised
+# against real TLS. The offline tests assert the *value* the client passes to a
+# stub; these assert that the installed aiohttp acts on it. `verify_ssl` is a
+# user-facing safety toggle (NFR-8), so "the flag is passed" is not the claim
+# that matters -- "the flag decides whether a bad certificate is refused" is.
+
+
+@pytest_asyncio.fixture
+async def tls_server(recorder: Recorder) -> AsyncIterator[tuple[AiohttpTestServer, trustme.CA]]:
+    """Run a real HTTPS server whose certificate is issued for ``localhost`` only.
+
+    The certificate is deliberately *not* issued for ``127.0.0.1``, so a client
+    connecting by IP -- which is how every other test here connects, and the
+    exact shape FR-26 describes -- sees a genuine hostname mismatch rather than
+    a synthetic one.
+    """
+
+    async def handle_system_info(request: web.Request) -> web.Response:
+        recorder.path = request.path
+        recorder.authorization = request.headers.get("Authorization")
+        if recorder.authorization != _expected_authorization():
+            return web.Response(status=401)
+        return web.json_response(SYSTEM_INFO)
+
+    authority = trustme.CA()
+    certificate = authority.issue_cert("localhost")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    certificate.configure_cert(context)
+
+    app = web.Application()
+    app.router.add_get("/++systemInfo", handle_system_info)
+    test_server = AiohttpTestServer(app, scheme="https")
+    await test_server.start_server(ssl=context)
+    try:
+        yield test_server, authority
+    finally:
+        await test_server.close()
+
+
+@pytest.mark.asyncio
+async def test_real_tls_certificate_mismatch_is_refused_when_verification_is_on(
+    tls_server: tuple[AiohttpTestServer, trustme.CA],
+) -> None:
+    """A certificate that does not match the address used must fail, not pass quietly."""
+    test_server, _ = tls_server
+    async with aiohttp.ClientSession() as session:
+        client = SecuritySpyClient(
+            session,
+            "127.0.0.1",
+            test_server.port or 0,
+            username=USERNAME,
+            password=PASSWORD,
+            use_https=True,
+            verify_ssl=True,
+            timeout=5.0,
+        )
+        with pytest.raises(SecuritySpyCertificateError) as err:
+            await client.async_get_server_info()
+
+    # Named specifically, not folded into a generic connection failure: FR-26
+    # exists because the user must be told the certificate is the problem.
+    assert "certificate" in str(err.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_real_tls_mismatch_is_accepted_when_verification_is_off(
+    tls_server: tuple[AiohttpTestServer, trustme.CA],
+) -> None:
+    """`verify_ssl=False` is the documented escape hatch (FR-26) and must actually work."""
+    test_server, _ = tls_server
+    async with aiohttp.ClientSession() as session:
+        client = SecuritySpyClient(
+            session,
+            "127.0.0.1",
+            test_server.port or 0,
+            username=USERNAME,
+            password=PASSWORD,
+            use_https=True,
+            verify_ssl=False,
+            timeout=5.0,
+        )
+        info = await client.async_get_server_info()
+
+    assert info.uuid == "SS-LIVE"
+
+
+@pytest.mark.asyncio
+async def test_real_tls_succeeds_when_the_certificate_does_match(
+    tls_server: tuple[AiohttpTestServer, trustme.CA],
+) -> None:
+    """The mismatch test must fail for the *right* reason.
+
+    Trust the CA, connect by the name the certificate was issued for, and the
+    same client succeeds.
+
+    Without this, `verify_ssl=True` refusing a connection proves nothing -- a
+    client that refused every TLS connection would pass that test too.
+    """
+    test_server, authority = tls_server
+    context = ssl.create_default_context()
+    authority.configure_trust(context)
+    connector = aiohttp.TCPConnector(ssl=context)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        client = SecuritySpyClient(
+            session,
+            "localhost",
+            test_server.port or 0,
+            username=USERNAME,
+            password=PASSWORD,
+            use_https=True,
+            verify_ssl=True,
+            timeout=5.0,
+        )
+        info = await client.async_get_server_info()
+
+    assert info.uuid == "SS-LIVE"

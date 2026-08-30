@@ -1,0 +1,633 @@
+# SecuritySpy HTTP API — machine-readable description
+#
+# READ THIS BEFORE GENERATING ANYTHING FROM THIS FILE.
+#
+# OpenAPI describes a well-behaved REST API. SecuritySpy is not one. This file models the
+# portion that fits and marks, loudly, every place where it does not — because those places
+# are exactly where this project's bugs have come from. A generator that ignores the `x-`
+# annotations below will produce a client that is broken in ways the spec looks like it
+# endorses.
+#
+# What this file deliberately does NOT model:
+#   * The `++getpreview` URL. It carries a literal `?` inside the path and a SECOND `?`
+#     before `archive`. OpenAPI paths cannot contain `?`. See x-raw-url-template on that
+#     operation and DO NOT treat `archive` as an ordinary query parameter.
+#   * The `formData` sentinel that must be the FIRST token of every settings POST body.
+#     It is a bare token, not a key=value pair, so no requestBody schema can express it.
+#   * Checkbox fields, which are keyed by HTML element id and appended AFTER the named
+#     fields. Order is significant; OpenAPI has no way to say so.
+#   * The WebSocket at /video (binary opcode protocol). Out of OpenAPI's scope entirely.
+#   * Non-conforming HTTP: the 403 reason phrase is "OK", and HEAD returns "400 OK".
+#     Parse numeric status only.
+#
+# `x-verification` on each operation states the evidence behind it:
+#   live-6.21     — response observed from a running 6.21 server on 2026-08-29
+#   client-source — read from the shipped web client in the app bundle, not exercised
+#   research-only — from securityspy-api-reference.md, never verified here
+#
+# `x-vendor-documented` states whether the endpoint appears in Ben Software's published spec
+# (https://bensoftware.com/securityspy/web-server-spec.html). It is a PROVENANCE note, not a
+# health warning: that spec is stale and not kept up to date — it still names 6.20-era settings
+# fields and a ptz path that 404s on 6.21. Undocumented endpoints here are called by the shipped
+# web client on every page load. Where the spec and a live response disagree, the live response
+# wins; `x-verification` is the field that carries real weight.
+#
+# Companion prose: _bmad-output/planning-artifacts/research/securityspy-6.21-verification.md
+
+openapi: 3.1.0
+info:
+  title: SecuritySpy HTTP API (reverse-engineered)
+  version: "6.21"
+  summary: The subset of SecuritySpy's HTTP surface that aiosecurityspy speaks.
+  description: |
+    Reverse-engineered from the shipped web client and verified against a live 6.21 server.
+    Not a vendor artifact and not exhaustive.
+
+    **The `++` prefix is load-bearing.** Both `/++systemInfo` and `/systemInfo` reach the
+    same handler when authenticated, but unauthenticated the `++` form returns `401` with a
+    Basic challenge while the bare form returns `303` to the login page. A client using
+    Basic auth must always use `++`, or an expired credential surfaces as a redirect.
+  license:
+    name: Documentation of a third-party API; no vendor affiliation
+
+servers:
+  - url: "https://{host}:{port}"
+    description: SecuritySpy web server (HTTPS; certificate is typically self-signed)
+    variables:
+      host: { default: "localhost" }
+      port: { default: "8001" }
+  - url: "http://{host}:{port}"
+    description: Plain HTTP. Basic credentials travel in clear; prefer HTTPS.
+    variables:
+      host: { default: "localhost" }
+      port: { default: "8000" }
+
+security:
+  - basicAuth: []
+
+tags:
+  - name: inventory
+    description: Server and camera inventory.
+  - name: captures
+    description: The capture list and capture media.
+  - name: settings
+    description: Settings pages. Reads are JSON; writes are form POSTs with quirks.
+  - name: arming
+    description: Schedule and override writes.
+  - name: streaming
+    description: Live and event streams.
+
+paths:
+  /++systemInfo:
+    get:
+      operationId: getSystemInfo
+      tags: [inventory]
+      summary: Full server configuration, camera inventory, and schedule lists.
+      x-verification: live-6.21
+      x-vendor-documented: true
+      x-quirks:
+        - >-
+          The camera array is `camera-list` at the TOP LEVEL, not `cameralist.camera`.
+          Assuming the latter yields an empty inventory from a healthy server — the defect
+          behind story 1.12.
+        - >-
+          A camera DISABLED in SecuritySpy is omitted from `camera-list` entirely, and
+          `server.camera-count` drops to match. `++camStatus` still reports it. The two
+          endpoints enumerate different sets; they are not interchangeable inventories.
+        - >-
+          `camera-list[].permissions` is NOT static. A camera that is offline loses the
+          capability bits it cannot currently satisfy (observed: `PERM_AUDIORCV`,
+          `PERM_AUDIOSND`) and regains them on reconnect. Never cache the mask, and never
+          read an absent bit as a withheld right without checking the camera is online.
+        - >-
+          `++systemInfo` is the ONLY permission-scoped inventory surface (research gap G8).
+          An account permitted a single camera of eleven sees only that one camera here —
+          `++camStatus` returns all eleven to the same account (see that endpoint's quirks).
+          A camera absent from `camera-list` must be treated as invisible to this account,
+          whether the cause is being disabled or being de-permissioned: the two are
+          indistinguishable by design (FR-16a), since this endpoint carries no signal that
+          tells them apart and guessing wrong leaks the camera's existence.
+      parameters:
+        - $ref: "#/components/parameters/Format"
+      responses:
+        "200":
+          description: Decoded inventory.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /++camStatus:
+    get:
+      operationId: getCameraStatus
+      tags: [inventory]
+      summary: Cheap per-camera health poll.
+      description: |
+        794 bytes for 11 cameras, against ~26 KB for `++systemInfo`. Returns JSON
+        unconditionally — `format=json` is not required and is not sent.
+      x-verification: live-6.21
+      x-vendor-documented: false
+      x-vendor-note: >-
+        Not in the published spec. Used because the shipped web client uses it and no
+        documented equivalent exists; may change without notice upstream.
+      x-quirks:
+        - >-
+          Reports DISABLED cameras, which `++systemInfo` omits. A consumer that builds its
+          inventory from `++systemInfo` and polls health here will receive status for a
+          camera it has no entity for.
+        - >-
+          A disabled camera reads `enabled:false, online:false, open:false, err:0`; an
+          unreachable one reads `enabled:true, online:false, err:64 "Host is down"`. The
+          three booleans are independent and distinguish the two states.
+        - >-
+          NOT permission-scoped at all (research gap G8): an account permitted exactly one
+          camera still receives full health for every camera on the server, including its
+          number, name-independent identity, and live status. A consumer must intersect
+          these rows against `++systemInfo`'s `camera-list` and discard any row for a camera
+          absent from it — never return or log a non-member camera's number. This is the
+          entire reason `aiosecurityspy.visible_camera_views()` exists; do not read this
+          endpoint's response as an inventory on its own.
+      responses:
+        "200":
+          description: One entry per camera.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CameraStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /++caplist:
+    get:
+      operationId: getCaptureList
+      tags: [captures]
+      summary: Captured files, with classification.
+      x-verification: live-6.21
+      x-vendor-documented: false
+      x-vendor-note: >-
+        Not in the published spec. Used because the shipped web client uses it and no
+        documented equivalent exists; may change without notice upstream.
+      x-quirks:
+        - "Returns a bare top-level array."
+        - "Without a date range the result is an empty array, not an error."
+        - >-
+          `startDate`/`endDate` accept `YYYY-MM-DD` ONLY. A full ISO instant
+          (`2026-08-20T00:00:00`) or a compact `20260820000000` returns an empty array —
+          success with silent zero results, never an error.
+        - >-
+          Still returns the recordings of a camera that has since been disabled.
+      parameters:
+        - $ref: "#/components/parameters/Format"
+        - name: cams
+          in: query
+          description: Trailing-comma-terminated camera numbers, e.g. `1,4,`.
+          schema: { type: string }
+        - name: startDate
+          in: query
+          schema: { type: string, format: date }
+        - name: endDate
+          in: query
+          schema: { type: string, format: date }
+        - name: filter
+          in: query
+          description: Server-side class filter; class-aware.
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Captures, newest first is NOT guaranteed by the server.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Capture" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /++getfile/{camera}/{folderDate}/{filename}:
+    get:
+      operationId: getCaptureFile
+      tags: [captures]
+      summary: Download a capture at standard bandwidth.
+      description: |
+        `++getfilehb` and `++getfilelb` are the same operation at high and low bandwidth.
+        The served content type is whatever the server sends; do not assume one per variant.
+        Observed live: `video/quicktime` from `++getfile` and `++getfilehb`, `video/mp4`
+        from `++getfilelb`. Range requests are honoured (`206`).
+      x-verification: live-6.21
+      x-vendor-documented: true
+      x-quirks:
+        - >-
+          `filename` MUST be percent-encoded. Live filenames contain spaces
+          (`08-29-2026 5-52-31 AM M Living Room.mov`); unencoded they break the URL.
+        - >-
+          ⚠ A `401` here does NOT reliably mean bad credentials. An account without the
+          `files` permission gets a `401` that is BYTE-IDENTICAL to a wrong-password `401`
+          — same status, same `WWW-Authenticate`, same 16-byte body. `aiosecurityspy`'s
+          client disambiguates it internally (story 1.14): on a `401` here it re-reads
+          `++systemInfo`, which the account is known to reach if its credentials are valid
+          at all, and raises `SecuritySpyPermissionError` rather than `SecuritySpyAuthError`
+          when that probe succeeds. A consumer talking to this endpoint directly must do the
+          same disambiguation itself, or a permitted-to-view user is sent round a reauth loop
+          forever.
+      parameters:
+        - $ref: "#/components/parameters/CameraPath"
+        - $ref: "#/components/parameters/FolderDate"
+        - $ref: "#/components/parameters/Filename"
+        - name: archive
+          in: query
+          schema: { type: integer, enum: [0, 1] }
+      responses:
+        "200":
+          description: The recording. Stream it; recordings reach gigabytes.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /++getpreview:
+    get:
+      operationId: getCapturePreview
+      tags: [captures]
+      summary: "JPEG thumbnail. ⚠ NON-STANDARD URL — see x-raw-url-template."
+      description: |
+        **This operation's real URL cannot be expressed in OpenAPI.** The path is followed by
+        a literal `?`, then the capture triple, then a SECOND `?` before `archive`. Build the
+        URL from `x-raw-url-template` verbatim. Treating `archive` as an ordinary query
+        parameter produces a URL the server does not understand.
+      x-verification: live-6.21
+      x-vendor-documented: false
+      x-vendor-note: >-
+        Not in the published spec. Used because the shipped web client uses it and no
+        documented equivalent exists; may change without notice upstream.
+      x-quirks:
+        - >-
+          ⚠ Same `401` ambiguity as `++getfile` — a permission denial is indistinguishable
+          from bad credentials, and `aiosecurityspy` disambiguates it the same way. See that
+          operation's quirks and story 1.14.
+      x-raw-url-template: "/++getpreview?/{camera}/{folderDate}/{urlEncodedFilename}?archive={0|1}"
+      responses:
+        "200":
+          description: JPEG thumbnail (30 KB observed live; ~95 KB previously reported).
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /++settings-cameras:
+    get:
+      operationId: getCameraSettings
+      tags: [settings]
+      summary: One camera's settings page as flat JSON.
+      description: |
+        `format=json` is REQUIRED. Without it the server returns the settings page as
+        ~85 KB of `text/html`, not JSON.
+      description: |
+        ⚠ The response contains the camera device's `username` and `password` in plaintext.
+        Never log this body, and redact credential-shaped keys before publishing it anywhere.
+      x-verification: live-6.21
+      x-vendor-documented: true
+      x-quirks:
+        - "`cameraNum` is REQUIRED here; omitting it returns HTTP 500."
+        - >-
+          129 keys on 6.21 (48 bool, 62 int, 19 string), not the ~120 the research doc
+          estimated. `enabled` is present and reads as a JSON bool, while it must be
+          WRITTEN as 1/0. `presenceRect` is absent on every camera observed.
+        - >-
+          Requires permission bit 4 (value 16, "Set camera settings"). An account without
+          it gets 403 with valid credentials.
+      parameters:
+        - name: cameraNum
+          in: query
+          required: true
+          schema: { type: integer, minimum: 0 }
+        - $ref: "#/components/parameters/Format"
+      responses:
+        "200":
+          description: ~120 flat keys.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: setCameraSettings
+      tags: [settings]
+      summary: "Partial settings write. ⚠ Body format is NOT expressible as a schema."
+      description: |
+        **Do not generate a client body from the schema below.** Three rules govern this
+        request and only the third fits OpenAPI:
+
+        1. The body MUST begin with the bare token `formData` — not a key=value pair.
+        2. `cameraNum` travels in the BODY, never the query string. A query form returns 404.
+        3. Booleans are written `1`/`0`, though they READ BACK as JSON `true`/`false`.
+
+        Checkbox fields are keyed by HTML element **id** and appended after the named fields.
+        `enabled` — the camera enable/disable control — is one of these, which is why it does
+        not appear in any list of named settings fields.
+
+        Partial writes are safe: untouched keys among the ~120 on the page retain their
+        values, so no read-modify-write is required.
+      x-verification: live-6.21
+      x-vendor-documented: true
+      x-quirks:
+        - >-
+          Partial-write safety measured live: writing one field changed exactly 1 of the
+          page's 129 keys, and restoring left 0 of 129 differing from the original.
+        - 'Acknowledgement observed: {"camUpdate":{"num":"5","name":"Music Room"}}.'
+      x-body-template: "formData&cameraNum={n}&{namedField}={urlEncodedValue}&{checkboxId}={1|0}"
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              description: "Illustrative only — see x-body-template for the real shape."
+              properties:
+                cameraNum: { type: integer }
+                enabled:
+                  type: string
+                  enum: ["0", "1"]
+                  description: Camera enable/disable. Checkbox key, serialised by element id.
+      responses:
+        "200":
+          description: 'Acknowledgement, e.g. `{"camUpdate": ...}` or `{"reload": true}`.'
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /++ssSetSchedule:
+    get:
+      operationId: setSchedule
+      tags: [arming]
+      summary: Apply a schedule and/or override to selected capture modes. A write via GET.
+      description: |
+        `mode` selects WHICH of the three capture modes the write applies to. It is **not**
+        their armed state. `schedule` and `override` are the values applied to the selected
+        modes; either may be sent without the other.
+      x-verification: live-6.21
+      x-vendor-documented: "name-differs"
+      x-vendor-note: >-
+        The published spec names this operation `setSchedule`, not `ssSetSchedule`.
+        Both answer 200 on 6.21; prefer the documented name.
+      x-quirks:
+        - "A state-changing operation issued as a GET."
+        - >-
+          ⚠ `mode` is a TARGET SELECTOR, not an armed-state. `mode=CMA` does not arm three
+          modes — it means "apply schedule/override to all three". An empty `mode` targets
+          NOTHING and the request is a silent no-op.
+        - >-
+          ⚠ The response is `200 OK`, body `OK`, EVEN WHEN NOTHING WAS APPLIED. Verified:
+          `mode=CMA&override=0` and `mode=CM&override=0` both returned `200 OK` and changed
+          no field. Status is not evidence of effect; read back to confirm.
+        - >-
+          `override` applies without `schedule` (verified: `override=2&mode=A` moved
+          `a-schedule-override` 0 → 2 alone), so AD-7's "write the override, never the
+          schedule" is achievable exactly as stated.
+        - >-
+          Live A/B on camera 10: `schedule=2&override=0&mode=A` changed exactly
+          `a-schedule-id` 1 → 2; restoring left 0 of 9 schedule fields differing.
+        - >-
+          ⚠ A `401` here does NOT reliably mean bad credentials, and this is not a
+          media-only quirk: an account missing the `schedule` permission (bit 7, value 128)
+          gets `401` here — not `403` — while `++systemInfo` answers `200` with the same
+          credentials in the same second (verified live, mask 839). `++settings-cameras`
+          answers a missing permission with `403` in the same test; which code a denial
+          carries is a property of the individual endpoint, not predictable from its kind.
+          `aiosecurityspy` disambiguates any `401` by re-reading `++systemInfo` rather than
+          keying on a list of endpoints (story 1.14).
+      parameters:
+        - name: cameraNum
+          in: query
+          schema: { type: integer }
+        - name: schedule
+          in: query
+          description: >-
+            Schedule id to assign to the selected modes. Persistent until changed
+            again -- this is how the SecuritySpy UI's own disarm control works
+            (schedule=0, research 5.15.5). Per AD-7's 2026-08-29 split this is a
+            separate, explicitly invoked operation, never something an arming
+            switch sends.
+          schema: { type: integer }
+        - name: override
+          in: query
+          description: Override id to assign to the selected modes.
+          schema: { type: integer, minimum: 0, maximum: 14 }
+        - name: mode
+          in: query
+          description: >-
+            Which capture modes to apply to, as concatenated letters (`C` continuous,
+            `M` motion, `A` actions), e.g. `CMA`. Empty targets nothing.
+          schema: { type: string, pattern: "^[CMA]*$" }
+      responses:
+        "200": { description: "Accepted. Body is `OK`. Does NOT imply anything changed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /++eventStream:
+    get:
+      operationId: getEventStream
+      tags: [streaming]
+      summary: Long-lived event stream.
+      description: |
+        Records are terminated by **CR (0x0D) only** — the body contains zero LF bytes, and
+        the final record is CR-terminated too. A standard readline() never returns. Verified
+        live on 6.21: 5 CR, 0 LF, 0 CRLF over a 45 s capture.
+
+        Format: `[TIME] [EVENT_NUMBER] [CAMERA] [EVENT] [INFO]`, e.g.
+        `20260829062049 0 X NULL`. `EVENT_NUMBER` is a per-connection counter from 0.
+        `CAMERA` is `X` when not camera-specific. A `NULL` heartbeat arrives every 10 s.
+
+        ⚠ `TIME` is the server's **local** wall clock with no offset attached. Convert it
+        using `seconds-from-gmt` from `++systemInfo`, never by assuming UTC.
+
+        The response has no `Content-Length` and no chunked encoding; it is close-terminated
+        and never ends by design, so no total read deadline applies.
+      x-verification: live-6.21
+      x-vendor-documented: true
+      parameters:
+        - name: version
+          in: query
+          schema: { type: integer, default: 3 }
+      responses:
+        "200":
+          description: CR-framed event records.
+          content:
+            text/plain:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: |
+        HTTP Basic. The server also accepts session cookies and an `auth` token (used by the
+        WebSocket), neither of which this description models.
+
+  parameters:
+    Format:
+      name: format
+      in: query
+      required: false
+      schema: { type: string, enum: [json, xml] }
+      description: JSON key names differ from XML tag names; they are not interchangeable.
+    CameraPath:
+      name: camera
+      in: path
+      required: true
+      schema: { type: integer }
+    FolderDate:
+      name: folderDate
+      in: path
+      required: true
+      schema: { type: string, format: date }
+    Filename:
+      name: filename
+      in: path
+      required: true
+      schema: { type: string }
+      description: MUST be percent-encoded; live filenames contain spaces.
+
+  responses:
+    Unauthorized:
+      description: |
+        Credentials are wrong, absent, or for an unknown account. Carries
+        `WWW-Authenticate: Basic realm="SecuritySpy"`. Body is the literal `401 Unauthorized`.
+      content:
+        text/plain:
+          schema: { type: string, const: "401 Unauthorized" }
+    Forbidden:
+      description: |
+        Credentials are VALID; the account lacks the required permission. No
+        `WWW-Authenticate` header. Body is the literal `403 Access Denied`. Do not treat this
+        as an authentication failure — re-prompting for credentials cannot fix it.
+        ⚠ The reason phrase on this response is "OK", not "Forbidden". Parse the code only.
+      content:
+        text/plain:
+          schema: { type: string, const: "403 Access Denied" }
+
+  schemas:
+    SystemInfo:
+      type: object
+      description: Six top-level keys. Verified against a live 6.21 server.
+      properties:
+        server: { $ref: "#/components/schemas/Server" }
+        camera-list:
+          type: array
+          description: ⚠ TOP-LEVEL array. Not nested under `cameralist.camera`.
+          items: { $ref: "#/components/schemas/Camera" }
+        schedule-list:
+          type: array
+          items: { $ref: "#/components/schemas/NamedId" }
+        schedule-override-list:
+          type: array
+          description: Ids 0–14. The `-1` "Unchanged" entry is client-only and absent here.
+          items: { $ref: "#/components/schemas/NamedId" }
+        schedule-preset-list:
+          type: array
+          description: Empty on every server observed; element shape unverified.
+          items: { type: object, additionalProperties: true }
+        group-list:
+          type: array
+          items: { type: object, additionalProperties: true }
+
+    NamedId:
+      type: object
+      description: An array element, NOT an object keyed by id.
+      required: [id, name]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+
+    Server:
+      type: object
+      properties:
+        uuid:
+          type: string
+          description: Stable hub identifier. Also returned in the `SS-UUID` response header
+            on every response, including 401 and 403.
+        version: { type: string, examples: ["6.21"] }
+        camera-count: { type: integer }
+        cpu-usage: { type: number }
+        memory-pressure: { type: number }
+        new-version: { type: string }
+        seconds-from-gmt:
+          type: integer
+          description: >-
+            Server UTC offset in seconds, e.g. -18000 for UTC-5. REQUIRED to interpret
+            event-stream timestamps and capture times, both of which are the server's local
+            wall clock with no offset attached.
+        current-local-time:
+          type: string
+          description: Full ISO-8601 local time WITH offset, e.g. `2026-08-29T05:28:00-05:00`.
+        current-absolute-time: { type: number }
+        time-format: { type: integer, description: "12 or 24; display preference only." }
+      additionalProperties: true
+
+    Camera:
+      type: object
+      description: 72 fields on 6.21. Only those aiosecurityspy decodes are listed.
+      properties:
+        number: { type: integer, description: Stable key; names are user-editable. }
+        name: { type: string }
+        connected: { type: boolean }
+        permissions:
+          type: integer
+          description: |
+            Bitmask. 1 live video, 4 files, 8 file delete, 16 SET CAMERA SETTINGS,
+            64 camera control, 128 schedules, 256 PTZ preset, 512 audio receive,
+            1024 trigger, 2048 audio send, 4096 HIDE DOWNLOAD (a DENY bit), 8192 push
+            streams. Bit 1 (value 2) is observed set but is undocumented — treat as reserved.
+        cc-schedule-id: { type: integer }
+        mc-schedule-id: { type: integer }
+        a-schedule-id: { type: integer }
+        cc-schedule-override: { type: integer }
+        mc-schedule-override: { type: integer }
+        a-schedule-override: { type: integer }
+        cc-mode: { type: string }
+        mc-mode: { type: string }
+        a-mode: { type: string }
+      additionalProperties: true
+
+    CameraStatus:
+      type: object
+      description: >-
+        `enabled`, `online` and `open` are three INDEPENDENT states, never collapsed into one.
+      properties:
+        num: { type: integer }
+        enabled: { type: boolean }
+        online: { type: boolean }
+        open: { type: boolean }
+        err:
+          type: integer
+          description: 0 when healthy. Observed as an int; non-zero form unverified.
+        errDesc: { type: string }
+
+    Capture:
+      type: object
+      description: Single-letter keys. All thirteen present on every live entry.
+      properties:
+        c: { type: integer, description: Camera number. }
+        t: { type: integer, description: "1 = movie, 2 = JPEG image." }
+        s: { type: integer, description: Start time, seconds since midnight of `f`. }
+        d: { type: integer, description: Duration in seconds. }
+        m:
+          type: number
+          description: >-
+            ⚠ File size in MEGABYTES, as a FLOAT (the client's own parameter is named `mb`).
+            Not an integer and not bytes. Observed range 0.04–9129.763.
+        f: { type: string, format: date, description: Folder date. }
+        n:
+          type: string
+          description: >-
+            Filename. Live values contain SPACES, e.g.
+            `08-29-2026 5-52-31 AM M Living Room.mov`. Percent-encode before use in a URL.
+        a: { type: integer, description: Archive flag. }
+        u: { type: integer, description: Unread/new flag. }
+        g: { type: integer, description: User tag id. }
+        o: { type: integer, description: "Class bitmask: 1 human, 2 vehicle, 4 animal." }
+        i: { type: integer, description: Unconfirmed. }
+        z: { type: number, description: Unconfirmed. Does NOT track `m`. }

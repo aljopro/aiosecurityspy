@@ -31,8 +31,14 @@ from .const import (
     ARM_OVERRIDE_DISARMED_UNTIL_NEXT,
     ARM_OVERRIDE_NONE,
     ARM_OVERRIDE_UNCHANGED,
+    CAPTURE_FILE_BANDWIDTH_HIGH,
+    CAPTURE_FILE_BANDWIDTH_LOW,
+    CAPTURE_FILE_BANDWIDTH_STANDARD,
     CAPTURE_TYPE_MOVIE,
     CAPTURE_TYPE_NAMES,
+    ENDPOINT_GET_FILE,
+    ENDPOINT_GET_FILE_HIGH_BANDWIDTH,
+    ENDPOINT_GET_FILE_LOW_BANDWIDTH,
     MIN_SERVER_VERSION,
     MIN_SERVER_VERSION_TEXT,
     MODE_ACTIONS,
@@ -45,7 +51,7 @@ from .const import (
 from .exceptions import SecuritySpyPermissionError, SecuritySpyUnsupportedVersionError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
     from datetime import tzinfo
 
 __all__ = [
@@ -55,11 +61,17 @@ __all__ = [
     "CameraScheduleAssignment",
     "CameraSettings",
     "CameraSettingsPatch",
+    "CameraStatus",
+    "CameraView",
     "Capture",
+    "CaptureFileBandwidth",
     "CaptureModes",
+    "CapturePreview",
     "ServerInfo",
     "arm_override",
+    "capture_file_bandwidth",
     "require_permission",
+    "visible_camera_views",
 ]
 
 _LOGGER: Final = logging.getLogger(__name__)
@@ -114,6 +126,75 @@ def _parse_ascii_int(text: str) -> int | None:
     if not digits or not digits.isascii() or not digits.isdigit():
         return None
     return int(text)
+
+
+def _finite_float(value: int | float) -> float | None:
+    """Return ``value`` as a finite ``float``, or ``None``.
+
+    `json.loads` accepts NaN/Infinity literals; a non-finite health reading is
+    not a usable number. It also accepts arbitrarily large integer literals,
+    which ``float()``/``math.isfinite()`` reject with an ``OverflowError``
+    rather than returning a value -- not a usable number either, so it is
+    treated the same as non-finite.
+    """
+    try:
+        return float(value) if math.isfinite(value) else None
+    except OverflowError:
+        return None
+
+
+def _as_float(value: object) -> float | None:
+    """Coerce an API value to a ``float``, or ``None`` when it will not parse.
+
+    Unlike :func:`_as_int`, the health fields this backs (``cpu-usage``,
+    ``current-fps``, ``data-rate``, ...) are inherently fractional, so a
+    ``float`` is the wire's own shape rather than a lossy narrowing. It matches
+    :func:`_as_int`'s *strictness* though: Python literal spellings that no
+    server emits -- underscore grouping (``"1_0"`` -> 10.0) and the ``"nan"`` /
+    ``"inf"`` words -- must not be honoured for wire data.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return _finite_float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text.isascii() or "_" in text:
+            return None
+        try:
+            parsed = float(text)
+        except ValueError:
+            return None
+        return _finite_float(parsed)
+    return None
+
+
+def _as_error_code(value: object) -> str | None:
+    """Coerce an API error field to a reported error code, or ``None``.
+
+    The one live ``++camStatus`` capture the project holds (research addendum
+    §8.12) sends ``"err":0`` on a *healthy* camera, not ``""`` -- so zero, not
+    just absence, is this surface's "no error" sentinel. Decoding it with plain
+    :func:`_as_str` would hand every healthy camera the string ``"0"`` and make
+    the documented ``if status.error is not None`` idiom report the whole
+    inventory as errored.
+
+    ``++systemInfo``'s ``last-error`` is the same concept under a different key
+    (research §10 lists the pair as one "error surface"), so it collapses zero
+    the same way. Any other value -- including a non-zero numeric code -- is
+    carried through as the server's own string.
+    """
+    text = _as_str(value)
+    if text is None:
+        return None
+    # A whitespace-only code is the empty code with padding, not an error;
+    # `_as_str` keeps it because it is truthy, so it is collapsed here.
+    text = text.strip()
+    if not text:
+        return None
+    # `_as_float`, not `_as_int`, so a ``"0.0"`` spelling collapses too; a value
+    # that is not a number at all leaves ``None != 0`` and is carried through.
+    return None if _as_float(text) == 0 else text
 
 
 def _as_bool(value: object, *, default: bool = False) -> bool:
@@ -279,12 +360,14 @@ def _as_arm_mode(value: object) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class CaptureModes:
-    """The three independent capture modes of one camera (research §5.1).
+    """The three capture modes of one camera (research §5.1).
 
     Continuous capture, motion capture and actions are **independent
-    booleans**, not a single armed/disarmed state: all eight combinations are
-    legal, including all-false. That is precisely why arming is expressed as a
-    concatenated letter string rather than as one enumerated state.
+    booleans**, so all eight combinations are legal. Their meaning is
+    direction-dependent: decoded from the server (:meth:`from_api`) they are
+    the camera's current armed state per mode; used as the ``mode`` of a
+    ``++ssSetSchedule`` write they select *which* modes the write applies to
+    -- a target set, never the armed state being assigned.
     """
 
     continuous: bool = False
@@ -295,10 +378,15 @@ class CaptureModes:
     def mode_string(self) -> str:
         """The ``++ssSetSchedule?mode=`` value for these three booleans.
 
-        Letters are always emitted in ``C``, ``M``, ``A`` order so the request
+        Letters are always emitted in ``C``, ``M``, ``A`` order so the value
         is a function of the *set* of modes rather than of construction order.
-        All three false yields ``""`` -- an empty ``mode`` is the instruction
-        "disarm all three", not a missing value.
+        Decoded from the server they describe the camera's current armed state
+        (an all-false camera has no mode armed); sent as a write target they
+        select which capture modes the write applies to. An all-false target
+        yields ``""``, which the client refuses before any request -- the
+        server would answer ``200 OK`` having applied it to nothing, and no
+        caller could tell. It is not the instruction "disarm all three" and
+        never reaches the wire.
         """
         return (
             (MODE_CONTINUOUS if self.continuous else "")
@@ -334,9 +422,13 @@ class CaptureModes:
 class CameraScheduleAssignment:
     """A camera's current schedule ids and schedule overrides (research §10).
 
-    Read-only data (AD-7). Schedules are user-definable and this library has no
-    method that reassigns one: ``schedule=`` is never sent to
+    Read-only data as of this release. Schedules are user-definable, and no
+    method here reassigns one: ``schedule=`` is never sent to
     ``++ssSetSchedule``. Only the transient, bounded *override* is writable.
+    AD-7's 2026-08-29 split separates the two ideas -- a transient override and
+    a persistent schedule assignment -- and permits the latter as its own
+    explicit operation, so these ids may become writable through a dedicated
+    method later. They will never become writable through the arming method.
     """
 
     continuous_schedule_id: int | None = None
@@ -365,6 +457,27 @@ class CameraScheduleAssignment:
             continuous_override=_as_int(payload.get("cc-schedule-override")),
             motion_override=_as_int(payload.get("mc-schedule-override")),
             actions_override=_as_int(payload.get("a-schedule-override")),
+        )
+
+    def resolve_names(
+        self, schedules: Mapping[int, str]
+    ) -> tuple[str | None, str | None, str | None]:
+        """Resolve the three schedule ids to names against a schedule mapping.
+
+        Pure and synchronous: no request is issued, and an id that is absent
+        from ``schedules`` -- or already ``None`` -- resolves to ``None`` and
+        never raises. Schedules are user-editable, and while the two documents
+        arrive in one payload they need not stay consistent, so an unresolvable
+        id is a display gap, not a decode failure.
+        """
+        return (
+            schedules.get(self.continuous_schedule_id)
+            if self.continuous_schedule_id is not None
+            else None,
+            schedules.get(self.motion_schedule_id) if self.motion_schedule_id is not None else None,
+            schedules.get(self.actions_schedule_id)
+            if self.actions_schedule_id is not None
+            else None,
         )
 
     # No hand-written `__repr__`: every field is an `int | None`, so the
@@ -558,6 +671,20 @@ class Camera:
     capture_modes: CaptureModes = field(default_factory=CaptureModes)
     #: Read-only schedule ids and overrides (research §10, AD-7).
     schedules: CameraScheduleAssignment = field(default_factory=CameraScheduleAssignment)
+    #: Current frames-per-second (research §10). ``None`` when absent,
+    #: unparseable, or negative -- a negative frame rate has no legitimate
+    #: reading.
+    current_fps: float | None = None
+    #: Current data rate (research §10). Same fallback rule as
+    #: :attr:`current_fps`; the unit is not documented, so it is carried
+    #: through as the server's own number rather than converted.
+    data_rate: float | None = None
+    #: The camera's last reported error, if any (research §10).
+    last_error: str | None = None
+    #: Human-readable description of :attr:`last_error` (research §10).
+    #: ``None`` whenever :attr:`last_error` is ``None`` -- the pair is decoded
+    #: together, so a description never outlives its code.
+    last_error_description: str | None = None
 
     @classmethod
     def from_api(cls, payload: dict[str, object]) -> Camera | None:
@@ -575,6 +702,9 @@ class Camera:
         if number is None:
             _LOGGER.debug("Skipping camera entry with a non-numeric camera number")
             return None
+        current_fps = _as_float(payload.get("current-fps"))
+        data_rate = _as_float(payload.get("data-rate"))
+        last_error = _as_error_code(payload.get("last-error"))
         return cls(
             number=number,
             name=_as_str(payload.get("name")) or f"Camera {number}",
@@ -583,6 +713,12 @@ class Camera:
             permissions=max(_as_int(payload.get("permissions")) or 0, 0),
             capture_modes=CaptureModes.from_api(payload),
             schedules=CameraScheduleAssignment.from_api(payload),
+            current_fps=current_fps if current_fps is not None and current_fps >= 0 else None,
+            data_rate=data_rate if data_rate is not None and data_rate >= 0 else None,
+            last_error=last_error,
+            last_error_description=(
+                _as_str(payload.get("last-error-description")) if last_error is not None else None
+            ),
         )
 
     @property
@@ -595,8 +731,42 @@ class Camera:
         return decode_permissions(self.permissions)
 
     def has_permission(self, permission: str) -> bool:
-        """Return whether this camera grants the named permission."""
+        """Return whether this camera grants the named permission.
+
+        Reads as "grants" -- which is exactly why the inverted-sense
+        `PERM_NODOWNLOAD` bit is deliberately absent from `PERMISSION_NAMES`
+        (see that mapping's docstring in `const.py`): were it included, a
+        camera with the bit *set* -- meaning download is *denied* -- would have
+        this method answer ``True`` for a capability it does not grant.
+        """
         return permission in self.permission_names
+
+    @property
+    def can_receive_audio(self) -> bool | None:
+        """Whether this camera currently grants ``audio_receive``.
+
+        The audio bits are not static: SecuritySpy clears ``PERM_AUDIORCV``
+        while a camera is disconnected and restores it on reconnect (research
+        §5.11). So while :attr:`connected` is ``False`` the bit's absence
+        answers nothing -- it is returned as ``None`` here rather than
+        ``False``, so "the camera is unplugged" can never be read as "you are
+        not allowed". Only while the camera is connected does an absent bit
+        mean an actual permission denial.
+        """
+        if not self.connected:
+            return None
+        return self.has_permission("audio_receive")
+
+    @property
+    def can_send_audio(self) -> bool | None:
+        """Whether this camera currently grants ``audio_send``.
+
+        Same liveness-vs-permission distinction as :attr:`can_receive_audio`,
+        for ``PERM_AUDIOSND`` (research §5.11).
+        """
+        if not self.connected:
+            return None
+        return self.has_permission("audio_send")
 
     def __repr__(self) -> str:
         """Return a representation that cannot carry credentials."""
@@ -607,6 +777,135 @@ class Camera:
             f"capture_modes={self.capture_modes.mode_string!r}, "
             f"schedules={self.schedules!r})"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CameraStatus:
+    """One camera's entry from the cheap ``++camStatus`` poll (research §2.2).
+
+    ``++camStatus`` is a 794-byte alternative to ``++systemInfo``'s 27 KB: a
+    consumer that only needs to notice a camera going offline or erroring can
+    poll this on every cycle instead of decoding the full inventory.
+
+    ``enabled``, ``online`` and ``open`` are three independent booleans, never
+    collapsed into one state -- the same rule :class:`CaptureModes` follows for
+    the three capture modes.
+    """
+
+    number: int
+    enabled: bool
+    online: bool
+    open: bool
+    #: The camera's current error code, if any. Named to match
+    #: :attr:`Camera.last_error` -- the wire key is ``err``, but the two
+    #: surfaces are the same concept.
+    error: str | None = None
+    #: Human-readable description of :attr:`error`. Named to match
+    #: :attr:`Camera.last_error_description`; the wire key is ``errDesc``.
+    #: ``None`` whenever :attr:`error` is ``None`` -- the pair is decoded
+    #: together, so a description never outlives its code.
+    error_description: str | None = None
+
+    @classmethod
+    def from_api(cls, payload: dict[str, object]) -> CameraStatus | None:
+        """Decode one ``++camStatus`` array entry.
+
+        Args:
+            payload: A single entry from the ``++camStatus`` array.
+
+        Returns:
+            The decoded status, or ``None`` when the entry has no usable
+            camera number and must be skipped -- the same precedent
+            :meth:`Camera.from_api` follows.
+
+        """
+        number = _as_int(payload.get("num"))
+        if number is None:
+            _LOGGER.debug(
+                "Skipping camStatus entry with an unusable camera number: %r",
+                payload.get("num"),
+            )
+            return None
+        error = _as_error_code(payload.get("err"))
+        return cls(
+            number=number,
+            enabled=_as_bool(payload.get("enabled")),
+            online=_as_bool(payload.get("online")),
+            open=_as_bool(payload.get("open")),
+            error=error,
+            # Paired with `error`, never decoded independently: a description
+            # without a code would make `if status.error is not None` -- the
+            # documented idiom -- disagree with a consumer that reads the
+            # description on its own, and a stale description would then read
+            # as a live fault on a healthy camera.
+            error_description=_as_str(payload.get("errDesc")) if error is not None else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CameraView:
+    """One camera the account may see, paired with its current health.
+
+    Produced only by :func:`visible_camera_views`, never constructed from a
+    ``++camStatus`` row alone -- membership already comes from
+    :class:`ServerInfo`, so this pairing can never widen to a camera the
+    account may not see.
+    """
+
+    camera: Camera
+    #: ``None`` when ``++camStatus`` reported nothing for this member camera
+    #: (a decoding failure, or a status poll that simply omitted it) -- never
+    #: a permission signal, since membership was already decided by
+    #: :class:`ServerInfo` before this pairing was built.
+    status: CameraStatus | None
+
+
+def visible_camera_views(
+    server_info: ServerInfo, statuses: Iterable[CameraStatus]
+) -> tuple[CameraView, ...]:
+    """Pair ``++systemInfo`` membership with ``++camStatus`` health.
+
+    ``++systemInfo`` is the only permission-scoped surface (research gap G8):
+    ``++camStatus`` returns every camera on the server to any authenticated
+    account, regardless of what that account may see. This function is the
+    intersection that keeps the cheap poll from widening membership -- a
+    status row with no matching camera in ``server_info.cameras`` is
+    discarded here, at the point of receipt, and never appears in the
+    result. Order follows ``server_info.cameras``, not ``statuses``, so a
+    result never carries more entries than there are member cameras.
+
+    A count of discarded rows may be logged; the discarded camera numbers
+    themselves never are (they belong to the other side of the permission
+    boundary this function exists to enforce).
+
+    Args:
+        server_info: The permission-scoped inventory. Its ``cameras`` mapping
+            is the complete membership; nothing outside it is ever surfaced.
+        statuses: Status rows from
+            :meth:`~aiosecurityspy.SecuritySpyClient.async_get_camera_status`,
+            in any order, from any account.
+
+    Returns:
+        One :class:`CameraView` per member camera, in ``server_info.cameras``
+        order. A member with no matching status row gets ``status=None``.
+
+    """
+    status_by_number: dict[int, CameraStatus] = {}
+    discarded = 0
+    for status in statuses:
+        if status.number in server_info.cameras:
+            status_by_number[status.number] = status
+        else:
+            discarded += 1
+    if discarded:
+        _LOGGER.debug(
+            "Discarded %d camStatus row(s) for cameras outside this account's membership",
+            discarded,
+        )
+    return tuple(
+        CameraView(camera=camera, status=status_by_number.get(number))
+        for number, camera in server_info.cameras.items()
+    )
 
 
 def _decode_server_name(server: dict[str, object]) -> str:
@@ -641,6 +940,33 @@ def _decode_server_name(server: dict[str, object]) -> str:
     return name or _DEFAULT_SERVER_NAME
 
 
+#: The plausible range for a real UTC offset: +/-24h, expressed in seconds.
+#: SecuritySpy's own offsets never exceed +/-14h, but the check is
+#: deliberately generous -- it exists to catch garbage, not to police the
+#: IANA database. Exclusive of exactly 24h: `datetime.timezone` itself
+#: rejects an offset that is not strictly between -24h and +24h, and the
+#: documented caller pattern (`timezone(info.utc_offset)`) would otherwise
+#: raise `ValueError` on a value this decode function called usable.
+_MAX_UTC_OFFSET_SECONDS: Final = 24 * 60 * 60 - 1
+
+
+def _decode_utc_offset(seconds_from_gmt: object) -> timedelta | None:
+    """Decode ``seconds-from-gmt`` into a UTC offset, or ``None`` when unusable.
+
+    ``None`` is returned -- never a coerced ``0`` -- when the value is absent,
+    non-integral, or outside the range a real offset can take. Zero is a
+    legitimate real offset (the server is on UTC) and must stay
+    distinguishable from "the server did not publish anything usable".
+    """
+    offset = _as_int(seconds_from_gmt)
+    if offset is None:
+        return None
+    if abs(offset) > _MAX_UTC_OFFSET_SECONDS:
+        _LOGGER.debug("Server published an unusable seconds-from-gmt value: %r", seconds_from_gmt)
+        return None
+    return timedelta(seconds=offset)
+
+
 @dataclass(frozen=True, slots=True)
 class ServerInfo:
     """The SecuritySpy server and its camera inventory.
@@ -659,6 +985,47 @@ class ServerInfo:
     #: Read-only view; ``ServerInfo`` is frozen and its inventory is not
     #: mutable through this attribute.
     cameras: Mapping[int, Camera] = field(default_factory=lambda: MappingProxyType({}))
+    #: Read-only id-to-name mapping of the schedules the server publishes
+    #: (research §5.4). ``{id: name}``; empty when ``schedule-list`` is absent
+    #: or holds no well-formed entry.
+    schedules: Mapping[int, str] = field(default_factory=lambda: MappingProxyType({}))
+    #: Server CPU usage (research §10). ``None`` when absent, unparseable, or
+    #: negative -- a negative usage has no legitimate reading.
+    cpu_usage: float | None = None
+    #: Server memory pressure (research §10). Same fallback rule as
+    #: :attr:`cpu_usage`.
+    memory_pressure: float | None = None
+    #: Days until the server's certificate expires (research §10). Deliberately
+    #: **not** clamped on a negative value: a negative count is what an
+    #: already-expired certificate reports, and hiding it would suppress the
+    #: more urgent diagnosable state. Not a datetime -- it is a day count, not
+    #: a timestamp.
+    cert_expiry_days: int | None = None
+    #: The version the server is offering to update to (research §10).
+    #: ``None`` both when ``new-version`` is absent and when it is the empty
+    #: string SecuritySpy sends to mean "no update offered" -- never compared
+    #: against :attr:`version`, since an empty ``new-version`` is the only
+    #: "no update" signal the API documents.
+    #:
+    #: ``[ASSUMPTION]`` The research records only that an up-to-date server
+    #: sends ``new-version`` empty; it does not establish that the server never
+    #: *echoes* the installed version. If it does, a consumer reading this field
+    #: alone would show a spurious "update available", and the comparison this
+    #: field deliberately omits would have to be reinstated.
+    update_version: str | None = None
+    #: The server's UTC offset (research §5.7), decoded from
+    #: ``seconds-from-gmt``. ``None`` when the field is absent, non-integral,
+    #: or outside the range a real offset can take (at or beyond +/-24h --
+    #: excluding exactly 24h, since :class:`datetime.timezone` rejects that
+    #: boundary) -- never coerced to zero, which is a valid real offset (UTC)
+    #: and must stay
+    #: distinguishable from "unknown". This is an *offset in force when the
+    #: reading was taken*, not a timezone: it is correct for events decoded
+    #: around the same time, but not necessarily for historical records that
+    #: may fall on the other side of a daylight-saving transition. A caller
+    #: who knows the server's real IANA zone should pass a :class:`~zoneinfo.ZoneInfo`
+    #: to the decode entry points instead, for DST-correct historical decoding.
+    utc_offset: timedelta | None = None
 
     @classmethod
     def from_api(cls, payload: object) -> ServerInfo:
@@ -666,16 +1033,20 @@ class ServerInfo:
 
         The envelope is not recorded in the protocol research, so this accepts
         both the wrapped form (``{"system": {"server": ...}}``) and a bare
-        ``{"server": ...}``, and accepts ``cameralist.camera`` as either a list
-        or a single object.
+        ``{"server": ...}``, and accepts the camera list as ``cameralist.camera``,
+        a top-level ``camera-list``, or a bare ``camera`` key -- each either a
+        list or a single object. The schedule list is read from a top-level
+        ``schedule-list`` when present.
 
         Args:
             payload: The parsed JSON body.
 
         Raises:
             SecuritySpyUnsupportedVersionError: When no server block is
-                locatable, when the version is missing or unparseable, or when
-                the server is older than the supported minimum.
+                locatable, when the version is missing or unparseable, when the
+                server is older than the supported minimum, when no recognised
+                camera-list key is present at all, or when the server reports a
+                positive camera count but zero cameras survive decoding.
 
         Returns:
             The decoded server info.
@@ -696,14 +1067,29 @@ class ServerInfo:
         if version_info < MIN_SERVER_VERSION:
             raise SecuritySpyUnsupportedVersionError(version, MIN_SERVER_VERSION_TEXT)
 
-        cameras = cls._decode_cameras(system)
+        schedules = cls._decode_schedules(system)
+        cameras, located = cls._decode_cameras(system)
+        if not located:
+            # No recognised camera-list key at all -- this is indistinguishable
+            # from a genuinely camera-less server unless it is called out as its
+            # own failure, so it is never allowed to collapse into `{}`.
+            raise SecuritySpyUnsupportedVersionError(version, MIN_SERVER_VERSION_TEXT)
         camera_count = _as_int(server.get("camera-count"))
         if camera_count is not None and camera_count < 0:
             # A negative inventory size is nonsense; fall back to what decoded.
             _LOGGER.debug("Server reported a negative camera count; using the decoded count")
             camera_count = None
         if camera_count is not None and camera_count != len(cameras):
+            if camera_count > 0 and not cameras:
+                # A located, positive-count inventory that decoded to nothing is
+                # the exact symptom of the original defect -- a plausible-looking
+                # empty result standing in for a total decode failure.
+                raise SecuritySpyUnsupportedVersionError(version, MIN_SERVER_VERSION_TEXT)
             _LOGGER.debug("Server reports %s cameras but %s decoded", camera_count, len(cameras))
+
+        cpu_usage = _as_float(server.get("cpu-usage"))
+        memory_pressure = _as_float(server.get("memory-pressure"))
+        utc_offset = _decode_utc_offset(server.get("seconds-from-gmt"))
         return cls(
             uuid=_as_str(server.get("uuid")) or "",
             name=_decode_server_name(server),
@@ -711,13 +1097,61 @@ class ServerInfo:
             version_info=version_info,
             camera_count=camera_count if camera_count is not None else len(cameras),
             cameras=MappingProxyType(cameras),
+            schedules=MappingProxyType(schedules),
+            cpu_usage=cpu_usage if cpu_usage is not None and cpu_usage >= 0 else None,
+            memory_pressure=(
+                memory_pressure if memory_pressure is not None and memory_pressure >= 0 else None
+            ),
+            # Not clamped on a negative value; see the field's own docstring.
+            cert_expiry_days=_as_int(server.get("cert-expiry-days")),
+            # `.strip()`: an empty `new-version` is the server's "no update"
+            # signal, and a whitespace-only one is that same signal padded --
+            # `_as_str` keeps it because it is truthy.
+            update_version=(_as_str(server.get("new-version")) or "").strip() or None,
+            utc_offset=utc_offset,
         )
 
     @staticmethod
-    def _decode_cameras(system: dict[str, object]) -> dict[int, Camera]:
-        """Decode the camera list, tolerating absent, single-object and list forms."""
+    def _decode_cameras(system: dict[str, object]) -> tuple[dict[int, Camera], bool]:
+        """Locate and decode the camera list, tolerating single-object and list forms.
+
+        Three envelope shapes are recognised, in this order: ``cameralist.camera``
+        (the legacy wrapped form), a top-level ``camera-list`` (what a live 6.21
+        server actually sends), and a bare top-level ``camera`` key. Each may hold
+        a list or a single object. A ``cameralist`` wrapper takes priority whenever
+        it is present at all, even if it holds no inner ``camera`` key -- that keeps
+        a legacy ``cameralist: {}`` decoding as a genuinely-empty success rather
+        than falling through to the newer top-level keys.
+
+        Returns:
+            A ``(cameras, located)`` pair. ``located`` is ``False`` only when none
+            of the three keys is present at all -- it is ``True`` even when the
+            key that *was* found holds an empty list, so a caller can tell "no
+            camera list found" (a decode failure) from "camera list found, empty"
+            (a genuinely camera-less server) apart, which is the whole point:
+            those two collapse to the same `{}` otherwise.
+        """
         cameralist = _as_mapping(system.get("cameralist"))
-        raw = system.get("camera") if cameralist is None else cameralist.get("camera")
+        raw: object
+        located: bool
+        if cameralist is not None:
+            # `cameralist` being present at all is "located", even without an
+            # inner `camera` key -- that mirrors the pre-existing tolerance for
+            # `cameralist.get("camera")` being `None`, so a legacy server that
+            # sends an empty `cameralist: {}` for zero cameras keeps decoding
+            # to a genuinely-empty success instead of a new false raise.
+            raw = cameralist.get("camera")
+            located = True
+        elif "camera-list" in system:
+            raw = system.get("camera-list")
+            located = True
+        elif "camera" in system:
+            raw = system.get("camera")
+            located = True
+        else:
+            raw = None
+            located = False
+
         entries: list[object]
         if raw is None:
             entries = []
@@ -739,7 +1173,44 @@ class ServerInfo:
                 _LOGGER.debug("Duplicate camera number %s; keeping the first", camera.number)
                 continue
             cameras[camera.number] = camera
-        return cameras
+        return cameras, located
+
+    @staticmethod
+    def _decode_schedules(system: Mapping[str, object]) -> dict[int, str]:
+        """Decode the ``schedule-list`` into an ``{id: name}`` mapping.
+
+        ``schedule-list`` is an array of ``{"name": str, "id": int}`` objects
+        (research §5.4), not an object keyed by id. Schedules are
+        user-definable and this mapping is display data, so a malformed entry
+        is skipped rather than failing the whole decode -- every well-formed
+        entry still decodes.
+
+        Returns:
+            The decoded mapping, empty when ``schedule-list`` is absent, not a
+            list, or holds no well-formed entry.
+
+        """
+        raw = system.get("schedule-list")
+        if not isinstance(raw, list):
+            return {}
+        schedules: dict[int, str] = {}
+        for entry in raw:
+            mapping = _as_mapping(entry)
+            if mapping is None:
+                _LOGGER.debug("Skipping non-object schedule entry")
+                continue
+            schedule_id = _as_int(mapping.get("id"))
+            name = _as_str(mapping.get("name"))
+            if schedule_id is None or name is None:
+                _LOGGER.debug("Skipping schedule entry without an id or name")
+                continue
+            if schedule_id in schedules:
+                # Same rule as `_decode_cameras`: a duplicated id keeps the first
+                # entry rather than silently letting a later one win.
+                _LOGGER.debug("Duplicate schedule id %s; keeping the first", schedule_id)
+                continue
+            schedules[schedule_id] = name
+        return schedules
 
     def __repr__(self) -> str:
         """Return a representation that cannot carry credentials."""
@@ -772,7 +1243,7 @@ class Capture:
     object_classes: frozenset[str]
     filename: str
     folder_date: str
-    file_size: int | None
+    file_size_mb: float | None
     tag_id: int | None
     archived: bool
     unread: bool
@@ -808,7 +1279,7 @@ class Capture:
             _LOGGER.debug("Capture on camera %s has no reconstructable start time", camera)
 
         duration_seconds = _as_int(payload.get("d"))
-        file_size = _as_int(payload.get("m"))
+        file_size_mb = _as_float(payload.get("m"))
         return cls(
             camera=camera,
             start=start,
@@ -822,7 +1293,7 @@ class Capture:
             object_classes=decode_object_classes(_as_int(payload.get("o")) or 0),
             filename=filename,
             folder_date=folder_date,
-            file_size=file_size if file_size is not None and file_size >= 0 else None,
+            file_size_mb=file_size_mb if file_size_mb is not None and file_size_mb >= 0 else None,
             tag_id=_as_int(payload.get("g")),
             archived=_as_bool(payload.get("a")),
             unread=_as_bool(payload.get("u")),
@@ -857,6 +1328,83 @@ class Capture:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class CapturePreview:
+    """A JPEG thumbnail returned by ``++getpreview`` (research §4.3).
+
+    ``data`` is the raw JPEG bytes, never text-decoded. The preview is
+    capped at 8 MiB by the transport layer (the same cap as JSON bodies),
+    and a real thumbnail is verified to be ~95 KB (research §4.3).
+    """
+
+    data: bytes
+    content_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureFileBandwidth:
+    """A bandwidth selector and the endpoint that serves it (research §4b.1).
+
+    Mirrors the ``ArmOverride`` validated-int-sentinel pattern: the raw
+    ``CAPTURE_FILE_BANDWIDTH_*`` constant is the wire-side identity, and this
+    record is the typed, validated lookup result the client uses.
+
+    The record carries no content type. Research §4b.1 documents what each
+    variant *usually* serves, but the media type a caller receives is whatever
+    the server actually sent, so ``CaptureFileStream.content_type`` reports the
+    response header rather than a value asserted here. A table would have been
+    free to drift from the wire with nothing to catch it.
+    """
+
+    value: int
+    endpoint: str
+
+
+#: Mapping of a ``CAPTURE_FILE_BANDWIDTH_*`` value to its endpoint constant
+#: (research §4b.1).
+_BANDWIDTH_ENDPOINTS: Final[Mapping[int, CaptureFileBandwidth]] = MappingProxyType(
+    {
+        CAPTURE_FILE_BANDWIDTH_STANDARD: CaptureFileBandwidth(
+            value=CAPTURE_FILE_BANDWIDTH_STANDARD,
+            endpoint=ENDPOINT_GET_FILE,
+        ),
+        CAPTURE_FILE_BANDWIDTH_HIGH: CaptureFileBandwidth(
+            value=CAPTURE_FILE_BANDWIDTH_HIGH,
+            endpoint=ENDPOINT_GET_FILE_HIGH_BANDWIDTH,
+        ),
+        CAPTURE_FILE_BANDWIDTH_LOW: CaptureFileBandwidth(
+            value=CAPTURE_FILE_BANDWIDTH_LOW,
+            endpoint=ENDPOINT_GET_FILE_LOW_BANDWIDTH,
+        ),
+    }
+)
+
+
+def capture_file_bandwidth(value: int) -> CaptureFileBandwidth:
+    """Look up the typed record for one bandwidth selector.
+
+    Args:
+        value: A ``CAPTURE_FILE_BANDWIDTH_*`` constant.
+
+    Raises:
+        ValueError: The value is not one of the three bandwidth constants.
+
+    Returns:
+        The typed bandwidth record, including its endpoint.
+
+    """
+    if isinstance(cast("object", value), int) and not isinstance(value, bool):
+        record = _BANDWIDTH_ENDPOINTS.get(value)
+        if record is not None:
+            return record
+    message = (
+        "bandwidth must be one of the CAPTURE_FILE_BANDWIDTH_* values "
+        f"({CAPTURE_FILE_BANDWIDTH_STANDARD}, {CAPTURE_FILE_BANDWIDTH_HIGH}, "
+        f"{CAPTURE_FILE_BANDWIDTH_LOW})"
+    )
+    raise ValueError(message)
+
+
 # The curated ``++settings-cameras`` fields this library models, as
 # ``(attribute, wire key)`` pairs grouped by how the value is written.
 #
@@ -882,6 +1430,7 @@ _SETTINGS_BOOL_FIELDS: Final[tuple[tuple[str, str], ...]] = (
     ("actions_trigger_animal", "aTriggerMotionA"),
     ("continuous_capture_movie", "ccMovie"),
     ("continuous_capture_image", "ccImage"),
+    ("enabled", "enabled"),
 )
 
 _SETTINGS_INT_FIELDS: Final[tuple[tuple[str, str], ...]] = (
@@ -987,6 +1536,7 @@ class CameraSettings:
     actions_trigger_animal: bool = False
     continuous_capture_movie: bool = False
     continuous_capture_image: bool = False
+    enabled: bool = False
     motion_sensitivity: int | None = None
     human_sensitivity: int | None = None
     vehicle_sensitivity: int | None = None
@@ -1029,6 +1579,7 @@ class CameraSettings:
             actions_trigger_animal=_as_bool(payload.get("aTriggerMotionA")),
             continuous_capture_movie=_as_bool(payload.get("ccMovie")),
             continuous_capture_image=_as_bool(payload.get("ccImage")),
+            enabled=_as_bool(payload.get("enabled")),
             motion_sensitivity=_as_int(payload.get("motionSensitivity")),
             human_sensitivity=_as_int(payload.get("humanSensitivity")),
             vehicle_sensitivity=_as_int(payload.get("vehicleSensitivity")),
@@ -1080,6 +1631,7 @@ class CameraSettingsPatch:
     actions_trigger_animal: bool | None = None
     continuous_capture_movie: bool | None = None
     continuous_capture_image: bool | None = None
+    enabled: bool | None = None
     motion_sensitivity: int | None = None
     human_sensitivity: int | None = None
     vehicle_sensitivity: int | None = None

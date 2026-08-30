@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo
@@ -23,9 +23,13 @@ from aiosecurityspy import (
     PERM_FILES,
     PERM_LIVEVIDEO,
     PERM_PTZSET,
+    PERM_PUSH_STREAMS,
     PERM_SCHED,
+    PERM_SETTINGS,
     PERM_TRIGGER,
     Camera,
+    CameraScheduleAssignment,
+    CameraStatus,
     Capture,
     SecuritySpyUnsupportedVersionError,
     ServerInfo,
@@ -33,6 +37,7 @@ from aiosecurityspy import (
     class_slug,
     decode_object_classes,
     decode_permissions,
+    visible_camera_views,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -43,13 +48,26 @@ def load_system_info() -> dict[str, Any]:
     return payload
 
 
+def load_real_server_camera_list() -> dict[str, Any]:
+    """Load the synthetic, scrubbed 6.21 capture with a top-level `camera-list`.
+
+    This is the shape a real server sends (research §4.3): six top-level keys,
+    `camera-list` as the array, no `cameralist` wrapper anywhere. Every value is
+    synthetic -- see the module docstring in the fixture file's sibling story --
+    but the *shape* is what a live 6.21 server actually produces.
+    """
+    payload: dict[str, Any] = json.loads((FIXTURES / "real_server_camera_list.json").read_text())
+    return payload
+
+
 def wrap(server: dict[str, Any], cameras: object) -> dict[str, Any]:
     return {"system": {"server": server, "cameralist": {"camera": cameras}}}
 
 
-SERVER = {"version": "6.20", "uuid": "abc", "camera-count": "1"}
+SERVER = {"version": "6.20", "uuid": "abc", "camera-count": "0"}
 FIXTURE_CAMERA_COUNT = 3
 FIXTURE_FULL_PERMISSIONS = 10207
+FIXTURE_ELEVEN_CAMERAS = 11
 TWO_CAMERAS = 2
 
 
@@ -65,6 +83,27 @@ def test_fixture_decodes_to_server_info() -> None:
     assert set(info.cameras) == {0, 1, 7}
     assert all(isinstance(number, int) for number in info.cameras)
     assert info.name == "nvr"
+
+
+def test_live_camera_list_envelope_decodes_all_eleven_cameras() -> None:
+    """The fixture-backed regression test for story 1.12.
+
+    This asserts on the `camera-list` top-level shape specifically -- eleven
+    cameras keyed by camera number, matching `camera-count: 11` -- so it is
+    structurally impossible for it to pass without `camera-list` recognition:
+    the pre-fix `_decode_cameras` (which only looked at `cameralist.camera` and
+    a bare `camera` key) would find nothing here and this would fail with zero
+    cameras decoded, not eleven.
+    """
+    payload = load_real_server_camera_list()
+    info = ServerInfo.from_api(payload)
+    assert info.version == "6.21"
+    assert info.camera_count == FIXTURE_ELEVEN_CAMERAS
+    assert set(info.cameras) == set(range(FIXTURE_ELEVEN_CAMERAS))
+    for number in range(FIXTURE_ELEVEN_CAMERAS):
+        camera = info.cameras[number]
+        assert camera.name == f"camera-{number + 1:02d}"
+        assert camera.connected is True
 
 
 @pytest.mark.parametrize(
@@ -124,11 +163,13 @@ def test_observed_bitmask_decodes_bit_by_bit() -> None:
         PERM_LIVEVIDEO
         | PERM_FILES
         | PERM_FILEDEL
+        | PERM_SETTINGS
         | PERM_CAMCONTROL
         | PERM_SCHED
         | PERM_PTZSET
         | PERM_AUDIORCV
         | PERM_TRIGGER
+        | PERM_PUSH_STREAMS
     )
     assert FIXTURE_FULL_PERMISSIONS & expected == expected
     assert not FIXTURE_FULL_PERMISSIONS & PERM_AUDIOSND
@@ -136,11 +177,13 @@ def test_observed_bitmask_decodes_bit_by_bit() -> None:
         "live_video",
         "files",
         "file_delete",
+        "settings",
         "camera_control",
         "schedule",
         "ptz_preset_set",
         "audio_receive",
         "trigger",
+        "push_streams",
     }
 
 
@@ -155,6 +198,183 @@ def test_partial_bitmask_and_helper() -> None:
 def test_unknown_permission_bits_are_ignored_not_rejected() -> None:
     assert decode_permissions(1 | 1 << 20) == {"live_video"}
     assert decode_permissions(0) == frozenset()
+
+
+# --- liveness vs permission predicates (spec 1.18, research §5.11) ----------
+
+
+def test_audio_predicates_true_when_connected_and_permitted() -> None:
+    camera = Camera(
+        number=0,
+        name="Front Door",
+        connected=True,
+        enabled=True,
+        permissions=PERM_LIVEVIDEO | PERM_AUDIORCV | PERM_AUDIOSND,
+    )
+    assert camera.can_receive_audio is True
+    assert camera.can_send_audio is True
+
+
+def test_audio_predicates_false_when_connected_and_not_permitted() -> None:
+    camera = Camera(
+        number=0,
+        name="Front Door",
+        connected=True,
+        enabled=True,
+        permissions=PERM_LIVEVIDEO,
+    )
+    assert camera.can_receive_audio is False
+    assert camera.can_send_audio is False
+
+
+def test_audio_predicates_are_none_when_offline_never_read_as_denial() -> None:
+    """An offline camera loses the audio bits from its mask (research §5.11).
+
+    That absence must not be reported as "not permitted" -- it must be
+    distinguishable from an actual permission denial, hence ``None`` rather
+    than ``False``.
+    """
+    offline_camera = Camera(
+        number=7,
+        name="Back Garden",
+        connected=False,
+        enabled=False,
+        # The mask a disconnected camera actually reports (research §5.11):
+        # the audio bits are cleared even though live video remains.
+        permissions=PERM_LIVEVIDEO,
+    )
+    assert offline_camera.can_receive_audio is None
+    assert offline_camera.can_send_audio is None
+    # And this is exactly why `has_permission` alone would get it wrong:
+    assert offline_camera.has_permission("audio_receive") is False
+
+
+def test_live_video_predicate_true_when_permitted() -> None:
+    camera = Camera(
+        number=0, name="Front Door", connected=True, enabled=True, permissions=PERM_LIVEVIDEO
+    )
+    assert camera.has_permission("live_video") is True
+
+
+# --- visible_camera_views: the ++systemInfo / ++camStatus intersection -----
+
+
+def _status(
+    number: int, *, enabled: bool = True, online: bool = True, open_: bool = False
+) -> CameraStatus:
+    return CameraStatus(number=number, enabled=enabled, online=online, open=open_)
+
+
+def test_visible_camera_views_ordinary_account_all_permitted() -> None:
+    info = ServerInfo.from_api(load_system_info())
+    statuses = tuple(_status(number) for number in info.cameras)
+    views = visible_camera_views(info, statuses)
+    assert {view.camera.number for view in views} == set(info.cameras)
+    for view in views:
+        assert view.status is not None
+        assert view.status.number == view.camera.number
+
+
+def test_visible_camera_views_restricted_account_drops_non_member_rows() -> None:
+    """Membership from ``++systemInfo`` wins; camStatus cannot widen it.
+
+    Camera 1 is the only member here; camStatus (as it would for any
+    account, per gap G8) reports every camera on the server. The other two
+    must not appear in the result by any path.
+    """
+    full_info = ServerInfo.from_api(load_system_info())
+    driveway = full_info.cameras[1]
+    restricted_info = ServerInfo(
+        uuid=full_info.uuid,
+        name=full_info.name,
+        version=full_info.version,
+        version_info=full_info.version_info,
+        camera_count=1,
+        cameras={1: driveway},
+    )
+    all_server_statuses = tuple(_status(number) for number in full_info.cameras)
+    views = visible_camera_views(restricted_info, all_server_statuses)
+    assert len(views) == 1
+    assert views[0].camera.number == 1
+    numbers = {view.camera.number for view in views}
+    assert numbers == {1}
+
+
+def test_visible_camera_views_disabled_and_depermissioned_are_indistinguishable() -> None:
+    """Both simply absent from membership -- by construction, not accident."""
+    full_info = ServerInfo.from_api(load_system_info())
+    driveway = full_info.cameras[1]
+    # Camera 0 ("disabled" stand-in) and camera 7 ("de-permissioned"
+    # stand-in) are both absent from this account's `++systemInfo` view --
+    # the only signal `visible_camera_views` is allowed to consult.
+    membership = ServerInfo(
+        uuid=full_info.uuid,
+        name=full_info.name,
+        version=full_info.version,
+        version_info=full_info.version_info,
+        camera_count=1,
+        cameras={1: driveway},
+    )
+    disabled_camstatus = (
+        _status(0, enabled=False),  # stands in for the disabled camera
+        _status(1),
+        _status(7, enabled=True),  # stands in for the de-permissioned camera
+    )
+    depermissioned_camstatus = (
+        _status(0, enabled=True),
+        _status(1),
+        _status(7, enabled=True),
+    )
+    result_a = visible_camera_views(membership, disabled_camstatus)
+    result_b = visible_camera_views(membership, depermissioned_camstatus)
+    assert result_a == result_b
+    assert {view.camera.number for view in result_a} == {1}
+
+
+def test_visible_camera_views_unknown_status_row_discarded_never_raises() -> None:
+    info = ServerInfo.from_api(load_system_info())
+    statuses = (*[_status(number) for number in info.cameras], _status(9999))
+    views = visible_camera_views(info, statuses)
+    assert {view.camera.number for view in views} == set(info.cameras)
+
+
+def test_visible_camera_views_member_with_no_status_row_gets_none() -> None:
+    info = ServerInfo.from_api(load_system_info())
+    numbers = list(info.cameras)
+    statuses = tuple(_status(number) for number in numbers[:-1])
+    views = visible_camera_views(info, statuses)
+    by_number = {view.camera.number: view for view in views}
+    assert by_number[numbers[-1]].status is None
+
+
+def test_visible_camera_views_empty_statuses_returns_all_members_unstatused() -> None:
+    """A transient empty ``++camStatus`` response must not fabricate status."""
+    info = ServerInfo.from_api(load_system_info())
+    views = visible_camera_views(info, ())
+    assert {view.camera.number for view in views} == set(info.cameras)
+    assert all(view.status is None for view in views)
+
+
+def test_visible_camera_views_discards_count_logged_not_number(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    info = ServerInfo.from_api(load_system_info())
+    driveway = info.cameras[1]
+    membership = ServerInfo(
+        uuid=info.uuid,
+        name=info.name,
+        version=info.version,
+        version_info=info.version_info,
+        camera_count=1,
+        cameras={1: driveway},
+    )
+    statuses = tuple(_status(number) for number in info.cameras)
+    with caplog.at_level("DEBUG"):
+        visible_camera_views(membership, statuses)
+    combined = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Discarded 2" in combined  # the count of dropped rows
+    assert "0" not in combined  # camera 0's number never appears
+    assert "7" not in combined  # camera 7's number never appears
 
 
 def test_camera_inventory_is_not_mutable_through_the_model() -> None:
@@ -216,9 +436,107 @@ def test_empty_camera_list_is_empty_dict() -> None:
     assert info.cameras == {}
 
 
-def test_absent_camera_list_is_empty_dict() -> None:
-    info = ServerInfo.from_api({"system": {"server": SERVER}})
+def test_unlocatable_camera_list_raises() -> None:
+    """No recognised camera-list key at all must never collapse into an empty inventory."""
+    with pytest.raises(SecuritySpyUnsupportedVersionError):
+        ServerInfo.from_api({"system": {"server": SERVER}})
+
+
+def test_top_level_camera_list_decodes_a_single_object() -> None:
+    """`camera-list` holding one object, not a list, still decodes (I/O matrix row 3)."""
+    info = ServerInfo.from_api(
+        {"system": {"server": SERVER, "camera-list": {"number": "5", "name": "Solo2"}}}
+    )
+    assert list(info.cameras) == [5]
+    assert info.cameras[5].name == "Solo2"
+
+
+def test_top_level_camera_list_decodes_a_list() -> None:
+    """A top-level `camera-list` array, with no `cameralist` wrapper at all."""
+    info = ServerInfo.from_api(
+        {
+            "system": {
+                "server": SERVER,
+                "camera-list": [{"number": "1", "name": "One"}, {"number": "2", "name": "Two"}],
+            }
+        }
+    )
+    assert set(info.cameras) == {1, 2}
+
+
+def test_bare_camera_key_decodes() -> None:
+    info = ServerInfo.from_api(
+        {"system": {"server": SERVER, "camera": [{"number": "9", "name": "Bare"}]}}
+    )
+    assert list(info.cameras) == [9]
+
+
+def test_genuinely_empty_server_is_success_not_error() -> None:
+    """A located list with zero entries and `camera-count: 0` stays a success."""
+    server = {"version": "6.20", "uuid": "abc", "camera-count": "0"}
+    info = ServerInfo.from_api({"system": {"server": server, "camera-list": []}})
     assert info.cameras == {}
+    assert info.camera_count == 0
+
+
+def test_located_but_nothing_decoded_against_positive_count_raises() -> None:
+    """The exact symptom of the original defect: a positive count, zero decoded."""
+    server = {"version": "6.20", "uuid": "abc", "camera-count": "2"}
+    with pytest.raises(SecuritySpyUnsupportedVersionError):
+        ServerInfo.from_api({"system": {"server": server, "camera-list": []}})
+
+
+def test_located_but_nothing_decoded_all_malformed_against_positive_count_raises() -> None:
+    """Same failure, but every entry is present and unusable rather than the list being empty."""
+    server = {"version": "6.20", "uuid": "abc", "camera-count": "2"}
+    with pytest.raises(SecuritySpyUnsupportedVersionError):
+        ServerInfo.from_api(
+            {
+                "system": {
+                    "server": server,
+                    "camera-list": [{"name": "no-number"}, {"name": "also-no-number"}],
+                }
+            }
+        )
+
+
+def test_partial_decode_stays_a_debug_log_not_an_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`camera-count: 11`, one malformed entry, ten decode -- partial data beats none."""
+    server = {"version": "6.20", "uuid": "abc", "camera-count": "2"}
+    entries = [{"number": "1", "name": "Good"}, {"name": "no-number"}]
+    with caplog.at_level("DEBUG"):
+        info = ServerInfo.from_api({"system": {"server": server, "camera-list": entries}})
+    assert list(info.cameras) == [1]
+    assert "Server reports 2 cameras but 1 decoded" in caplog.text
+
+
+def test_cameralist_wrapper_without_camera_key_is_located_not_raised() -> None:
+    """`cameralist: {}` (no inner `camera` key) is a legacy empty-inventory shape.
+
+    A `cameralist` wrapper takes priority whenever present at all -- it must not
+    fall through to top-level `camera-list`/`camera` lookups and it must not be
+    mistaken for an unlocatable inventory just because it has no `camera` key.
+    """
+    server = {"version": "6.20", "uuid": "abc", "camera-count": "0"}
+    info = ServerInfo.from_api({"system": {"server": server, "cameralist": {}}})
+    assert info.cameras == {}
+
+
+def test_camera_list_count_absent_falls_back_to_decoded_count() -> None:
+    """No `camera-count` at all, list located and decoded (I/O matrix's last row)."""
+    server = {"version": "6.20", "uuid": "abc"}
+    info = ServerInfo.from_api(
+        {
+            "system": {
+                "server": server,
+                "camera-list": [{"number": "1"}, {"number": "2"}, {"number": "3"}],
+            }
+        }
+    )
+    assert info.camera_count == 3  # noqa: PLR2004 - the fixture's own count
+    assert set(info.cameras) == {1, 2, 3}
 
 
 def test_non_numeric_camera_number_is_skipped_and_rest_decode() -> None:
@@ -410,7 +728,7 @@ CHICAGO = ZoneInfo("America/Chicago")
 
 #: Research §4.1's worked example: 63319 seconds since local midnight -> 17:35:19.
 SECONDS_1735 = 63319
-FIXTURE_MOVIE_SIZE = 10485760
+FIXTURE_MOVIE_SIZE_MB = 0.945
 FIXTURE_DURATION_SECONDS = 42
 FIXTURE_TAG_ID = 2
 UNKNOWN_CAPTURE_TYPE = 7
@@ -598,7 +916,7 @@ def test_fixture_movie_entry_decodes_every_field() -> None:
     assert capture.object_classes == frozenset({"human", "animal"})
     assert capture.filename == "09-08-2026 17-35-19 M Front Door.m4v"
     assert capture.folder_date == "2026-08-09"
-    assert capture.file_size == FIXTURE_MOVIE_SIZE
+    assert capture.file_size_mb == FIXTURE_MOVIE_SIZE_MB
     assert capture.tag_id == 0
     assert capture.archived is False
     assert capture.unread is True
@@ -623,9 +941,29 @@ def test_unusable_duration_is_none(overrides: dict[str, Any]) -> None:
     assert decode(entry).duration is None
 
 
-@pytest.mark.parametrize("value", [-1, "big", None])
-def test_unusable_file_size_is_none(value: object) -> None:
-    assert decode(base_entry(m=value)).file_size is None
+@pytest.mark.parametrize(
+    ("m", "expected"),
+    [
+        (0.945, 0.945),
+        (9129.763, 9129.763),
+        (24, 24.0),
+        ("0.945", 0.945),
+        (0, 0.0),
+    ],
+)
+def test_file_size_mb_decodes_as_a_fractional_megabyte_count(m: object, expected: float) -> None:
+    assert decode(base_entry(m=m)).file_size_mb == expected
+
+
+def test_file_size_mb_is_none_when_the_m_key_is_absent() -> None:
+    assert decode(base_entry()).file_size_mb is None
+
+
+@pytest.mark.parametrize(
+    "value", [-1, float("nan"), float("inf"), "nan", "inf", True, {}, [], "big", None]
+)
+def test_unusable_file_size_mb_is_none(value: object) -> None:
+    assert decode(base_entry(m=value)).file_size_mb is None
 
 
 def test_entry_with_no_usable_camera_is_skipped() -> None:
@@ -752,3 +1090,480 @@ def test_an_out_of_range_second_of_day_rolls_over_rather_than_raising() -> None:
     )
     assert capture is not None
     assert capture.start == datetime(2026, 8, 10, 0, 1, 1, tzinfo=UTC)
+
+
+# --- server and camera health decoding (spec 1.8) ---------------------------
+
+FIXTURE_CPU_USAGE = 17.0
+FIXTURE_MEMORY_PRESSURE = 22.0
+FIXTURE_CERT_EXPIRY_DAYS = 61
+FIXTURE_DRIVEWAY_DATA_RATE = 1024.0
+
+
+def test_full_health_payload_decodes_every_new_field() -> None:
+    """Every row-one field of the I/O matrix: server and camera health, present."""
+    info = ServerInfo.from_api(load_system_info())
+    assert info.cpu_usage == FIXTURE_CPU_USAGE
+    assert info.memory_pressure == FIXTURE_MEMORY_PRESSURE
+    assert info.cert_expiry_days == FIXTURE_CERT_EXPIRY_DAYS
+    # The fixture's `new-version` is "" -- see test_empty_new_version_is_none.
+
+    driveway = info.cameras[1]
+    assert driveway.data_rate == FIXTURE_DRIVEWAY_DATA_RATE
+    assert driveway.last_error is None
+    assert driveway.last_error_description is None
+
+    back = info.cameras[7]
+    assert back.last_error == "timeout"
+    assert back.last_error_description == "Connection timed out"
+    assert back.data_rate == 0.0
+
+
+def test_current_fps_decodes_from_fixture() -> None:
+    """`current-fps` was already on the fixture before this story; still typed."""
+    info = ServerInfo.from_api(load_system_info())
+    assert info.cameras[0].current_fps == 15.0  # noqa: PLR2004 - the fixture's own value
+    assert info.cameras[1].current_fps == 10.0  # noqa: PLR2004 - the fixture's own value
+
+
+def test_health_fields_absent_decode_to_none() -> None:
+    """A payload minus every new key must still decode, with the new fields None."""
+    server = dict(SERVER)
+    camera = {"number": "1", "name": "Bare"}
+    info = ServerInfo.from_api(wrap(server, [camera]))
+    assert info.cpu_usage is None
+    assert info.memory_pressure is None
+    assert info.cert_expiry_days is None
+    assert info.update_version is None
+    bare = info.cameras[1]
+    assert bare.current_fps is None
+    assert bare.data_rate is None
+    assert bare.last_error is None
+    assert bare.last_error_description is None
+    # Existing fields are unaffected by the absence of the new ones.
+    assert bare.name == "Bare"
+
+
+def test_empty_new_version_is_none_not_empty_string() -> None:
+    """`update_version` folds "" to `None`, matching the existing `_as_str` rule."""
+    info = ServerInfo.from_api(wrap({**SERVER, "new-version": ""}, []))
+    assert info.update_version is None
+
+
+def test_non_empty_new_version_decodes() -> None:
+    info = ServerInfo.from_api(wrap({**SERVER, "new-version": "6.21"}, []))
+    assert info.update_version == "6.21"
+
+
+def test_new_version_is_never_compared_against_version() -> None:
+    """An offered version equal to the current one is still a real offer."""
+    info = ServerInfo.from_api(wrap({**SERVER, "new-version": "6.20"}, []))
+    assert info.update_version == "6.20"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cpu-usage", "n/a"),
+        ("cpu-usage", "-5"),
+        ("memory-pressure", "n/a"),
+        ("memory-pressure", "-1"),
+    ],
+)
+def test_malformed_or_negative_server_health_fields_are_none(field: str, value: str) -> None:
+    """Malformed or negative health readings fall back to `None`; decode still succeeds."""
+    info = ServerInfo.from_api(wrap({**SERVER, field: value}, []))
+    assert getattr(info, field.replace("-", "_")) is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("current-fps", "-5"),
+        ("current-fps", "abc"),
+        ("data-rate", "abc"),
+        ("data-rate", "-1"),
+    ],
+)
+def test_malformed_or_negative_camera_health_fields_are_none(field: str, value: str) -> None:
+    camera = Camera.from_api({"number": 1, field: value})
+    assert camera is not None
+    assert getattr(camera, field.replace("-", "_")) is None
+
+
+def test_cert_expiry_days_is_not_clamped_on_a_negative_value() -> None:
+    """A negative day count means an already-expired certificate -- meaningful, not noise."""
+    info = ServerInfo.from_api(wrap({**SERVER, "cert-expiry-days": "-3"}, []))
+    assert info.cert_expiry_days == -3  # noqa: PLR2004 - the value under test
+
+
+def test_cert_expiry_days_malformed_is_none() -> None:
+    info = ServerInfo.from_api(wrap({**SERVER, "cert-expiry-days": "soon"}, []))
+    assert info.cert_expiry_days is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cpu-usage", -5),
+        ("cpu-usage", -5.0),
+    ],
+)
+def test_negative_native_number_server_health_field_is_none(field: str, value: object) -> None:
+    """A negative reading as a native JSON int/float, not a string, still folds to `None`."""
+    info = ServerInfo.from_api(wrap({**SERVER, field: value}, []))
+    assert getattr(info, field.replace("-", "_")) is None
+
+
+def test_oversized_integer_health_field_does_not_raise() -> None:
+    """Guard against `float()`/`math.isfinite()` overflowing on an oversized value.
+
+    `json.loads` permits arbitrarily large integers; the decode must still fall
+    back to `None`, not crash.
+    """
+    info = ServerInfo.from_api(wrap({**SERVER, "cpu-usage": 10**400}, []))
+    assert info.cpu_usage is None
+
+
+# --- server UTC offset decoding (spec 1.13) ----------------------------------
+# I/O & Edge-Case Matrix rows: offset decoded, positive offset, offset absent,
+# offset unusable, zero offset.
+
+FIXTURE_UTC_MINUS_FIVE_SECONDS = -18000
+FIXTURE_UTC_PLUS_NINE_THIRTY_SECONDS = 34200
+
+
+def test_negative_seconds_from_gmt_decodes_to_utc_minus_five() -> None:
+    """Live value from research §5.7: `-18000` is UTC-5."""
+    info = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": -18000}, []))
+    assert info.utc_offset == timedelta(hours=-5)
+
+
+def test_positive_non_hour_offset_decodes_ordinarily() -> None:
+    """`34200` is UTC+9:30 -- a non-hour offset is not special-cased."""
+    info = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": 34200}, []))
+    assert info.utc_offset == timedelta(hours=9, minutes=30)
+
+
+def test_seconds_from_gmt_absent_is_none() -> None:
+    """Absent means unknown, and the rest of `systemInfo` still decodes."""
+    info = ServerInfo.from_api(wrap(dict(SERVER), []))
+    assert info.utc_offset is None
+    assert info.uuid == "abc"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "not-a-number",
+        86400,  # exactly +24h -- `datetime.timezone` itself rejects this boundary
+        -86400,  # exactly -24h -- same
+        86401,  # one second beyond +24h
+        -86401,  # one second beyond -24h
+    ],
+)
+def test_seconds_from_gmt_unusable_is_none(value: object) -> None:
+    """Non-numeric or beyond +/-24h: `None`, never coerced to zero."""
+    info = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": value}, []))
+    assert info.utc_offset is None
+
+
+def test_zero_seconds_from_gmt_is_a_real_utc_offset_not_unknown() -> None:
+    """Zero is a legitimate real offset (the server is on UTC) -- distinct from `None`."""
+    info = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": 0}, []))
+    assert info.utc_offset == timedelta(0)
+    assert info.utc_offset is not None
+
+
+def test_boundary_offsets_one_second_inside_24h_are_usable() -> None:
+    """+/-86399 is the true boundary: one second inside what `datetime.timezone` allows."""
+    positive = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": 86399}, []))
+    negative = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": -86399}, []))
+    assert positive.utc_offset == timedelta(hours=23, minutes=59, seconds=59)
+    assert negative.utc_offset == timedelta(hours=-23, minutes=-59, seconds=-59)
+    # And the whole point: the documented caller pattern must not raise here.
+    timezone(positive.utc_offset)
+    timezone(negative.utc_offset)
+
+
+def test_boundary_offsets_at_exactly_24h_are_rejected() -> None:
+    """+/-86400 is exactly 24h, which `datetime.timezone` itself refuses to construct."""
+    positive = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": 86400}, []))
+    negative = ServerInfo.from_api(wrap({**SERVER, "seconds-from-gmt": -86400}, []))
+    assert positive.utc_offset is None
+    assert negative.utc_offset is None
+
+
+# --- CameraStatus decoding (spec 1.8) ----------------------------------------
+
+
+def test_camera_status_decodes_full_entry() -> None:
+    status = CameraStatus.from_api(
+        {"num": 0, "enabled": True, "online": True, "open": False, "err": "", "errDesc": ""}
+    )
+    assert status is not None
+    assert status.number == 0
+    assert status.enabled is True
+    assert status.online is True
+    assert status.open is False
+    assert status.error is None
+    assert status.error_description is None
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("online", [True, False])
+@pytest.mark.parametrize("open_", [True, False])
+def test_camera_status_independent_booleans_are_not_collapsed(
+    *, enabled: bool, online: bool, open_: bool
+) -> None:
+    """enabled/online/open are three independent states; all eight combinations decode."""
+    status = CameraStatus.from_api(
+        {
+            "num": 1,
+            "enabled": enabled,
+            "online": online,
+            "open": open_,
+            "err": "e1",
+            "errDesc": "bad",
+        }
+    )
+    assert status is not None
+    assert status.enabled is enabled
+    assert status.online is online
+    assert status.open is open_
+    assert status.error == "e1"
+    assert status.error_description == "bad"
+
+
+def test_camera_status_numeric_zero_error_decodes_to_none() -> None:
+    """The one live capture sends ``"err":0`` on a healthy camera, not ``""``."""
+    status = CameraStatus.from_api(
+        {"num": 0, "enabled": True, "online": True, "open": True, "err": 0, "errDesc": ""}
+    )
+    assert status is not None
+    assert status.error is None
+    assert status.error_description is None
+
+
+@pytest.mark.parametrize("raw", [0, 0.0, "0", "0.0", "-0"])
+def test_camera_status_zero_error_spellings_decode_to_none(raw: object) -> None:
+    """Every spelling of a zero error code means "no error", not error "0"."""
+    status = CameraStatus.from_api({"num": 1, "err": raw})
+    assert status is not None
+    assert status.error is None
+
+
+@pytest.mark.parametrize("raw", [1, "1", "e1", "-2"])
+def test_camera_status_non_zero_error_is_carried_through(raw: object) -> None:
+    """A real error code survives the zero-sentinel rule as the server's own string."""
+    status = CameraStatus.from_api({"num": 1, "err": raw})
+    assert status is not None
+    assert status.error == str(raw)
+
+
+def test_camera_last_error_zero_decodes_to_none() -> None:
+    """``last-error`` is the same error surface as ``camStatus``'s ``err`` (research §10)."""
+    camera = Camera.from_api({"number": "3", "last-error": 0, "last-error-description": ""})
+    assert camera is not None
+    assert camera.last_error is None
+    assert camera.last_error_description is None
+
+
+@pytest.mark.parametrize("raw", ["1_0", "1_0.5"])
+def test_underscore_literals_are_not_honoured_for_float_health_fields(raw: str) -> None:
+    """`_as_float` matches `_as_int`'s strictness: "1_0" is not 10.0 on the wire."""
+    camera = Camera.from_api({"number": "1", "current-fps": raw})
+    assert camera is not None
+    assert camera.current_fps is None
+
+
+def test_camera_status_empty_error_fields_decode_to_none() -> None:
+    status = CameraStatus.from_api(
+        {"num": 2, "enabled": True, "online": True, "open": False, "err": "", "errDesc": ""}
+    )
+    assert status is not None
+    assert status.error is None
+    assert status.error_description is None
+
+
+@pytest.mark.parametrize("num", ["x", None, 1.5, True])
+def test_camera_status_entry_with_no_usable_number_is_skipped(num: object) -> None:
+    """Same precedent as `Camera.from_api`: an unusable number skips the entry."""
+    payload = {"num": num, "enabled": True, "online": True, "open": False}
+    assert CameraStatus.from_api(payload) is None
+
+
+def test_camera_status_string_booleans_decode() -> None:
+    """Prove `camStatus` tolerates string-token booleans, not just native JSON ones.
+
+    `system_info.json`'s own fixture shows SecuritySpy sometimes serializes
+    booleans as string tokens (`"connected": "yes"`).
+    """
+    status = CameraStatus.from_api(
+        {"num": 3, "enabled": "yes", "online": "no", "open": "1", "err": "", "errDesc": ""}
+    )
+    assert status is not None
+    assert status.enabled is True
+    assert status.online is False
+    assert status.open is True
+
+
+def test_camera_status_missing_error_keys_decode_to_none() -> None:
+    """Absent `err`/`errDesc` keys, not just empty-string values, still fold to `None`."""
+    status = CameraStatus.from_api({"num": 4, "enabled": True, "online": True, "open": False})
+    assert status is not None
+    assert status.error is None
+    assert status.error_description is None
+
+
+@pytest.mark.parametrize("raw", [0, "0", "", "   "])
+def test_camera_status_description_never_outlives_a_cleared_code(raw: object) -> None:
+    """A description paired with a no-error code is not a live fault to report."""
+    status = CameraStatus.from_api(
+        {"num": 4, "enabled": True, "online": True, "open": True, "err": raw, "errDesc": "OK"}
+    )
+    assert status is not None
+    assert status.error is None
+    assert status.error_description is None
+
+
+def test_camera_status_description_survives_a_real_code() -> None:
+    """The pairing rule must not swallow the description of an actual error."""
+    status = CameraStatus.from_api(
+        {"num": 4, "enabled": True, "online": True, "open": False, "err": 7, "errDesc": "no signal"}
+    )
+    assert status is not None
+    assert status.error == "7"
+    assert status.error_description == "no signal"
+
+
+def test_camera_last_error_description_never_outlives_a_cleared_code() -> None:
+    """`Camera` follows the same pairing rule as `CameraStatus` (research §10)."""
+    camera = Camera.from_api(
+        {"number": "3", "last-error": "0", "last-error-description": "stale text"}
+    )
+    assert camera is not None
+    assert camera.last_error is None
+    assert camera.last_error_description is None
+
+
+@pytest.mark.parametrize("raw", ["   ", "\t"])
+def test_whitespace_only_error_code_is_not_an_error(raw: str) -> None:
+    """A padded empty code is the empty code, not a fault on every poll."""
+    camera = Camera.from_api({"number": "3", "last-error": raw})
+    assert camera is not None
+    assert camera.last_error is None
+
+
+def test_whitespace_only_new_version_offers_no_update() -> None:
+    """A padded empty `new-version` is still the server's "no update" signal."""
+    info = ServerInfo.from_api(wrap({**SERVER, "new-version": "   "}, []))
+    assert info.update_version is None
+
+
+# --- schedules ----------------------------------------------------------------
+
+FIXTURE_SCHEDULE_NAMES = {
+    0: "Disarmed 24/7",
+    1: "Armed 24/7",
+    2: "Armed Sunrise To Sunset",
+    3: "Armed Sunset To Sunrise",
+}
+
+
+def test_live_camera_list_schedule_list_decodes() -> None:
+    """The real-server fixture's `schedule-list` decodes to an id-to-name map."""
+    info = ServerInfo.from_api(load_real_server_camera_list())
+    assert info.schedules == FIXTURE_SCHEDULE_NAMES
+
+
+def test_live_fixture_camera_schedule_ids_resolve_against_the_decoded_map() -> None:
+    """Each fixture camera's ids resolve by name, with no second request.
+
+    The fixture's cameras carry `cc-schedule-id`/`mc-schedule-id`/`a-schedule-id`
+    values (`1`/`1`/`0`), so this asserts the whole read path: the same decoded
+    `ServerInfo` both carries the schedule map and the cameras whose ids resolve
+    through it. It would fail if the fixture used the XML-form key spellings the
+    library does not decode (`schedule-id-cc`), or if `resolve_names` could not
+    see the server-level map.
+    """
+    info = ServerInfo.from_api(load_real_server_camera_list())
+    for camera in info.cameras.values():
+        assert camera.schedules.resolve_names(info.schedules) == (
+            "Armed 24/7",
+            "Armed 24/7",
+            "Disarmed 24/7",
+        )
+
+
+def test_absent_schedule_list_decodes_to_empty_mapping() -> None:
+    """A server that publishes no `schedule-list` still decodes fine."""
+    info = ServerInfo.from_api(load_system_info())
+    assert info.schedules == {}
+
+
+def test_malformed_schedule_entries_are_skipped() -> None:
+    """Entries lacking an id, lacking a name, or not objects are skipped."""
+    payload = wrap(SERVER, [])
+    payload["system"]["schedule-list"] = [
+        {"name": "Missing id"},
+        {"id": 5},
+        "not an object",
+        {"name": "Good", "id": 7},
+    ]
+    info = ServerInfo.from_api(payload)
+    assert info.schedules == {7: "Good"}
+
+
+def test_schedule_list_that_is_not_a_list_decodes_to_empty() -> None:
+    """A `schedule-list` that is not a list is treated as absent."""
+    payload = wrap(SERVER, [])
+    payload["system"]["schedule-list"] = {"name": "Armed 24/7", "id": 1}
+    info = ServerInfo.from_api(payload)
+    assert info.schedules == {}
+
+
+def test_schedules_are_not_mutable_through_the_model() -> None:
+    """`ServerInfo` is frozen, so its schedule map must not be mutable in place."""
+    info = ServerInfo.from_api(load_real_server_camera_list())
+    with pytest.raises(TypeError):
+        info.schedules[99] = "Nope"  # type: ignore[index]
+
+
+def test_resolve_names_resolves_known_ids() -> None:
+    """All three schedule ids resolve to names against the server's mapping."""
+    assignment = CameraScheduleAssignment(
+        continuous_schedule_id=0, motion_schedule_id=1, actions_schedule_id=2
+    )
+    assert assignment.resolve_names(FIXTURE_SCHEDULE_NAMES) == (
+        "Disarmed 24/7",
+        "Armed 24/7",
+        "Armed Sunrise To Sunset",
+    )
+
+
+def test_resolve_names_unknown_id_resolves_to_none() -> None:
+    """An id absent from the mapping is a display gap, not a failure."""
+    assignment = CameraScheduleAssignment(
+        continuous_schedule_id=0, motion_schedule_id=99, actions_schedule_id=2
+    )
+    assert assignment.resolve_names(FIXTURE_SCHEDULE_NAMES) == (
+        "Disarmed 24/7",
+        None,
+        "Armed Sunrise To Sunset",
+    )
+
+
+def test_resolve_names_absent_id_resolves_to_none() -> None:
+    """A `None` schedule id (never assigned) resolves to `None`, never raises."""
+    assignment = CameraScheduleAssignment(actions_schedule_id=2)
+    expected = (None, None, "Armed Sunrise To Sunset")
+    assert assignment.resolve_names(FIXTURE_SCHEDULE_NAMES) == expected
+
+
+def test_resolve_names_against_empty_mapping_never_raises() -> None:
+    """Even an empty schedule map leaves `resolve_names` total and silent."""
+    assignment = CameraScheduleAssignment(
+        continuous_schedule_id=0, motion_schedule_id=1, actions_schedule_id=2
+    )
+    assert assignment.resolve_names({}) == (None, None, None)

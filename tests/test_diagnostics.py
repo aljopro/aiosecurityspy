@@ -22,12 +22,14 @@ import pytest
 
 from aiosecurityspy import (
     CREDENTIAL_KEYS,
+    IDENTIFYING_KEYS,
     REDACTED,
     Camera,
     CameraSettings,
     CaptureModes,
     anonymize,
     is_credential_key,
+    is_identifying_key,
     redact_url,
 )
 from aiosecurityspy import const as const_module
@@ -820,4 +822,193 @@ def test_one_unwalkable_leaf_costs_its_own_entry_and_no_sibling() -> None:
     assert anonymize({"name": "Driveway", "buf": view}) == {
         "name": "Driveway",
         "buf": "<bytes: unknown>",
+    }
+
+
+# --- story 1.17: widen AD-13 to cover identifying network detail ---------------
+
+
+@pytest.mark.parametrize("key", ["setPass", "fsPass", "quitPass", "SetPass", "somePass"])
+def test_securityspy_app_passwords_match_the_pass_convention(key: str) -> None:
+    """Research §5.18.3: SecuritySpy's `*Pass` fields are real secrets.
+
+    `is_credential_key` only knew exact names; three live passwords slipped past.
+    The camelCase `Pass` suffix -- a distinct word boundary, not embedded in
+    `Passthrough` -- is now credential-bearing.
+    """
+    assert is_credential_key(key)
+
+
+def test_video_passthrough_is_not_a_credential() -> None:
+    """`videoPassthrough` is a boolean, not a secret, despite containing `Pass`.
+
+    The rule is the convention, not the substring. `Pass` is embedded in
+    `Passthrough` rather than a distinct word at the end, so this stays readable.
+    """
+    assert not is_credential_key("videoPassthrough")
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "compass",  # lowercase `pass` is not the SecuritySpy convention
+        "Compass",  # same, with a leading uppercase
+        "Passthrough",  # `Pass` at the start, not the end
+    ],
+)
+def test_non_securityspy_keys_ending_with_pass_are_not_credentials(key: str) -> None:
+    """The convention is SecuritySpy's, not every word ending in `pass`."""
+    assert not is_credential_key(key)
+
+
+def test_settings_general_payload_loses_its_securityspy_app_passwords() -> None:
+    """A `++settings-general` body, with the three `*Pass` passwords in plaintext."""
+    payload = {
+        "setPass": "settings-secret-aaaa",
+        "fsPass": "fullscreen-secret-bbbb",
+        "quitPass": "quit-secret-cccc",
+        "videoPassthrough": True,
+    }
+    anonymized = anonymize(payload)
+    assert anonymized == {
+        "setPass": REDACTED,
+        "fsPass": REDACTED,
+        "quitPass": REDACTED,
+        "videoPassthrough": True,
+    }
+
+
+def test_remote_access_hostname_is_redacted() -> None:
+    """Research §5.11: `wan-address` publishes a personal `*.viewcam.me` name.
+
+    Not a credential, but identifying network detail. Under an Administrator
+    account it is the server's registered remote-access hostname, which the
+    library must not let reach a public issue.
+    """
+    payload = {
+        "wan-address": "example.viewcam.me",
+        "name": "nvr",
+    }
+    anonymized = anonymize(payload)
+    assert anonymized == {"wan-address": REDACTED, "name": "nvr"}
+
+
+@pytest.mark.parametrize("key", ["wan-address", "WAN-Address", "wan_address", "wanAddress"])
+def test_wan_address_matches_however_it_is_spelled(key: str) -> None:
+    """Normalizing catches every casing SecuritySpy might send."""
+    assert is_identifying_key(key)
+
+
+def test_device_list_is_redacted_in_full() -> None:
+    """Research §5.17.2: `deviceList` entries carry LAN IPs and ONVIF UUIDs.
+
+    The container key is wholly identifying, so the entire value is replaced.
+    A consumer diagnosing why a camera is not discovered sees only that the
+    inventory existed -- never the IPs or UUIDs it contained.
+    """
+    payload = {
+        "deviceList": {
+            "onvif": [
+                {"name": "C210", "id": "uuid:3fa1fe68-1234", "ip": "192.168.0.20", "used": True},
+                {"name": "C210", "id": "uuid:3fa1fe69-5678", "ip": "192.168.0.21", "used": False},
+            ]
+        },
+    }
+    anonymized = anonymize(payload)
+    assert anonymized == {"deviceList": REDACTED}
+    # And nothing identifying survives.
+    assert "192.168.0.20" not in repr(anonymized)
+    assert "3fa1fe68" not in repr(anonymized)
+
+
+def test_ddns_name_is_redacted_as_identifying_network_detail() -> None:
+    """Research §5.11: `ddns-name` is a personal `*.viewcam.me` hostname."""
+    assert anonymize({"ddns-name": "alice.viewcam.me"}) == {"ddns-name": REDACTED}
+
+
+def test_a_wan_port_is_not_a_hostname() -> None:
+    """`wan-port` (or `http-port`) is a number, not a hostname or IP."""
+    payload = {"http-port": 8000, "https-port": 8001}
+    anonymized = anonymize(payload)
+    assert anonymized == {"http-port": 8000, "https-port": 8001}
+
+
+def test_an_existing_field_stays_walkable_when_not_in_either_set() -> None:
+    """The widened rule does not flip the default for unknown fields.
+
+    A field the anonymizer has never seen -- like `name` or `brightness` --
+    is walked normally. The new redaction class is *identifying network
+    detail*, not "everything unknown"; declaring a new identifying field is
+    a one-line addition to IDENTIFYING_KEYS.
+    """
+    anonymized = anonymize({"name": "Driveway", "brightness": BRIGHTNESS})
+    assert anonymized == {"name": "Driveway", "brightness": BRIGHTNESS}
+
+
+def test_the_scoped_stream_token_is_redacted_like_any_other_auth_value() -> None:
+    """Research §5.16.1: `?auth=` appears in two forms.
+
+    The base64 form is `username:password` encoded; the `!`-prefixed form is a
+    scoped stream token. Both are caught by the `auth` parameter name in
+    `_redact_query` -- the test pins that the token's *value* never survives.
+    """
+    redacted = redact_url("http://host/++stream?auth=!abc123-def456")
+    assert "!abc123-def456" not in redacted
+    assert REDACTED in redacted
+    # And the base64 form, which IS the account credentials.
+    redacted_b64 = redact_url("http://host/++stream?auth=Ym9iOnMzY3JldA")
+    assert "Ym9iOnMzY3JldA" not in redacted_b64
+    assert "bob" not in redacted_b64
+    assert "s3cret" not in redacted_b64
+    # The `!` token value also must not survive when embedded in free text.
+    note = anonymize({"note": "see http://host/++stream?auth=!abc123"})
+    assert "!abc123" not in repr(note)
+
+
+def test_identifying_detail_under_a_nested_key_is_still_walked() -> None:
+    """The identifying predicate is applied at every level of the walk.
+
+    A `wan-address` nested under a `server` block -- the actual wire shape --
+    is redacted; the surrounding fields stay readable.
+    """
+    payload = {
+        "server": {
+            "version": "6.20",
+            "uuid": "1D3A5C7E-9B21-4F60-8A44-0C2E6F1B7D93",
+            "wan-address": "203.0.113.14",
+            "ddns-name": "example.viewcam.me",
+        },
+    }
+    anonymized = anonymize(payload)
+    assert anonymized == {
+        "server": {
+            "version": "6.20",
+            "uuid": "1D3A5C7E-9B21-4F60-8A44-0C2E6F1B7D93",
+            "wan-address": REDACTED,
+            "ddns-name": REDACTED,
+        },
+    }
+
+
+def test_extending_the_identifying_set_extends_the_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Adding a key to IDENTIFYING_KEYS is the whole change.
+
+    Same extensibility contract as CREDENTIAL_KEYS: a new identifying field a
+    future SecuritySpy endpoint exposes is one declaration away from being
+    redacted, at the vocabulary module, not the call site.
+    """
+    before = anonymize({"newIdentifyingField": "leaky-1.2.3.4"})
+    assert before == {"newIdentifyingField": "leaky-1.2.3.4"}
+
+    monkeypatch.setattr(
+        const_module, "IDENTIFYING_KEYS", IDENTIFYING_KEYS | {"newidentifyingfield"}
+    )
+
+    assert anonymize({"newIdentifyingField": "leaky-1.2.3.4"}) == {
+        "newIdentifyingField": REDACTED,
+    }
+    assert anonymize({"NEWIdentifyingField": "leaky-1.2.3.4"}) == {
+        "NEWIdentifyingField": REDACTED,
     }

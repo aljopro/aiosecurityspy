@@ -5,6 +5,254 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`SecuritySpyClient.async_get_visible_cameras()`** answers "which cameras
+  may this account see, and how are they right now?" in one call. It composes
+  `async_get_server_info()` -- the only permission-scoped inventory surface
+  (research gap G8) -- with `async_get_camera_status()`, which returns every
+  camera on the server to any authenticated account regardless of permission,
+  and intersects them via the new `visible_camera_views()` so a camera absent
+  from `++systemInfo` can never reach the result. A disabled camera and a
+  de-permissioned camera are indistinguishable here, by design (FR-16a): both
+  are simply absent.
+- **`SecuritySpyClient.async_refresh_camera_status(server_info)`** is the
+  cheap-poll counterpart: given a `ServerInfo` the caller already holds, it
+  issues only `++camStatus` -- no re-read of `++systemInfo` -- so a
+  coordinator polling on a cycle is not forced to pay for a 27 KB read every
+  tick.
+- **`aiosecurityspy.visible_camera_views(server_info, statuses)`** is the pure
+  intersection behind both of the above: `CameraStatus` rows for cameras
+  outside `server_info.cameras` are discarded at the point of receipt, never
+  returned and never logged by number -- only a discard count may be logged.
+  Returns a tuple of the new `CameraView(camera, status)` pairs, one per
+  member camera, in `server_info.cameras` order.
+- **`Camera.can_receive_audio` / `Camera.can_send_audio`** are pure
+  properties that separate permission from liveness for the two audio bits
+  that SecuritySpy clears while a camera is disconnected and restores on
+  reconnect (research §5.11). Each returns `None` while the camera is
+  disconnected -- never `False` -- so "the camera is unplugged" can never be
+  read as "you are not allowed".
+- **`ServerInfo.utc_offset`** decodes the server's own UTC offset from
+  `seconds-from-gmt` on `++systemInfo` (research §5.7), exposed as a `timedelta`.
+  `None` when the field is absent, non-integral, or beyond +/-24h -- never coerced
+  to zero, which is a legitimate real offset (the server is on UTC) and must stay
+  distinguishable from "unknown". This is the value the four entry points below
+  now require you to supply.
+- **`aiosecurityspy.IDENTIFYING_KEYS`** is the declared vocabulary of
+  identifying-network-detail keys (`wan-address`, `ddns-name`, `deviceList`,
+  normalized the same way `CREDENTIAL_KEYS` is) a consumer can extend when a
+  future SecuritySpy endpoint exposes a new identifying field. A new
+  `aiosecurityspy.is_identifying_key()` predicate mirrors
+  `is_credential_key()`: same exact-membership semantics, same
+  normalization, same fail-closed behaviour on a non-string.
+
+### Changed
+
+- **AD-13 widened.** `is_credential_key()` now recognises SecuritySpy's
+  `*Pass` camelCase convention (`setPass`, `fsPass`, `quitPass` -- research
+  §5.18.3) on the original, pre-normalization key, where the `Pass` is a
+  distinct word at the end of the name. `videoPassthrough` is not a credential
+  because its `Pass` is embedded in `Passthrough`, not at the end. The bare
+  normalised spelling `pass` is still in `CREDENTIAL_KEYS`, so a key with the
+  exact name `pass` was already a credential. The rule is the convention, not a
+  substring of the normalised form. A diagnostics dump that previously
+  published `setPass`/`fsPass`/`quitPass` in cleartext no longer does.
+- **`anonymize()` now redacts identifying network detail as a separate
+  disclosure class.** `server.wan-address` (a personal `*.viewcam.me` hostname
+  visible to Administrator accounts, research §5.11), `ddns-name`, and
+  `deviceList` (ONVIF discovery: camera LAN IPs and UUIDs, §5.17.2) are now
+  replaced with `REDACTED` at every level of the walk -- including when the
+  field is nested under a `server` block. The predicate is
+  `is_identifying_key()`; the vocabulary is `IDENTIFYING_KEYS`; the
+  extensibility contract mirrors `CREDENTIAL_KEYS`. A new identifying field
+  a future endpoint exposes is one declaration in `const.py` away from being
+  redacted.
+- **The `auth=` query parameter is redacted in both its forms.** The base64
+  form (`auth=Ym9iOnMzY3JldA`, which is the account's `username:password`
+  encoded) was already caught by the parameter-name predicate; the
+  `!`-prefixed scoped stream token form (`auth=!abc123-…`, research §5.16.1)
+  is now covered with a regression test pinning both its standalone-URL and
+  free-text-embedded shapes. Neither token value ever survives in a shareable
+  artifact.
+- The `_LOGGER.debug` calls in `client.py`, `events.py`, `models.py`, and
+  `stream.py` were audited against the widened AD-13. None of them log a
+  credential-, secret- or PII-bearing value: every call either logs a type
+  name, a count, a fixed string, or a value explicitly verified as
+  non-sensitive in the surrounding comment. The two `_LOGGER.exception`
+  calls in `stream.py` log a callback's traceback -- a callback is consumer
+  code, not library code, and its exception arguments are out of the
+  library's control; the traceback logging is the consumer's responsibility
+  to keep safe.
+
+- **BREAKING: `async_set_camera_arming`'s `override` argument is now required
+  and has no default.** It previously defaulted to `ARM_OVERRIDE_UNCHANGED`
+  (`-1`), which research §5.15.5 confirms on the wire is the server's "leave
+  as-is" sentinel. Because `schedule=` is never sent (AD-7), `override` is the
+  only value this method ever applies -- so a defaulted call sent
+  `mode=<target>&override=-1`, targeted capture modes, applied nothing, and
+  returned `200 OK` having done nothing. That is exactly the undetectable no-op
+  the previous release refused an empty *target* for, left in place as an empty
+  *value*. Passing `ARM_OVERRIDE_UNCHANGED` explicitly is still legal; it is now
+  an instruction the caller states rather than one the signature supplies.
+  Callers relying on the default get a `TypeError` at the call site rather than
+  a silent no-op at runtime.
+
+- **BREAKING: `Capture.file_size` is renamed `Capture.file_size_mb` and is now
+  decoded as a fractional count of megabytes (a `float`), exactly as the wire
+  sends it.** `caplist.m` is a float in megabytes — verified live across 10,476
+  captures in the observed range 0.04–9129.763 (research §5.6), with
+  SecuritySpy's own client naming the parameter `mb`. The old `int | None`
+  decode ran the deliberately strict `_as_int` over it, so 10,468 of 10,476
+  captures silently decoded to `None` — the 8 that survived were megabyte counts
+  under a name that read as bytes. Values still decode to `None` exactly as
+  before when the key is absent, negative, non-finite, or malformed. No
+  conversion to bytes is applied: the field carries the decimal megabytes as
+  transmitted, so a consumer that needs bytes must choose its multiplier
+  deliberately rather than inherit a guessed one. `_tiebreak` still orders on
+  the size, with `-1` staying unreachable by a real value, so capture ordering
+  is unchanged.
+- **BREAKING: `server_timezone` is now a required keyword argument, with no
+  default, on `parse_event_line()`, `SecuritySpyEventStream.__init__()`,
+  `SecuritySpyClient.event_stream()` and `SecuritySpyClient.async_get_captures()`.**
+  All four previously defaulted to `UTC`, which silently produced the wrong
+  instant on any server that is not actually on UTC -- verified live: the
+  6.21 heartbeat `20260829062049` decoded as `06:20:49Z` when the server's own
+  published offset (`seconds-from-gmt: -18000`, UTC-5) makes the true instant
+  `11:20:49Z`, five hours off (research §5.7). `Capture.from_api()` already
+  required this argument; the outer layers now agree with the layer they wrap.
+  Every call site must pass a zone explicitly -- decode `ServerInfo.utc_offset`
+  and wrap it in `datetime.timezone(...)`, or pass a `zoneinfo.ZoneInfo` if you
+  know the server's real IANA zone (recommended for DST-correct historical
+  decoding of `caplist` windows that can span a transition -- an offset alone
+  cannot express that). See the README's "Timezones" section for both patterns.
+  The library still never fetches `++systemInfo` on your behalf to fill this in;
+  that would be hidden state with an ordering dependency.
+- **BREAKING: HTTP `403` no longer raises `SecuritySpyAuthError` -- it raises
+  `SecuritySpyPermissionError`.** Verified against a live 6.21 server (research
+  §4.1, §5.2, §7.1), `403` means the credentials were *accepted* and the account
+  merely lacks a permission bit; `401` alone means the credentials were rejected.
+  Any consumer that previously caught `SecuritySpyAuthError` to handle both status
+  codes -- for example to trigger a credential re-prompt -- now needs to catch
+  `SecuritySpyPermissionError` too, since re-authentication cannot fix a missing
+  permission. `SecuritySpyPermissionError` already existed and already carries a
+  `permission` name and an optional `camera_number`; `async_get_camera_settings()`,
+  `async_set_camera_settings()` and `async_set_camera_arming()` now name the
+  `"settings"`/`"schedule"` permission and the camera on a `403`. Every other
+  endpoint still raises `SecuritySpyPermissionError` on `403`, without a name it
+  cannot honestly supply. `401` behaviour, message and type are unchanged.
+- **BREAKING: `async_set_camera_arming` now treats its capture modes as the set
+  the write *targets* and applies `override` to exactly those modes.** Verified
+  live (research §5.14), `mode` on `++ssSetSchedule` selects *which* of the
+  three capture modes a write applies to — it is not their armed state — and
+  `override` is the value applied to the selected modes. An all-false mode set
+  now raises `ValueError` before any request, instead of sending a silent no-op
+  `mode=` that the server answered with `200 OK` having done nothing; a consumer
+  relying on the old all-false call was relying on a no-op. `200 OK` now
+  documents as *accepted*, not *applied*: the server returns it even when
+  nothing changed, and the library performs no read-back to confirm an effect.
+  `schedule=` is still never sent (AD-7).
+
+### Fixed
+
+- **`PERM_SETTINGS` (bit 4), `PERM_NODOWNLOAD` (bit 12) and `PERM_PUSH_STREAMS`
+  (bit 13) are now recognised.** The permission bitmask was missing the very bit
+  that gates settings writes: `PERMISSION_NAMES` now decodes `"settings"` and
+  `"push_streams"` in addition to the existing seven names. `PERM_NODOWNLOAD` is
+  exported as a constant for a consumer that wants to test it directly, but
+  deliberately excluded from `PERMISSION_NAMES`: it is an inverted, deny-shaped
+  bit ("hide download options"), and that mapping feeds `has_permission()`, which
+  reads as *grants*.
+- **`ServerInfo._decode_cameras` now recognises a top-level `camera-list` key** -- the
+  shape a real SecuritySpy 6.21 server actually sends -- in addition to the existing
+  `cameralist.camera` (list or single object) and bare `camera` forms, all of which keep
+  working unchanged. Previously, a live server's `camera-list` array fell through the
+  lookup silently and `async_get_server_info()` reported an inventory of **zero cameras**
+  against a server reporting eleven, with no error, only a debug log -- blocking every
+  camera-scoped feature.
+- **An unlocatable camera inventory now raises `SecuritySpyUnsupportedVersionError`**
+  where it previously returned an empty `{}` silently. The two cases are
+  indistinguishable to a consumer but mean opposite things: a genuinely empty, located
+  list (`camera-count: 0`) still decodes to a success with no cameras, but no recognised
+  camera-list key at all, or a located list that decodes to nothing while the server
+  reports a positive `camera-count`, is now a typed decode failure instead of a
+  plausible-looking empty result. A partial mismatch (some cameras decode, the count
+  doesn't match) is unaffected and stays a debug log.
+
+### Added
+
+- **OpenAPI description of the SecuritySpy HTTP API** at `docs/securityspy-openapi.yaml`,
+  shipped in the sdist and schema-validated in CI. Each operation records whether it was
+  verified against a live server, read from the shipped web client, or taken from research
+  only. The parts OpenAPI cannot express — `++getpreview`'s double-`?` URL, the `formData`
+  body sentinel, id-keyed checkbox fields — are annotated rather than normalised.
+
+- **Capture media fetch.** `async_get_capture_preview()` returns a capture's JPEG thumbnail
+  as raw bytes + content type; `async_get_capture_file()` returns a `CaptureFileStream` --
+  an async-iterable that yields the file body in bounded chunks without ever buffering the
+  full recording. Both derive their URL entirely from a `Capture` (no caller-supplied path,
+  folder date, or raw query parameter). The `archive` flag defaults to
+  `capture.archived`; an explicit override is available on the file fetch. Bandwidth
+  selection (`CAPTURE_FILE_BANDWIDTH_STANDARD`, `_HIGH`, `_LOW`) picks one of three
+  distinct endpoint paths (`++getfile`, `++getfilehb`, `++getfilelb`);
+  `CaptureFileStream.content_type` reports the content type the server actually sent.
+  The stream supports `async with` and `aclose()` so a consumer that does not drain it can
+  still release the connection. Transport errors during streaming (connection drop,
+  timeout, OS error) are wrapped into `SecuritySpyConnectError`.
+- `CapturePreview` frozen dataclass (`data: bytes`, `content_type: str`) for the preview
+  return value.
+- `CaptureFileBandwidth` frozen dataclass with a `capture_file_bandwidth()` lookup
+  function, mirroring the `ArmOverride`/`arm_override()` pattern.
+- `CaptureFileStream` exported from the package root, so the return type of
+  `async_get_capture_file()` is nameable from the public surface.
+- `ENDPOINT_GET_PREVIEW`, `ENDPOINT_GET_FILE`, `ENDPOINT_GET_FILE_HIGH_BANDWIDTH`,
+  `ENDPOINT_GET_FILE_LOW_BANDWIDTH` protocol constants for the media endpoints.
+- `CAPTURE_FILE_BANDWIDTH_STANDARD`, `CAPTURE_FILE_BANDWIDTH_HIGH`,
+  `CAPTURE_FILE_BANDWIDTH_LOW` client-side bandwidth selectors.
+- **Server and camera health decoding.** `ServerInfo` gains `cpu_usage`, `memory_pressure`,
+  `cert_expiry_days` and `update_version`; `Camera` gains `current_fps`, `data_rate`,
+  `last_error` and `last_error_description` — all decoded from `++systemInfo` (research
+  §10) via a new `_as_float` helper alongside the existing `_as_str`/`_as_int`/`_as_bool`
+  tolerant-optional coercions. Every new field is `None` when the server omits it, sends a
+  non-numeric value, or — for the fields where only a non-negative reading is meaningful
+  (CPU usage, memory pressure, frame rate, data rate) — sends a negative one; the
+  surrounding `ServerInfo`/`Camera` decode still succeeds. `cert_expiry_days` is
+  deliberately **not** clamped on a negative value: a negative day count is what an
+  already-expired certificate reports, and that is exactly the diagnosable state the field
+  exists to carry. `update_version` folds `new-version`'s empty string to `None` like every
+  other `_as_str` field, and is never compared against `version` — an empty `new-version`
+  is the only "no update" signal the API documents.
+- `CameraStatus` and `SecuritySpyClient.async_get_camera_status()`: a typed accessor for
+  the cheap `++camStatus` poll (794 B for 11 cameras vs `++systemInfo`'s 27 KB), for a consumer that only
+  needs to notice a camera going offline, closing, or erroring on every cycle.
+  `enabled`/`online`/`open` are three independent booleans, never collapsed, matching the
+  precedent `CaptureModes` already set for the three capture modes. `error`/
+  `error_description` decode the wire's `err`/`errDesc` keys, named to match
+  `Camera.last_error`/`last_error_description`. Zero, not just the empty string, is this
+  surface's "no error" sentinel — the one live capture sends `"err":0` on a healthy camera
+  — so both spellings decode to `None` and only a non-zero code is carried through. The
+  description is decoded with its code rather than independently, so it is `None` whenever
+  the code is and can never outlive the fault it describes. `Camera.last_error`/
+  `last_error_description` follow both rules, since research §10 lists the two as one
+  error surface. An array entry with no usable camera number is skipped — the same
+  precedent `Camera.from_api` follows — and the rest of the response still decodes.
+- `ENDPOINT_CAM_STATUS` protocol constant for `++camStatus`.
+- **Schedule names and the camera enable write.** `ServerInfo` gains `schedules`, a
+  read-only id-to-name mapping decoded from `++systemInfo`'s `schedule-list` (research §5.4),
+  and `CameraScheduleAssignment.resolve_names()` resolves a camera's three schedule ids to
+  names against it — pure and synchronous, with an id absent from the mapping (or already
+  `None`) resolving to `None` rather than raising. Schedules remain **read-only**: this
+  library still has no method that reassigns one (AD-7), and `schedule=` is never sent to
+  `++ssSetSchedule`. New `SecuritySpyClient.async_set_camera_enabled(camera_number, *,
+  enabled=)` takes a camera in or out of service (FR-16, research §5.5), writing the single
+  `enabled` checkbox key through the same verified partial-write path as
+  `async_set_camera_settings()` — `enabled` is read as a JSON bool but written as `1`/`0`,
+  an asymmetry that lives entirely in `CameraSettingsPatch.form_fields()` like every other
+  boolean. `CameraSettings` and `CameraSettingsPatch` both gain the `enabled` field so the
+  read allowlist and the write field tables stay in lock-step.
+
 ## [0.1.0] - 2026-08-28
 
 ### Added

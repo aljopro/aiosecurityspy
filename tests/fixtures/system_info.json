@@ -56,7 +56,10 @@
           "custom-model": "yes",
           "ptz-features": "0",
           "address": "192.168.1.42",
-          "port-rtsp": "554"
+          "port-rtsp": "554",
+          "data-rate": "1024",
+          "last-error": "",
+          "last-error-description": ""
         },
         {
           "number": "7",
@@ -74,7 +77,10 @@
           "custom-model": "no",
           "ptz-features": "3",
           "address": "192.168.1.47",
-          "port-rtsp": "554"
+          "port-rtsp": "554",
+          "data-rate": "0",
+          "last-error": "timeout",
+          "last-error-description": "Connection timed out"
         }
       ]
     }

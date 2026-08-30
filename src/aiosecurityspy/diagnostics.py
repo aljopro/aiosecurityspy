@@ -8,6 +8,20 @@ records being echoed verbatim by an external tool. The library keeps both out of
 its own models, logs and URLs; what it cannot do is see the object a consumer is
 about to publish as a diagnostics dump. That is what this module is for.
 
+The rule this module implements is **AD-13 widened 2026-08-29**: *anything that
+is PII, a secret, or a password is redacted or encrypted.* Three classes of
+value are redacted:
+
+1. **Credentials** -- matched by :data:`aiosecurityspy.const.CREDENTIAL_KEYS`
+   plus SecuritySpy's ``*Pass`` camelCase convention (``setPass``, ``fsPass``,
+   ``quitPass`` -- research §5.18.3).
+2. **Identifying network detail** -- matched by
+   :data:`aiosecurityspy.const.IDENTIFYING_KEYS` (``wan-address``, ``ddns-name``,
+   ``deviceList`` -- research §5.11, §5.17.2).
+3. **Stream-URL credentials** -- ``?auth=`` in both its base64 and ``!``-prefixed
+   scoped-token forms (research §5.16.1), plus userinfo in URL authority and
+   every nested URL.
+
 Everything here is pure: no network, no I/O, no logger, no state. It imports the
 standard library and :mod:`aiosecurityspy.const` and nothing else -- deliberately
 not even ``aiohttp``, so an anonymizer can never be the thing that fails.
@@ -32,7 +46,7 @@ from uuid import UUID
 from . import const
 from .const import REDACTED
 
-__all__ = ["anonymize", "is_credential_key", "redact_url"]
+__all__ = ["anonymize", "is_credential_key", "is_identifying_key", "redact_url"]
 
 #: How deep :func:`anonymize` walks before it stops and says so. Deep enough for
 #: any real payload -- ``++systemInfo`` nests four levels -- and shallow enough
@@ -45,6 +59,12 @@ _TRUNCATED: Final = "<truncated>"
 #: Emitted where an object is already on the path being walked, which is what a
 #: structure containing itself looks like from inside the recursion.
 _RECURSIVE: Final = "<recursive>"
+
+#: The shortest key that can carry SecuritySpy's `*Pass` suffix. A bare `Pass`
+#: (length 4) is matched by the normalised vocabulary instead, and a length-5
+#: key would put the camelCase boundary check one character past the start of
+#: the string -- a category that does not arise in any real SecuritySpy field.
+_PASS_SUFFIX_MIN_LENGTH: Final = 5
 
 #: A string is only treated *as a whole* as a URL when it opens with a real
 #: scheme followed by ``://``, or with the ``//`` of a protocol-relative
@@ -97,6 +117,12 @@ def is_credential_key(key: str) -> bool:
     exact membership is what keeps ``passwordProtected`` -- a boolean saying
     whether the camera uses authentication at all -- readable.
 
+    SecuritySpy's ``*Pass`` camelCase convention is recognised on the **original**
+    key, before normalization: ``setPass``, ``fsPass`` and ``quitPass`` end with
+    a distinct ``Pass`` word (research §5.18.3). ``videoPassthrough`` does not --
+    its ``Pass`` is embedded in ``Passthrough``, not at the end -- and stays
+    readable, because the rule is the convention, not the substring.
+
     Args:
         key: A mapping key, field name or query-parameter name.
 
@@ -113,7 +139,54 @@ def is_credential_key(key: str) -> bool:
     # Read through the module rather than binding the set at import time: the
     # vocabulary module is the declared place to extend, and a `from ... import`
     # would make an addition there invisible here.
-    return normalized in const.CREDENTIAL_KEYS
+    if normalized in const.CREDENTIAL_KEYS:
+        return True
+    # SecuritySpy's `*Pass` camelCase convention. Checked on the *original* key
+    # rather than the normalized form because the camelCase boundary is what
+    # distinguishes `setPass` (ends with `Pass`, preceded by a lowercase letter)
+    # from `videoPassthrough` (`Pass` is embedded in `Passthrough`, not at the
+    # end). A length check avoids matching the bare word `Pass` itself, which is
+    # already in CREDENTIAL_KEYS under the normalized spelling.
+    return (
+        len(key) >= _PASS_SUFFIX_MIN_LENGTH
+        and key.endswith("Pass")
+        and key[-_PASS_SUFFIX_MIN_LENGTH].islower()
+    )
+
+
+def is_identifying_key(key: str) -> bool:
+    """Return whether a key names identifying network detail (AD-13 widening).
+
+    Identifying network detail is a separate disclosure class from credentials:
+    a server's remote-access hostname (``wan-address``), a personal
+    ``*.viewcam.me`` DDNS name (``ddns-name``), and a device-inventory list
+    whose entries carry LAN IPs and ONVIF UUIDs (``deviceList``). They are
+    research §5.11, §5.17.2 -- not secrets, but personally identifying
+    network information that must not reach a Home Assistant diagnostics dump
+    a user might attach to a public issue.
+
+    Membership is exact, normalized the same way :func:`is_credential_key`
+    normalizes: ``DDNSName``, ``ddns_name`` and ``ddns-name`` all reduce to
+    ``ddnsname`` and match, while ``wan_port`` (the WAN-facing *port*, which
+    is not a hostname or IP) stays readable. The set lives at
+    :data:`aiosecurityspy.const.IDENTIFYING_KEYS` so a new identifying field
+    a future SecuritySpy endpoint exposes is one declaration away from being
+    redacted.
+
+    Args:
+        key: A mapping key, field name or query-parameter name.
+
+    Returns:
+        Whether the key is one whose value must be redacted.
+
+    """
+    # A public helper over data that comes off the wire, so a non-string degrades
+    # rather than raising. The cast widens the static type so the runtime check
+    # is not eliminated as dead.
+    if not isinstance(cast("object", key), str):
+        return False
+    normalized = "".join(character for character in key.lower() if character.isalnum())
+    return normalized in const.IDENTIFYING_KEYS
 
 
 def redact_url(url: str) -> str:
@@ -568,13 +641,13 @@ def _walk_mapping(
         # much as `"password"` does.
         name = _key(key)
         try:
-            entry = (
-                REDACTED
-                if is_credential_key(name)
-                # The subtree under a credential key is deliberately not walked:
-                # whatever shape the value has, all of it is the credential.
-                else _walk(item, secrets, depth + 1, seen)
-            )
+            if is_credential_key(name) or is_identifying_key(name):
+                # The subtree under a credential or identifying-detail key is
+                # deliberately not walked: whatever shape the value has, all of
+                # it is what AD-13 widens to cover.
+                entry: object = REDACTED
+            else:
+                entry = _walk(item, secrets, depth + 1, seen)
         except Exception:  # noqa: BLE001 - one hostile leaf must cost its own entry, not every sibling key in the dump
             entry = _unwalkable(item)
         walked[_unique(_string(name, secrets), walked)] = entry
@@ -629,7 +702,7 @@ def _member(
     owner: object, name: str, secrets: tuple[str, ...], depth: int, seen: frozenset[int]
 ) -> object:
     """Anonymize one named member of a ``NamedTuple`` or dataclass."""
-    if is_credential_key(name):
+    if is_credential_key(name) or is_identifying_key(name):
         # The attribute is not even read: a property could compute anything.
         return REDACTED
     try:

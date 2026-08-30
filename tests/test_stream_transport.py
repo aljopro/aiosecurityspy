@@ -10,6 +10,7 @@ the recorded fixture, byte for byte, from a real server.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -103,7 +104,9 @@ async def test_real_cr_framing_survives_real_chunking(stream_server: AiohttpTest
     events: list[StreamEvent] = []
 
     async with aiohttp.ClientSession() as session:
-        stream = make_client(session, stream_server).event_stream(on_event=events.append)
+        stream = make_client(session, stream_server).event_stream(
+            on_event=events.append, server_timezone=UTC
+        )
         await stream.connect()
         await until(lambda: len(events) == 14)  # noqa: PLR2004 - 15 records, one malformed
         await stream.disconnect()
@@ -131,6 +134,7 @@ async def test_real_lifecycle_callbacks_fire_over_a_real_socket(
             on_connected=lambda: order.append("connected"),
             on_disconnected=lambda: order.append("disconnected"),
             on_reconnected=lambda: order.append("reconnected"),
+            server_timezone=UTC,
         )
         await stream.connect()
         await until(lambda: len(events) == 14)  # noqa: PLR2004 - the whole fixture
@@ -162,7 +166,7 @@ async def test_real_401_fires_auth_failed_and_pauses_reconnection() -> None:
     try:
         async with aiohttp.ClientSession() as session:
             stream = make_client(session, server).event_stream(
-                on_event=lambda _event: None, on_auth_failed=note_failure
+                on_event=lambda _event: None, on_auth_failed=note_failure, server_timezone=UTC
             )
             await stream.connect()
             await until(lambda: failures == 1)
@@ -199,6 +203,7 @@ async def test_real_server_error_is_retried_rather_than_raised() -> None:
                 heartbeat_interval=TICK,
                 backoff_initial=TICK,
                 backoff_max=TICK,
+                server_timezone=UTC,
             )
             await stream.connect()
             await until(lambda: attempts >= 3)  # noqa: PLR2004 - "keeps retrying"
@@ -246,6 +251,7 @@ async def test_real_heartbeat_loss_is_declared_on_a_silent_socket() -> None:
                 heartbeat_interval=TICK,
                 backoff_initial=TICK,
                 backoff_max=TICK,
+                server_timezone=UTC,
             )
             await stream.connect()
             await until(lambda: losses >= 1)

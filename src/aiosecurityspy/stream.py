@@ -20,7 +20,6 @@ import inspect
 import logging
 import math
 import random
-from datetime import UTC
 from typing import TYPE_CHECKING, Final
 
 import aiohttp
@@ -107,7 +106,7 @@ class SecuritySpyEventStream:
         on_disconnected: LifecycleCallback | None = None,
         on_reconnected: LifecycleCallback | None = None,
         on_auth_failed: LifecycleCallback | None = None,
-        server_timezone: tzinfo = UTC,
+        server_timezone: tzinfo,
         heartbeat_interval: float = HEARTBEAT_INTERVAL,
         heartbeat_misses: int = HEARTBEAT_MISSES_BEFORE_LOSS,
         backoff_initial: float = BACKOFF_INITIAL,
@@ -126,8 +125,10 @@ class SecuritySpyEventStream:
             on_reconnected: Called on every successful connect after the first.
             on_auth_failed: Called when the server answers 401 or 403.
             server_timezone: Timezone of the server's wall-clock timestamps.
-                **[ASSUMPTION]** No endpoint exposes it, so this defaults to
-                UTC; see :func:`~aiosecurityspy.parse_event_line`.
+                ``systemInfo.server`` publishes this as ``seconds-from-gmt``
+                (see :attr:`ServerInfo.utc_offset`); there is no correct
+                default, so it must be supplied. See
+                :func:`~aiosecurityspy.parse_event_line`.
             heartbeat_interval: Expected seconds between ``NULL`` heartbeats.
             heartbeat_misses: Heartbeats missed before the connection is
                 declared lost. The product of the two is the silence deadline.
