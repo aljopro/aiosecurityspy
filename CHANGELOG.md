@@ -5,7 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-30
+
+Breaking, pre-1.0. Two public-surface changes shipped in this release that a
+0.1.0 consumer must adapt to:
+
+- `server_timezone` is now a **required** keyword on `client.event_stream()`,
+  `client.async_get_captures()`, `parse_event_line()` and `Capture.from_api()`.
+  It previously defaulted to UTC, which silently shifted every event and capture
+  time on a server in any other zone (story 1.13). SecuritySpy publishes an
+  *offset*, not a timezone; build one with `timezone(info.utc_offset)`.
+- `Capture.file_size` is renamed **`Capture.file_size_mb`** and decodes as
+  fractional megabytes rather than an integer byte count, which is what
+  `caplist`'s `m` field actually carries (story 1.15).
 
 ### Added
 
