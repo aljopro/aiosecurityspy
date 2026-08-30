@@ -91,6 +91,7 @@ __all__ = [
     "EVENT_TRIGGER_M",
     "HEARTBEAT_INTERVAL",
     "HEARTBEAT_MISSES_BEFORE_LOSS",
+    "IDENTIFYING_KEYS",
     "MIN_SERVER_VERSION",
     "MIN_SERVER_VERSION_TEXT",
     "MODE_ACTIONS",
@@ -506,6 +507,32 @@ CREDENTIAL_KEYS: Final[frozenset[str]] = frozenset(
         "passphrase",  # the spelling a key or certificate config uses
         "privatekey",  # covers `privateKey` and `private_key`
         "credentials",  # generic, and the plural form a consumer's config tends to use
+    }
+)
+
+#: Identifying network detail (AD-13 widening 2026-08-29).
+#:
+#: These keys name values that are not credentials but are personally identifying
+#: network information: a server's remote-access hostname, a camera's LAN IP, an
+#: ONVIF device UUID. A Home Assistant diagnostics dump is deliberately exported
+#: and routinely attached to public issues, so these values must not survive
+#: there in cleartext. They share the same "redacted" sentinel as credentials and
+#: the same exact-membership semantics as :data:`CREDENTIAL_KEYS`: normalized to
+#: lowercase with non-alphanumerics stripped, then tested for exact membership,
+#: so ``DDNSName``, ``ddns_name`` and ``ddns-name`` all reduce to ``ddnsname``
+#: while ``wan_port`` (the WAN-facing *port*, which is not a hostname or IP)
+#: stays readable.
+#:
+#: Membership is exact, never a substring: ``ip`` alone is too broad to list
+#: here -- a field named ``ipCount`` or ``displayIp`` is a count, not a LAN
+#: address. Identifying-detail fields that are *container* keys whose contents
+#: are wholly identifying (``deviceList``, whose every entry carries an IP and
+#: a UUID) belong here too.
+IDENTIFYING_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "wanaddress",  # research §5.11 -- the server's remote-access IP/hostname
+        "ddnsname",  # research §5.11 -- a personal `*.viewcam.me` hostname
+        "devicelist",  # research §5.17.2 -- ONVIF discovery: LAN IPs + UUIDs
     }
 )
 

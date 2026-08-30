@@ -41,8 +41,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to zero, which is a legitimate real offset (the server is on UTC) and must stay
   distinguishable from "unknown". This is the value the four entry points below
   now require you to supply.
+- **`aiosecurityspy.IDENTIFYING_KEYS`** is the declared vocabulary of
+  identifying-network-detail keys (`wan-address`, `ddns-name`, `deviceList`,
+  normalized the same way `CREDENTIAL_KEYS` is) a consumer can extend when a
+  future SecuritySpy endpoint exposes a new identifying field. A new
+  `aiosecurityspy.is_identifying_key()` predicate mirrors
+  `is_credential_key()`: same exact-membership semantics, same
+  normalization, same fail-closed behaviour on a non-string.
 
 ### Changed
+
+- **AD-13 widened.** `is_credential_key()` now recognises SecuritySpy's
+  `*Pass` camelCase convention (`setPass`, `fsPass`, `quitPass` -- research
+  §5.18.3) on the original, pre-normalization key, where the `Pass` is a
+  distinct word at the end of the name. `videoPassthrough` is not a credential
+  because its `Pass` is embedded in `Passthrough`, not at the end. The bare
+  normalised spelling `pass` is still in `CREDENTIAL_KEYS`, so a key with the
+  exact name `pass` was already a credential. The rule is the convention, not a
+  substring of the normalised form. A diagnostics dump that previously
+  published `setPass`/`fsPass`/`quitPass` in cleartext no longer does.
+- **`anonymize()` now redacts identifying network detail as a separate
+  disclosure class.** `server.wan-address` (a personal `*.viewcam.me` hostname
+  visible to Administrator accounts, research §5.11), `ddns-name`, and
+  `deviceList` (ONVIF discovery: camera LAN IPs and UUIDs, §5.17.2) are now
+  replaced with `REDACTED` at every level of the walk -- including when the
+  field is nested under a `server` block. The predicate is
+  `is_identifying_key()`; the vocabulary is `IDENTIFYING_KEYS`; the
+  extensibility contract mirrors `CREDENTIAL_KEYS`. A new identifying field
+  a future endpoint exposes is one declaration in `const.py` away from being
+  redacted.
+- **The `auth=` query parameter is redacted in both its forms.** The base64
+  form (`auth=Ym9iOnMzY3JldA`, which is the account's `username:password`
+  encoded) was already caught by the parameter-name predicate; the
+  `!`-prefixed scoped stream token form (`auth=!abc123-…`, research §5.16.1)
+  is now covered with a regression test pinning both its standalone-URL and
+  free-text-embedded shapes. Neither token value ever survives in a shareable
+  artifact.
+- The `_LOGGER.debug` calls in `client.py`, `events.py`, `models.py`, and
+  `stream.py` were audited against the widened AD-13. None of them log a
+  credential-, secret- or PII-bearing value: every call either logs a type
+  name, a count, a fixed string, or a value explicitly verified as
+  non-sensitive in the surrounding comment. The two `_LOGGER.exception`
+  calls in `stream.py` log a callback's traceback -- a callback is consumer
+  code, not library code, and its exception arguments are out of the
+  library's control; the traceback logging is the consumer's responsibility
+  to keep safe.
 
 - **BREAKING: `async_set_camera_arming`'s `override` argument is now required
   and has no default.** It previously defaulted to `ARM_OVERRIDE_UNCHANGED`

@@ -86,6 +86,7 @@ from .const import (
     EVENT_TRIGGER_M,
     HEARTBEAT_INTERVAL,
     HEARTBEAT_MISSES_BEFORE_LOSS,
+    IDENTIFYING_KEYS,
     MIN_SERVER_VERSION,
     MIN_SERVER_VERSION_TEXT,
     MODE_ACTIONS,
@@ -115,7 +116,7 @@ from .const import (
     decode_permissions,
     decode_trigger_reasons,
 )
-from .diagnostics import anonymize, is_credential_key, redact_url
+from .diagnostics import anonymize, is_credential_key, is_identifying_key, redact_url
 from .episodes import (
     ClassificationSignal,
     DetectionEpisode,
@@ -247,6 +248,7 @@ __all__ = [
     "EVENT_TRIGGER_M",
     "HEARTBEAT_INTERVAL",
     "HEARTBEAT_MISSES_BEFORE_LOSS",
+    "IDENTIFYING_KEYS",
     "MIN_SERVER_VERSION",
     "MIN_SERVER_VERSION_TEXT",
     "MODE_ACTIONS",
@@ -318,6 +320,7 @@ __all__ = [
     "decode_permissions",
     "decode_trigger_reasons",
     "is_credential_key",
+    "is_identifying_key",
     "parse_event_line",
     "redact_url",
     "require_permission",
