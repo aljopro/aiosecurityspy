@@ -1379,12 +1379,19 @@ class SecuritySpyClient:
         because the server answers ``200 OK`` having done nothing and no caller
         could detect it.
 
-        The ``schedule`` query parameter is **never sent** (AD-7).
-        ``++ssSetSchedule`` accepts one that permanently reassigns the camera's
-        schedule; this library has no method that does that, and schedule ids
-        read back from ``++systemInfo`` are read-only data. The override is
-        *transient and bounded*: it suspends the schedule for a stated duration,
-        after which the schedule resumes.
+        This method never sends the ``schedule`` query parameter (AD-7). The
+        override is *transient and bounded*: it suspends the schedule for a
+        stated duration, after which the schedule resumes.
+
+        ``++ssSetSchedule`` also accepts a ``schedule`` that **permanently**
+        reassigns the camera's schedule. Under AD-7's 2026-08-29 split these
+        are two different operations, not one control: an override is what an
+        arming *switch* writes, and a persistent assignment is a separate,
+        explicitly invoked operation. This library does not implement that
+        second operation yet, so schedule ids read back from ``++systemInfo``
+        remain read-only data for now -- but a future method may assign one.
+        Nothing that assigns a schedule will ever be routed through *this*
+        method.
 
         ``200 OK`` means the request was *accepted*, not that anything was
         applied: the server returns ``OK`` even for a write that changed no

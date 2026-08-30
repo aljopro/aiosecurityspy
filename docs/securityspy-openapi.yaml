@@ -387,7 +387,12 @@ paths:
           schema: { type: integer }
         - name: schedule
           in: query
-          description: Schedule id to assign to the selected modes. See AD-7 before sending.
+          description: >-
+            Schedule id to assign to the selected modes. Persistent until changed
+            again -- this is how the SecuritySpy UI's own disarm control works
+            (schedule=0, research 5.15.5). Per AD-7's 2026-08-29 split this is a
+            separate, explicitly invoked operation, never something an arming
+            switch sends.
           schema: { type: integer }
         - name: override
           in: query

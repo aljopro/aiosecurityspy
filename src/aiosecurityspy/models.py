@@ -420,9 +420,13 @@ class CaptureModes:
 class CameraScheduleAssignment:
     """A camera's current schedule ids and schedule overrides (research §10).
 
-    Read-only data (AD-7). Schedules are user-definable and this library has no
-    method that reassigns one: ``schedule=`` is never sent to
+    Read-only data as of this release. Schedules are user-definable, and no
+    method here reassigns one: ``schedule=`` is never sent to
     ``++ssSetSchedule``. Only the transient, bounded *override* is writable.
+    AD-7's 2026-08-29 split separates the two ideas -- a transient override and
+    a persistent schedule assignment -- and permits the latter as its own
+    explicit operation, so these ids may become writable through a dedicated
+    method later. They will never become writable through the arming method.
     """
 
     continuous_schedule_id: int | None = None
