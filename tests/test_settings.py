@@ -10,7 +10,8 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import json
-from typing import TYPE_CHECKING, Any, Self, cast
+import logging
+from typing import TYPE_CHECKING, Any, Final, Self, cast
 from urllib.parse import unquote
 
 import pytest
@@ -76,6 +77,11 @@ DEVICE_PASSWORD = "device-pass-22b9"  # noqa: S105 - leak-detection sentinel, no
 
 #: Named so assertions do not trip PLR2004 on bare wire values.
 CAMERA = 3
+
+#: Floor on the library's own DEBUG records during the settings sweep below, so an
+#: empty capture can never be mistaken for a clean one. A read plus a write emit
+#: well above this; the floor only has to be high enough that silence fails.
+MINIMUM_DEBUG_RECORDS: Final = 2
 BRIGHTNESS = 50
 OTHER_CAMERA = 4
 MOTION_SENSITIVITY = 55
@@ -625,11 +631,29 @@ async def test_permission_error_is_never_caught_as_auth_error() -> None:
 async def test_settings_payload_is_never_logged_at_any_level(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """No part of a settings payload reaches the log, at any level including DEBUG.
+
+    ``at_level(0, logger="aiosecurityspy")`` alone captures *nothing*: level 0 is
+    ``logging.NOTSET``, i.e. "inherit", and caplog's handler is attached to the root
+    logger, which sits at ``WARNING``. Every library ``DEBUG`` line is therefore
+    dropped before the handler sees it and the search below runs over an empty
+    string -- the test passes whether or not the payload is logged. Dropping root
+    to ``DEBUG`` as well is what makes "at any level" a real sweep, and the record
+    count below is what keeps it one: an empty capture can no longer be mistaken
+    for a clean one. Same trap, and same fix, as ``test_credential_containment``.
+    """
     session = SettingsServer(settings_payload())
-    with caplog.at_level(0, logger="aiosecurityspy"):
+    with caplog.at_level(logging.DEBUG), caplog.at_level(0, logger="aiosecurityspy"):
         client = make_client(session)
         await client.async_get_camera_settings(3)
         await client.async_set_camera_settings(3, CameraSettingsPatch(overlay_text="Front Gate"))
+
+    debug_records = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.DEBUG and record.name.startswith("aiosecurityspy")
+    ]
+    assert len(debug_records) >= MINIMUM_DEBUG_RECORDS, len(debug_records)
 
     text = caplog.text
     for secret in (DEVICE_USERNAME, DEVICE_PASSWORD, "Driveway", "Front Gate"):
