@@ -39,6 +39,7 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
+    "trustme>=1.2.1",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -85,3 +86,6 @@ addopts = "-ra --strict-markers --strict-config"
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = ["error"]
+markers = [
+    "live: exercises a real SecuritySpy server; skipped unless aiosecurityspy/.env supplies one",
+]
