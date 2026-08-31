@@ -5,6 +5,45 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `EpisodeReducer` no longer keeps an episode open for the duration of a forward
+  clock skew. A record stamped ahead of the caller's clock used to pin the
+  inactivity deadline to that future instant, so a signal an hour ahead held the
+  episode open for an hour; `tick(now)` now pulls any anchor later than `now`
+  back to it. `tick`'s `now` is the only authority for this — a signal's own
+  timestamp is the value a skew corrupts — so the clamp is the one place where
+  the tick and arrival paths deliberately differ. They still agree instant for
+  instant on unskewed input.
+- `EpisodeReducer.add()` now runs the inactivity check for a signal whose
+  confidence is non-finite. The confidence is still ignored, but the timestamp
+  is usable evidence that time has passed, so a lapsed episode no longer stays
+  open just because the only later signals were NaN.
+- `EpisodeReducer.feed()` no longer raises on a hand-built record: a naive
+  timestamp, a bool camera, and a `ClassificationPayload` whose `classes` is not
+  a mapping are all skipped rather than escaping as `ValueError`/`AttributeError`.
+  The library's own parser cannot produce any of them, but `feed()` promises not
+  to die on one record, and the loop was already hardened for hand-built labels
+  and confidences.
+- `EpisodeReducer.config_for()` rejects a bool camera instead of silently
+  resolving camera 1's override (`True` hashes equal to `1`).
+- A non-mapping `overrides` argument is the documented `ValueError` rather than
+  an `AttributeError` from inside the constructor.
+
+### Documentation
+
+- `DetectionEpisode.start` and `.peak_confidence` now record that two episodes
+  for one camera and class **can overlap**: a delayed signal stamped inside an
+  already-closed episode is absorbed by its successor, moving that episode's
+  `start` back before its predecessor's `end` and possibly setting its peak from
+  a signal that belonged to the predecessor.
+- The claim that episodes close "never on low confidence" is corrected
+  throughout: closure is the absence of a *qualifying* signal for longer than the
+  gap, so a dense below-threshold run lasting longer than the gap does close an
+  episode.
+
 ## [0.2.0] - 2026-08-30
 
 Breaking, pre-1.0. Two public-surface changes shipped in this release that a
@@ -443,8 +482,10 @@ Breaking, pre-1.0. Two public-surface changes shipped in this release that a
   it is the default for works rather than raising.
 - Degradation hardening: an episode's `start` moves back to accommodate an out-of-order
   signal older than the span, so `start <= last_signal` always holds; `close_all(now)`
-  raises `end` to the episode's own last signal when `now` predates it, so no episode ends
-  before it started; a deadline that would overflow near `datetime.max` leaves the track
+  raises `end` to the most recent signal absorbed into the episode when `now` predates it,
+  so no episode ends before it started — that clamp is against the last signal of any kind,
+  so a span whose trailing frames were below threshold can report an `end` later than its
+  own `last_signal`, which is the last *qualifying* one; a deadline that would overflow near `datetime.max` leaves the track
   open instead of raising out of `tick()`; and a hand-built `ClassificationPayload`
   carrying a non-numeric confidence is skipped rather than raising out of `feed()`. A
   multi-class frame emits in slug order, matching every other method here.

@@ -298,12 +298,25 @@ Worth knowing:
   falls back to the provisional module default, *not* to the `default=` config you passed.
   Two override keys that normalize to the same pair (`"Delivery Van"` and
   `"DELIVERY_VAN"`) are a `ValueError` rather than a silent last-one-wins.
-- **Episodes close on inactivity, never on low confidence.** A run of below-threshold
-  frames is mid-episode, not the end of one — and `MOTION_END` is far too unreliable to
-  close anything with.
+- **Episodes close on inactivity — no *qualifying* signal for longer than the gap.** A run
+  of below-threshold frames is mid-episode, not the end of one, and never ends an episode
+  by itself; but it does not hold one open either, since an open episode measures from its
+  last qualifying signal. A dense low-confidence run lasting longer than the gap therefore
+  does close the episode. `MOTION_END` cannot anchor closure either: its
+  reliability varies by camera (zero ends against 467 motion signals on one, several a
+  minute on another), and a rule that never fires on some cameras is worse than one that
+  ignores the signal outright.
 - **`peak_confidence` covers the whole span**, including the debounce signals that opened
   the episode and any below-threshold frame inside it. It is never the value at the
   threshold crossing.
+- **Two episodes for one camera and class can overlap in time.** `new.start >= previous.end`
+  is not an invariant. Once an episode has been closed by arrival, a delayed signal stamped
+  inside its span is absorbed by the *successor*, moving that episode's `start` back before
+  its predecessor's `end` and possibly setting its `peak_confidence` from a signal that
+  belonged to the predecessor. This is deliberate: such a signal is evidence about the same
+  continuous presence, so dropping it would discard real data, and a pure reducer cannot
+  retract a close it has already emitted. A consumer building a strictly non-overlapping
+  timeline has to reconcile this itself.
 - **`end` is the instant the episode lapsed** (`last_signal + gap`), not the `now` that
   noticed. A late tick does not stretch an episode, and a signal arriving after the gap
   has already elapsed closes the stale episode before starting a fresh debounce run — so
