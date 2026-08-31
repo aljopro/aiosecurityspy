@@ -389,13 +389,16 @@ CLASS_ANIMAL: Final = "animal"
 # chosen to be defensible, not values verified against a real installation. Treat a
 # consumer that needs different behaviour as expected, not as a misconfiguration.
 #
-# First live evidence (2026-08-30) reduced 690 real signals into 2 episodes at 172.5:1,
-# confirming the reduction itself, and found that the *gap* is the parameter that
-# decides episode boundaries: threshold and debounce were inert across their plausible
-# ranges, while silences of 24 s were measured *inside* a single continuous presence --
-# only 6 s under this 30 s default. A longer gap is likely warranted. The measurement
-# is one 90 s capture of one subject on two interior cameras, which is why these are
-# still marked [ASSUMPTION] rather than retuned.
+# Live evidence (2026-08-30) confirms the reduction itself -- 690 real signals into 2
+# episodes at 172.5:1 -- and, over a 3 h capture of 4,469 CLASSIFY records, supports
+# these values rather than replacing them. 30 s covers 97.7% of the 3,712 observed
+# inter-signal gaps, and those gaps decay smoothly with no valley to site a better
+# threshold at, so no measurement identifies a superior default: the choice is a
+# trade-off between splitting one presence and merging two. Debounce 3 earns its keep
+# over that period, removing the marginal 70-73 confidence episodes that debounce 1
+# admits. They stay [ASSUMPTION] because one home over three hours is not a population,
+# and because vehicle confidence (peaking at 41 and 44 against a human median of 98)
+# hints that 70 may be wrong per-class -- which is what the per-class override is for.
 
 #: Minimum confidence percentage a `CLASSIFY` signal must carry to count
 #: towards opening an episode. **[ASSUMPTION]**, see above.
