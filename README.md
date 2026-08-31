@@ -144,8 +144,10 @@ A few things the protocol makes non-obvious:
   nothing else happens until you call `await stream.resume()` — `connect()` declines while
   paused, and the pause survives `disconnect()`, so the rejected credential has exactly one
   door out of it. The library never re-authenticates and never counts auth failures.
-- **`event.camera is None`** means the record was not camera-specific (the wire format
-  sends `X`), not that it was invalid. `NULL` heartbeats arrive this way.
+- **`event.camera is None`** means the record carried no usable camera number — usually
+  because it was not camera-specific (the wire format sends `X`), which is how `NULL`
+  heartbeats arrive. `event.raw_camera` holds the field exactly as it arrived, so a
+  mis-framed record can be told apart from a genuine server-wide one.
 - **`event.event_number` restarts at 0 on every reconnect.** Record it; never key off it.
 - **The classification vocabulary is open.** A label from a custom CoreML model arrives in
   `ClassificationPayload.classes` unchanged. Use `slugged()` only when you need a
@@ -153,11 +155,24 @@ A few things the protocol makes non-obvious:
 - **`MOTION_END` is unreliable** and is not an inactivity signal; implement your own
   timeout if you need one.
 
-- **Backoff resets after every successful connection**, so a server that drops the stream
-  periodically retries promptly instead of creeping up to the five-minute ceiling.
+- **Backoff resets after every connection that delivered a record**, so a server that
+  drops the stream periodically retries promptly instead of creeping up to the
+  five-minute ceiling. A connection that returns headers and no data does not count: a
+  server answering `200` and closing the body would otherwise be retried once a second
+  forever.
+- **Your `on_event` handler runs on its own task**, fed by a bounded queue, so it never
+  holds up the socket read. A handler that blocks indefinitely no longer wedges the
+  stream; if it falls far enough behind, the oldest queued events are dropped and a
+  warning is logged, because keeping the socket drained matters more than a backlog.
 
 `disconnect()` is idempotent, is safe to call from inside a callback, and leaves no task,
-timer, or socket behind. Your session is untouched either way.
+timer, or socket behind. Your session is untouched either way. `connect()` immediately
+after a `disconnect()` issued from inside a callback restarts the stream as soon as the
+old reader has unwound.
+
+`event_stream()` also forwards the stream's tuning — `heartbeat_interval`,
+`heartbeat_misses`, `backoff_initial`, `backoff_max`, `backoff_multiplier`,
+`backoff_jitter` and `max_record_bytes` — so a slow link does not need the internals.
 
 ### Timezones
 

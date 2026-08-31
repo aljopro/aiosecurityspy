@@ -140,6 +140,7 @@ def classify_event(
         raw_timestamp="20260810120000",
         event_number=0,
         camera=camera,
+        raw_camera="X" if camera is None else str(camera),
         event_type=event_type,
         info="",
         payload=payload,  # type: ignore[arg-type]

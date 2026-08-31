@@ -7,7 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The event stream delivers events on a task of its own, fed by a bounded queue,
+  rather than awaiting `on_event` inside the read loop. A handler that blocked
+  forever used to park the reader inside it: the heartbeat watchdog wraps the
+  socket read, so it never got another chance to fire and the stream was
+  silently dead with no `disconnected` and no reconnection. Lifecycle callbacks
+  share the queue, so they stay ordered against the events around them. A
+  consumer that falls far enough behind now loses the oldest queued events, with
+  a warning, rather than stalling the socket.
+- `StreamEvent` carries `raw_camera`, the camera field exactly as it arrived.
+  `camera is None` alone could not distinguish "not camera-specific" — a `NULL`
+  heartbeat — from a mis-framed record, so a consumer applied garbage
+  server-wide. Symmetric with the existing `timestamp` / `raw_timestamp` pair.
+- `SecuritySpyClient.event_stream()` forwards the stream's tuning parameters.
+  They were validated by the constructor but unreachable through the
+  construction path the docs point at, so tuning a slow link meant reaching into
+  internal state.
+- Reconnect backoff resets only after a connection that actually delivered a
+  record. Headers alone set `connected`, so a server answering `200` and closing
+  the body reset the delay on every cycle and was retried roughly once a second,
+  indefinitely.
+
 ### Fixed
+
+- `connect()` is no longer a silent no-op after a `disconnect()` issued from
+  inside a consumer callback. That path cannot await the task it cancels, so the
+  following `connect()` saw a still-running reader and started nothing — leaving
+  a permanently dead stream that had reported success. Intent is now tracked
+  explicitly and the restart is deferred to the outgoing reader's completion.
+- `resume()` no longer restarts a stream the consumer explicitly disconnected.
+  An authentication pause survives `disconnect()` by design, so auth-fail →
+  `disconnect()` → `resume()` opened a live socket against an object the
+  consumer believed was dead.
+- A camera field that is not an unsigned decimal no longer becomes a camera
+  number. `-1` arrived as camera `-1` and `+3` aliased onto camera 3, so a
+  consumer keying entities by camera number built one that cannot exist.
+- `CLASSIFY` decoding re-syncs after an unparseable confidence instead of
+  stepping by a fixed two. One bad number shifted the label/number phase for the
+  rest of the record, silently dropping every later pair and letting a number be
+  captured as a label.
+- The read buffer is now bounded by `max_record_bytes` rather than reaching
+  roughly twice it. The drop check runs after the chunk is appended, and a flat
+  64 KiB read against the 64 KiB default meant peak occupancy of ~128 KiB.
+- A non-2xx event-stream response is logged at warning level, with the REST
+  path's own "construct the client with `use_https=True`" hint on a redirect. A
+  wrong scheme was an infinite retry loop with nothing above debug to explain it.
+- Unknown-event-type log damping is per stream instead of process-global. Two
+  streams against two servers shared one set, so the second silently never
+  reported a type the first had logged.
+- Tuning that would have failed deep in the transport is rejected at
+  construction: `heartbeat_misses` and `max_record_bytes` must be integers (a
+  float reached `content.read(0.5)` and was swallowed into a forever-failing
+  retry loop), `backoff_multiplier` must be at least 1 (below 1 shrank the delay
+  into a busy-loop), and `backoff_initial` must not exceed `backoff_max`.
+- `validate_host` raises `TypeError` for a non-string host instead of
+  `AttributeError` from `.strip()`, and a non-numeric `timeout` raises `TypeError`
+  naming the parameter instead of one from inside `math`. Both slipped past
+  callers catching `(ValueError, TypeError)`.
+- `ClassificationPayload` wraps a directly-supplied mapping, so the read-only
+  view its annotation promises holds for a hand-built payload too. A value that
+  is not a mapping is left untouched, since the reducer's contract is to
+  tolerate one rather than raise.
+- An `ERROR` description is stripped whether or not the server led with a
+  numeric code, and a `FILE` path no longer keeps trailing whitespace — interior
+  spaces are still preserved.
 
 - `EpisodeReducer` no longer keeps an episode open for the duration of a forward
   clock skew. A record stamped ahead of the caller's clock used to pin the

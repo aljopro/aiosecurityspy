@@ -7,7 +7,8 @@ host is -- and how a credential-bearing URL gets built in a second place. This
 module is that single place (AD-13): credentials live here as a pre-encoded
 ``Authorization`` header value and never enter a URL.
 
-The module is internal. Nothing here is re-exported from the package.
+The module is internal: nothing here is re-exported from the package, and
+the settings object is named accordingly.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import aiohttp
 
 from .const import DEFAULT_PORT, DEFAULT_TIMEOUT
 
-__all__ = ["ConnectionSettings", "validate_credentials", "validate_host"]
+__all__ = ["_ConnectionSettings", "validate_credentials", "validate_host"]
 
 _MIN_PORT: Final = 1
 _MAX_PORT: Final = 65535
@@ -48,6 +49,7 @@ def validate_host(host: str) -> tuple[str, str]:
         The canonical host and the URL-safe host.
 
     Raises:
+        TypeError: ``host`` is not a string.
         ValueError: The host is empty, over-long, or contains any character
             outside ``[A-Za-z0-9._-]`` -- which is what rejects a scheme, port,
             userinfo, path or whitespace. This is a character allowlist, not the
@@ -56,7 +58,17 @@ def validate_host(host: str) -> tuple[str, str]:
             such as ``a..b`` still passes and simply fails to resolve).
 
     """
-    candidate = host.strip()
+    # Without this, a non-string host raises `AttributeError` from `.strip()`,
+    # which slips past every caller's `except (ValueError, TypeError)`. Type
+    # annotations do not constrain runtime callers such as a config flow.
+    # `object` first: the annotation says `str`, so a type checker would call
+    # the check unreachable -- but the callers this guards against are the
+    # untyped ones, such as a config flow reading user input.
+    supplied: object = host
+    if not isinstance(supplied, str):
+        msg = "host must be a string"
+        raise TypeError(msg)
+    candidate = supplied.strip()
     if candidate.startswith("[") and candidate.endswith("]"):
         candidate = candidate[1:-1]
     if candidate:
@@ -104,7 +116,7 @@ def validate_credentials(username: str, password: str) -> None:
 
 
 @dataclass(frozen=True, slots=True)
-class ConnectionSettings:
+class _ConnectionSettings:
     """Everything needed to address one SecuritySpy server, validated once.
 
     Frozen so a client and any stream it spawns cannot drift apart, and so the
@@ -138,7 +150,7 @@ class ConnectionSettings:
         use_https: bool = False,
         verify_ssl: bool = True,
         timeout: float = DEFAULT_TIMEOUT,
-    ) -> ConnectionSettings:
+    ) -> _ConnectionSettings:
         """Validate caller-supplied connection parameters and freeze them.
 
         Args:
@@ -158,7 +170,8 @@ class ConnectionSettings:
         Raises:
             ValueError: The host, port, timeout or credential is unusable. No
                 message quotes the offending value.
-            TypeError: ``port`` is not an integer.
+            TypeError: ``host`` is not a string, ``port`` is not an integer, or
+                ``timeout`` is not a real number.
 
         """
         canonical_host, url_host = validate_host(host)
@@ -173,6 +186,12 @@ class ConnectionSettings:
         if not _MIN_PORT <= port <= _MAX_PORT:
             msg = "port must be between 1 and 65535"
             raise ValueError(msg)
+        # Same reasoning as `port`: without this, `timeout="30"` from a config
+        # flow raises `TypeError: must be real number, not str` from inside
+        # `math`, naming neither the parameter nor the caller's mistake.
+        if isinstance(timeout, bool) or not isinstance(timeout, int | float):
+            msg = "timeout must be a number of seconds"
+            raise TypeError(msg)
         if not math.isfinite(timeout) or timeout <= 0:
             # aiohttp reads `total=0` as "no timeout", and `inf`/`nan` slip past
             # a bare `<= 0` check while leaving the request effectively
@@ -244,7 +263,7 @@ class ConnectionSettings:
     def __repr__(self) -> str:
         """Return a representation that cannot leak credentials."""
         return (
-            f"ConnectionSettings(host={self.host!r}, port={self.port}, "
+            f"_ConnectionSettings(host={self.host!r}, port={self.port}, "
             f"scheme={self.scheme!r}, verify_ssl={self.verify_ssl})"
         )
 

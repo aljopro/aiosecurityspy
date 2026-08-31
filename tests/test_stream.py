@@ -19,8 +19,9 @@ from typing import TYPE_CHECKING, Final, Self, cast
 import aiohttp
 import pytest
 
-from aiosecurityspy import SecuritySpyEventStream, StreamEvent
-from aiosecurityspy.connection import ConnectionSettings
+from aiosecurityspy import SecuritySpyClient, SecuritySpyEventStream, StreamEvent
+from aiosecurityspy.connection import _ConnectionSettings
+from aiosecurityspy.stream import _EVENT_QUEUE_MAXSIZE, EventCallback
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
@@ -119,14 +120,14 @@ class FakeSession:
 def make_stream(  # noqa: PLR0913 - one keyword per lifecycle callback, mirroring the API under test
     session: FakeSession,
     *,
-    on_event: Callable[[StreamEvent], None] | None = None,
+    on_event: EventCallback | None = None,
     on_connected: Callable[[], None] | None = None,
     on_disconnected: Callable[[], None] | None = None,
     on_reconnected: Callable[[], None] | None = None,
     on_auth_failed: Callable[[], None] | None = None,
     max_record_bytes: int = 64,
 ) -> SecuritySpyEventStream:
-    connection = ConnectionSettings.create(
+    connection = _ConnectionSettings.create(
         cast("aiohttp.ClientSession", session),
         HOST,
         PORT,
@@ -476,7 +477,7 @@ async def test_async_callbacks_are_awaited() -> None:
         seen.append("connected")
 
     session = FakeSession([FakeResponse(200, [MOTION_RECORD, SILENCE])])
-    connection = ConnectionSettings.create(
+    connection = _ConnectionSettings.create(
         cast("aiohttp.ClientSession", session),
         HOST,
         PORT,
@@ -547,7 +548,7 @@ async def test_the_credential_travels_as_basic_auth_never_in_the_url() -> None:
     assert headers["Authorization"] == aiohttp.encode_basic_auth(USERNAME, PASSWORD)
     assert PASSWORD not in repr(stream)
     assert PASSWORD not in repr(
-        ConnectionSettings.create(
+        _ConnectionSettings.create(
             cast("aiohttp.ClientSession", session),
             HOST,
             PORT,
@@ -569,7 +570,7 @@ async def test_the_credential_travels_as_basic_auth_never_in_the_url() -> None:
 )
 def test_non_positive_tuning_is_rejected_at_construction(kwargs: dict[str, float]) -> None:
     session = FakeSession([])
-    connection = ConnectionSettings.create(
+    connection = _ConnectionSettings.create(
         cast("aiohttp.ClientSession", session),
         HOST,
         PORT,
@@ -599,7 +600,7 @@ def make_tuned_stream(
     backoff_multiplier: float = 2.0,
 ) -> SecuritySpyEventStream:
     """Build a stream whose backoff sequence is deterministic and observable."""
-    connection = ConnectionSettings.create(
+    connection = _ConnectionSettings.create(
         cast("aiohttp.ClientSession", session),
         HOST,
         PORT,
@@ -736,7 +737,7 @@ async def test_a_slow_auth_handler_cannot_be_raced_into_a_second_reader() -> Non
         await release.wait()
 
     session = FakeSession([FakeResponse(401, []), FakeResponse(200, [SILENCE])])
-    connection = ConnectionSettings.create(
+    connection = _ConnectionSettings.create(
         cast("aiohttp.ClientSession", session),
         HOST,
         PORT,
@@ -826,7 +827,14 @@ async def test_a_pause_survives_disconnect() -> None:
 
 @pytest.mark.asyncio
 async def test_the_read_buffer_never_exceeds_the_configured_cap() -> None:
-    """The cap is a promise about memory, so the read size respects it too."""
+    """The cap is a promise about memory, so the read size respects it too.
+
+    One byte past the cap, not the cap exactly: the drop check runs after the
+    chunk is appended, so the read has to be able to *observe* the overrun. A
+    flat 64 KiB read against the 64 KiB default let occupancy reach twice the
+    documented bound, and a read of exactly the cap would drop a record whose
+    length is exactly the cap -- which the cap says is allowed.
+    """
     session = FakeSession([FakeResponse(200, [SILENCE])])
     stream = make_stream(session, max_record_bytes=128)
     reads: list[int] = []
@@ -843,7 +851,7 @@ async def test_the_read_buffer_never_exceeds_the_configured_cap() -> None:
         await until(lambda: len(reads) >= 1)
         await stream.disconnect()
 
-    assert reads[0] == 128  # noqa: PLR2004 - the configured cap, not the 64 KiB default
+    assert reads[0] == 129  # noqa: PLR2004 - the configured cap plus the detection byte
 
 
 @pytest.mark.parametrize(
@@ -857,7 +865,7 @@ async def test_the_read_buffer_never_exceeds_the_configured_cap() -> None:
 def test_non_finite_tuning_is_rejected_at_construction(kwargs: dict[str, float]) -> None:
     """NaN passes every `<= 0` check and then fails inside the event loop."""
     session = FakeSession([])
-    connection = ConnectionSettings.create(
+    connection = _ConnectionSettings.create(
         cast("aiohttp.ClientSession", session),
         HOST,
         PORT,
@@ -876,7 +884,7 @@ def test_non_finite_tuning_is_rejected_at_construction(kwargs: dict[str, float])
 @pytest.mark.parametrize("jitter", [1.0, -0.1, float("nan")])
 def test_an_out_of_range_jitter_fraction_is_rejected(jitter: float) -> None:
     session = FakeSession([])
-    connection = ConnectionSettings.create(
+    connection = _ConnectionSettings.create(
         cast("aiohttp.ClientSession", session),
         HOST,
         PORT,
@@ -893,7 +901,7 @@ def test_an_out_of_range_jitter_fraction_is_rejected(jitter: float) -> None:
 async def test_jitter_only_ever_shortens_a_delay() -> None:
     delays: list[float] = []
     session = FakeSession([aiohttp.ClientConnectionError("refused")])
-    connection = ConnectionSettings.create(
+    connection = _ConnectionSettings.create(
         cast("aiohttp.ClientSession", session),
         HOST,
         PORT,
@@ -923,7 +931,7 @@ async def test_jitter_only_ever_shortens_a_delay() -> None:
 def test_server_timezone_is_a_required_keyword_argument() -> None:
     """No default exists: omitting it is a runtime `TypeError`, not a wrong instant."""
     session = FakeSession([])
-    connection = ConnectionSettings.create(
+    connection = _ConnectionSettings.create(
         cast("aiohttp.ClientSession", session),
         HOST,
         PORT,
@@ -932,3 +940,254 @@ def test_server_timezone_is_a_required_keyword_argument() -> None:
     )
     with pytest.raises(TypeError):
         SecuritySpyEventStream(connection, on_event=lambda _event: None)  # type: ignore[call-arg]
+
+
+# -- review follow-up: lifecycle intent, backoff evidence, delivery isolation -
+
+
+@pytest.mark.asyncio
+async def test_connect_after_a_disconnect_issued_from_a_callback_restarts_the_stream() -> None:
+    """A "reconfigure and restart" handler must not leave the stream dead.
+
+    `disconnect()` from inside a callback cannot await the task it is
+    cancelling, so a following `connect()` used to see a still-running task and
+    silently start nothing -- reporting success on a permanently dead stream.
+    """
+    session = FakeSession([FakeResponse(200, [MOTION_RECORD, SILENCE])])
+    connects = 0
+    restarted = False
+
+    def on_connected() -> None:
+        nonlocal connects
+        connects += 1
+
+    async def on_event(_event: StreamEvent) -> None:
+        nonlocal restarted
+        if restarted:
+            return
+        restarted = True
+        await stream.disconnect()
+        await stream.connect()
+
+    stream = make_stream(
+        session,
+        on_event=on_event,
+        on_connected=on_connected,
+        on_reconnected=on_connected,
+    )
+
+    await stream.connect()
+    await until(lambda: connects >= BOTH_RECORDS)
+    await stream.disconnect()
+
+    assert len(session.calls) >= BOTH_RECORDS
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_resurrect_a_stream_the_consumer_disconnected() -> None:
+    """Clearing an authentication pause is not permission to reopen a socket."""
+    session = FakeSession([FakeResponse(401, [])])
+    failures = 0
+
+    def on_auth_failed() -> None:
+        nonlocal failures
+        failures += 1
+
+    stream = make_stream(session, on_auth_failed=on_auth_failed)
+    await stream.connect()
+    await until(lambda: failures == 1)
+    assert stream.paused is True
+
+    await stream.disconnect()
+    await stream.resume()
+    await asyncio.sleep(0)
+
+    # Read through locals: mypy narrows a property across awaits, so asserting
+    # on `stream.paused` again would be judged unreachable rather than checked.
+    paused_after_resume: bool = stream.paused
+    connected_after_resume: bool = stream.connected
+    assert paused_after_resume is False
+    assert connected_after_resume is False
+    assert len(session.calls) == 1
+
+
+def make_backoff_stream(session: FakeSession, **kwargs: object) -> SecuritySpyEventStream:
+    """Build a stream whose delay sequence is deterministic and can actually grow."""
+    connection = _ConnectionSettings.create(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    return SecuritySpyEventStream(
+        connection,
+        on_event=lambda _event: None,
+        heartbeat_interval=TICK,
+        backoff_initial=TICK,
+        backoff_max=TICK * 1000,
+        backoff_jitter=0.0,
+        server_timezone=UTC,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.asyncio
+async def test_headers_alone_do_not_reset_the_backoff() -> None:
+    """A server that answers 200 and closes the body must not be hammered.
+
+    `_connected` flips the instant headers arrive, so resetting the delay on
+    that alone turned an unhealthy server -- a proxy misconfiguration, or
+    SecuritySpy mid-restart -- into roughly one request per second, forever.
+    """
+    session = FakeSession([FakeResponse(200, [])])
+    stream = make_backoff_stream(session)
+    delays: list[float] = []
+
+    async def spy(seconds: float) -> None:
+        delays.append(seconds)
+        await asyncio.sleep(0)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(stream, "_sleep", spy)
+        await stream.connect()
+        await until(lambda: len(delays) >= 3)  # noqa: PLR2004 - enough to see growth
+        await stream.disconnect()
+
+    assert delays[1] > delays[0]
+    assert delays[2] > delays[1]
+
+
+@pytest.mark.asyncio
+async def test_a_record_resets_the_backoff() -> None:
+    """A connection that delivered data really did reach a healthy server."""
+    # A fresh response per attempt: one `FakeResponse` reused would have an
+    # exhausted body on every later attempt, which is the no-data case instead.
+    session = FakeSession([FakeResponse(200, [MOTION_RECORD]) for _ in range(4)])
+    stream = make_backoff_stream(session)
+    delays: list[float] = []
+
+    async def spy(seconds: float) -> None:
+        delays.append(seconds)
+        await asyncio.sleep(0)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(stream, "_sleep", spy)
+        await stream.connect()
+        await until(lambda: len(delays) >= 3)  # noqa: PLR2004 - enough to see the reset repeat
+        await stream.disconnect()
+
+    assert delays[0] == delays[1] == delays[2]
+
+
+@pytest.mark.asyncio
+async def test_a_hung_consumer_callback_does_not_wedge_the_reader() -> None:
+    """Delivery runs off the reader, so a handler that never returns is survivable.
+
+    Awaited inline, a handler that never completes left the reader parked
+    inside it forever: the heartbeat watchdog wraps the socket read, so it
+    never got another chance to fire, and the stream was silently dead with no
+    `disconnected` and no reconnection. (The watchdog is re-entered per read,
+    so handler time was never *charged* against the silence deadline -- the
+    defect was the wedge, not a false loss.)
+    """
+    session = FakeSession([FakeResponse(200, [MOTION_RECORD, SILENCE])])
+    entered = asyncio.Event()
+    losses = 0
+
+    def on_disconnected() -> None:
+        nonlocal losses
+        losses += 1
+
+    async def hangs(_event: StreamEvent) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    stream = make_stream(session, on_event=hangs, on_disconnected=on_disconnected)
+    await stream.connect()
+    await asyncio.wait_for(entered.wait(), PATIENCE)
+
+    # The handler is now parked forever. The reader must still notice the
+    # silent socket and keep reconnecting behind it.
+    await until(lambda: len(session.calls) >= BOTH_RECORDS)
+    await stream.disconnect()
+
+    assert losses == 0  # queued behind the hung handler, not lost
+
+
+@pytest.mark.asyncio
+async def test_a_full_queue_drops_events_rather_than_stalling_the_reader() -> None:
+    """Backpressure is a drop, not a stall: a stalled read is a lost connection."""
+    records = MOTION_RECORD * (_EVENT_QUEUE_MAXSIZE + 50)
+    session = FakeSession([FakeResponse(200, [records, SILENCE])])
+    hold = asyncio.Event()
+
+    async def blocked(_event: StreamEvent) -> None:
+        await hold.wait()
+
+    stream = make_stream(session, on_event=blocked)
+    await stream.connect()
+    await until(lambda: stream._dropped_events > 0)  # noqa: SLF001 - the drop counter is the behaviour under test
+    hold.set()
+    await stream.disconnect()
+
+    assert stream.connected is False
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"heartbeat_misses": 0.5}, TypeError),
+        ({"max_record_bytes": 1024.0}, TypeError),
+        ({"heartbeat_misses": True}, TypeError),
+        ({"backoff_multiplier": 0.5}, ValueError),
+        ({"backoff_initial": 600.0, "backoff_max": 60.0}, ValueError),
+    ],
+)
+def test_tuning_that_would_fail_deep_in_the_loop_is_rejected_at_construction(
+    kwargs: dict[str, object], expected: type[Exception]
+) -> None:
+    """Counts are integers, and the backoff must actually back off.
+
+    `max_record_bytes=1024.0` reached `content.read(1024.0)` and raised inside
+    aiohttp, swallowed into a forever-failing retry loop; `backoff_multiplier`
+    below 1 shrank the delay geometrically into a busy-loop.
+    """
+    session = FakeSession([])
+    connection = _ConnectionSettings.create(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    with pytest.raises(expected):
+        SecuritySpyEventStream(
+            connection,
+            on_event=lambda _event: None,
+            server_timezone=UTC,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+
+def test_the_client_forwards_stream_tuning() -> None:
+    """The sanctioned construction path must not be the one that loses features.
+
+    `event_stream()` is documented as the way to build a stream, so tuning it
+    could not reach meant reaching into the internal connection instead.
+    """
+    session = FakeSession([])
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    stream = client.event_stream(
+        on_event=lambda _event: None,
+        server_timezone=UTC,
+        heartbeat_interval=99.0,
+        heartbeat_misses=7,
+    )
+    assert stream._silence_timeout == 99.0 * 7  # noqa: SLF001 - the forwarded value has no public reader

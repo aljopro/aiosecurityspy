@@ -40,7 +40,7 @@ from aiosecurityspy import (
     SecuritySpyError,
     is_credential_key,
 )
-from aiosecurityspy.connection import ConnectionSettings
+from aiosecurityspy.connection import _ConnectionSettings
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -405,7 +405,7 @@ def test_no_url_the_library_builds_can_carry_a_credential() -> None:
     encoding, a redirect it follows -- is aiohttp's contract, not this one, and
     is exercised against a real socket in ``test_stream_transport.py``.
     """
-    connection = ConnectionSettings.create(
+    connection = _ConnectionSettings.create(
         cast("aiohttp.ClientSession", FakeServer()),
         HOST,
         PORT,
