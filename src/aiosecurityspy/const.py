@@ -385,10 +385,17 @@ CLASS_ANIMAL: Final = "animal"
 # reducer takes every one of them as an injected, per-camera-per-class value
 # (AD-3, FR-8) and bakes none of them in.
 #
-# [ASSUMPTION] All three are provisional (PRD Open Q5). No measurement in the
-# protocol research establishes them; they are starting points chosen to be
-# defensible, not values verified against a real installation. Treat a consumer
-# that needs different behaviour as expected, not as a misconfiguration.
+# [ASSUMPTION] All three are provisional (PRD Open Q5). They were starting points
+# chosen to be defensible, not values verified against a real installation. Treat a
+# consumer that needs different behaviour as expected, not as a misconfiguration.
+#
+# First live evidence (2026-08-30) reduced 690 real signals into 2 episodes at 172.5:1,
+# confirming the reduction itself, and found that the *gap* is the parameter that
+# decides episode boundaries: threshold and debounce were inert across their plausible
+# ranges, while silences of 24 s were measured *inside* a single continuous presence --
+# only 6 s under this 30 s default. A longer gap is likely warranted. The measurement
+# is one 90 s capture of one subject on two interior cameras, which is why these are
+# still marked [ASSUMPTION] rather than retuned.
 
 #: Minimum confidence percentage a `CLASSIFY` signal must carry to count
 #: towards opening an episode. **[ASSUMPTION]**, see above.
