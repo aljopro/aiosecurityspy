@@ -16,8 +16,12 @@ from urllib.parse import quote
 
 import aiohttp
 
-from .connection import ConnectionSettings
+from .connection import _ConnectionSettings
 from .const import (
+    BACKOFF_INITIAL,
+    BACKOFF_JITTER,
+    BACKOFF_MAX,
+    BACKOFF_MULTIPLIER,
     CAPTURE_FILE_BANDWIDTH_STANDARD,
     CAPTURE_FILTER_ALL,
     CAPTURE_FILTERS,
@@ -29,11 +33,14 @@ from .const import (
     ENDPOINT_SET_SCHEDULE,
     ENDPOINT_SETTINGS_CAMERAS,
     ENDPOINT_SYSTEM_INFO,
+    HEARTBEAT_INTERVAL,
+    HEARTBEAT_MISSES_BEFORE_LOSS,
     PERM_FILES,
     PERM_SCHED,
     PERM_SETTINGS,
     PERMISSION_NAMES,
     SETTINGS_FORM_SENTINEL,
+    STREAM_MAX_RECORD_BYTES,
     capture_filter_for_class,
 )
 from .exceptions import (
@@ -452,7 +459,7 @@ class SecuritySpyClient:
         # Validation, URL construction and credential handling live in
         # `connection.py` so the event stream shares exactly one definition of
         # them rather than re-deriving transport state (AD-13).
-        self._connection = ConnectionSettings.create(
+        self._connection = _ConnectionSettings.create(
             session,
             host,
             port,
@@ -487,6 +494,13 @@ class SecuritySpyClient:
         on_reconnected: LifecycleCallback | None = None,
         on_auth_failed: LifecycleCallback | None = None,
         server_timezone: tzinfo,
+        heartbeat_interval: float = HEARTBEAT_INTERVAL,
+        heartbeat_misses: int = HEARTBEAT_MISSES_BEFORE_LOSS,
+        backoff_initial: float = BACKOFF_INITIAL,
+        backoff_max: float = BACKOFF_MAX,
+        backoff_multiplier: float = BACKOFF_MULTIPLIER,
+        backoff_jitter: float = BACKOFF_JITTER,
+        max_record_bytes: int = STREAM_MAX_RECORD_BYTES,
     ) -> SecuritySpyEventStream:
         """Create an event-stream reader bound to this client's server.
 
@@ -507,6 +521,16 @@ class SecuritySpyClient:
                 ``systemInfo.server`` publishes this as ``seconds-from-gmt``
                 (see :attr:`ServerInfo.utc_offset`); there is no correct
                 default, so it must be supplied.
+            heartbeat_interval: Expected seconds between ``NULL`` heartbeats.
+            heartbeat_misses: Heartbeats missed before the connection is
+                declared lost.
+            backoff_initial: First reconnect delay, in seconds.
+            backoff_max: Ceiling on the reconnect delay, in seconds.
+            backoff_multiplier: Growth factor after each consecutive failure.
+            backoff_jitter: Fraction of the delay removed at random, in
+                ``[0, 1)``.
+            max_record_bytes: Cap on one unterminated record before the read
+                buffer is dropped.
 
         Returns:
             A stopped :class:`~aiosecurityspy.SecuritySpyEventStream`.
@@ -520,6 +544,13 @@ class SecuritySpyClient:
             on_reconnected=on_reconnected,
             on_auth_failed=on_auth_failed,
             server_timezone=server_timezone,
+            heartbeat_interval=heartbeat_interval,
+            heartbeat_misses=heartbeat_misses,
+            backoff_initial=backoff_initial,
+            backoff_max=backoff_max,
+            backoff_multiplier=backoff_multiplier,
+            backoff_jitter=backoff_jitter,
+            max_record_bytes=max_record_bytes,
         )
 
     def __repr__(self) -> str:
@@ -645,6 +676,21 @@ class SecuritySpyClient:
         withdrawn are indistinguishable here, by design (research gap G8,
         FR-16a): both are simply absent from ``++systemInfo`` and so absent
         from the result.
+
+        **Visibility requires live video.** ``++systemInfo`` scopes its
+        inventory to :data:`~aiosecurityspy.PERM_LIVEVIDEO` specifically, not
+        to "holds any permission" -- verified on 6.21 against an account given a
+        different single permission on each of eleven cameras: only the three
+        granted live video appeared. A camera the account may pan, trigger,
+        configure, download captures from or speak through is **absent** unless
+        live video is also granted.
+
+        This is the server's rule, and this library reports it rather than
+        working around it: an account without live video on a camera does not
+        see that camera. A consumer building per-camera entities should
+        therefore treat live video as the prerequisite permission and document
+        it as such -- a least-privileged account is still viable, but it must
+        include live video on every camera it is expected to manage.
 
         Raises:
             SecuritySpyConnectError: Either read failed at the transport

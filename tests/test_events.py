@@ -23,11 +23,9 @@ from aiosecurityspy import (
     MotionPayload,
     TriggerPayload,
     decode_trigger_reasons,
+    events,
     parse_event_line,
 )
-
-# The log damper's bound is only assertable from inside the module that owns it.
-from aiosecurityspy.events import _MAX_REPORTED_TYPES, _REPORTED_UNKNOWN_TYPES
 
 if TYPE_CHECKING:
     from aiosecurityspy import StreamEvent
@@ -464,9 +462,84 @@ def test_a_timestamp_at_the_edge_of_the_calendar_does_not_raise() -> None:
     assert early.timestamp is None
 
 
-def test_the_unknown_type_log_damper_is_bounded() -> None:
-    """A process-global set fed from the wire must not grow without bound."""
-    for index in range(_MAX_REPORTED_TYPES * 4):
+def test_parsing_holds_no_process_global_state() -> None:
+    """The parser is pure: log damping belongs to the stream that owns the socket.
+
+    A module-global damping set made two streams interfere -- the second
+    server's unknown types were silently never reported because the first had
+    already seen them -- and made this suite order-dependent.
+    """
+    assert not [name for name in vars(events) if name.startswith("_REPORTED")]
+    for index in range(256):
         event = parse_event_line(f"20260809175335 0 7 SYNTHETIC_TYPE_{index}", server_timezone=UTC)
         assert event is not None
-    assert len(_REPORTED_UNKNOWN_TYPES) <= _MAX_REPORTED_TYPES
+        assert event.event_type == f"SYNTHETIC_TYPE_{index}"
+
+
+# -- review follow-up: camera decoding, stride re-sync, whitespace ------------
+
+
+@pytest.mark.parametrize("field", ["-1", "+3", "abc", "7.0", "\N{ARABIC-INDIC DIGIT SEVEN}"])
+def test_a_camera_field_that_is_not_an_unsigned_number_carries_no_camera(field: str) -> None:
+    """`-1` is not a camera, and `+3` must not alias onto camera 3.
+
+    `_parse_int` accepts a leading sign, so these arrived as real camera IDs and
+    a consumer keying entities by camera number built one that cannot exist.
+    """
+    event = parse_event_line(f"20260809175335 0 {field} MOTION 1 2 3 4", server_timezone=UTC)
+    assert event is not None
+    assert event.camera is None
+    assert event.raw_camera == field
+
+
+def test_raw_camera_tells_not_camera_specific_apart_from_unparseable() -> None:
+    """`camera is None` alone conflated a heartbeat with a mis-framed record."""
+    heartbeat = parse_event_line("20260809175335 3 X NULL", server_timezone=UTC)
+    garbled = parse_event_line("20260809175335 3 ?? NULL", server_timezone=UTC)
+    assert heartbeat is not None
+    assert garbled is not None
+    assert heartbeat.camera is garbled.camera is None
+    assert heartbeat.raw_camera == "X"
+    assert garbled.raw_camera == "??"
+
+
+def test_classification_resyncs_after_an_unparseable_confidence() -> None:
+    """A fixed stride of two shifted every later pair, silently losing them."""
+    event = parse_event_line(
+        "20260809175335 0 7 CLASSIFY HUMAN 88 VEHICLE bad ANIMAL 70", server_timezone=UTC
+    )
+    assert event is not None
+    assert isinstance(event.payload, ClassificationPayload)
+    assert dict(event.payload.classes) == {"HUMAN": 88.0, "ANIMAL": 70.0}
+
+
+def test_an_error_description_is_stripped_with_or_without_a_code() -> None:
+    """Whitespace must not depend on whether the server led with a code."""
+    with_code = parse_event_line("20260809175335 0 7 ERROR 42 disk full  ", server_timezone=UTC)
+    without = parse_event_line("20260809175335 0 7 ERROR disk full  ", server_timezone=UTC)
+    assert with_code is not None
+    assert without is not None
+    assert isinstance(with_code.payload, ErrorPayload)
+    assert isinstance(without.payload, ErrorPayload)
+    assert with_code.payload.description == "disk full"
+    assert without.payload.description == "disk full"
+
+
+def test_a_file_path_keeps_its_interior_spaces_but_not_its_tail() -> None:
+    """A padded record yielded a path nothing could stat."""
+    event = parse_event_line(
+        "20260809175335 0 7 FILE /Volumes/Cam A/2026-08-09/x.m4v   ", server_timezone=UTC
+    )
+    assert event is not None
+    assert isinstance(event.payload, FilePayload)
+    assert event.payload.path == "/Volumes/Cam A/2026-08-09/x.m4v"
+
+
+def test_a_directly_constructed_classification_payload_is_read_only() -> None:
+    """The `Mapping` annotation did not stop a caller keeping a live dict."""
+    source = {"HUMAN": 90.0}
+    payload = ClassificationPayload(classes=source)
+    source["HUMAN"] = 1.0
+    assert payload.classes["HUMAN"] == 90.0  # noqa: PLR2004 - the value it was constructed with
+    with pytest.raises(TypeError):
+        payload.classes["VEHICLE"] = 5.0  # type: ignore[index]

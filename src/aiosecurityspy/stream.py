@@ -20,6 +20,7 @@ import inspect
 import logging
 import math
 import random
+from enum import Enum
 from typing import TYPE_CHECKING, Final
 
 import aiohttp
@@ -41,7 +42,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from datetime import tzinfo
 
-    from .connection import ConnectionSettings
+    from .connection import _ConnectionSettings
     from .events import StreamEvent
 
 __all__ = ["EventCallback", "LifecycleCallback", "SecuritySpyEventStream"]
@@ -53,6 +54,11 @@ _HTTP_FORBIDDEN: Final = 403
 _HTTP_OK_MIN: Final = 200
 _HTTP_OK_MAX: Final = 299
 
+#: Redirect statuses SecuritySpy answers with when the request used the wrong
+#: scheme. Not followed -- see `allow_redirects` below -- but worth naming in a
+#: log line, because the alternative is a silent retry loop.
+_HTTP_REDIRECTS: Final = frozenset({301, 302, 307, 308})
+
 #: Record separator. CR (0x0D) **only** -- the stream contains zero LF bytes
 #: (research §3.1), which is why this module frames records itself: any
 #: line-oriented reader waiting on an LF would simply never return.
@@ -62,12 +68,42 @@ _RECORD_SEPARATOR: Final = b"\r"
 #: arrived, which is exactly the incremental behaviour a live stream needs.
 _READ_CHUNK_BYTES: Final = 64 * 1024
 
+#: Events buffered between the reader and the consumer's callback. Deep enough
+#: to absorb a `CLASSIFY` burst (191 records in 95 s, §3.5) while a handler does
+#: real work; bounded because an unbounded queue in front of a stalled consumer
+#: is a memory leak that hides the stall. When it fills, the oldest event is
+#: dropped: keeping the socket drained preserves liveness, and the newest events
+#: are the ones a consumer reconciling state actually needs.
+_EVENT_QUEUE_MAXSIZE: Final = 512
+
+#: Ceiling on a stream's set of already-reported unknown event types. The
+#: vocabulary of §3.3 is a couple of dozen entries, so anything approaching this
+#: is a mis-framed or hostile stream inventing type names -- which must not be
+#: able to grow a set without bound. Cleared wholesale when full: this is log
+#: damping, not a correctness record, so re-reporting after a reset is harmless.
+_MAX_REPORTED_TYPES: Final = 64
+
 #: Callback invoked with each decoded event.
 type EventCallback = Callable[[StreamEvent], Awaitable[None] | None]
 
 #: Callback invoked for a lifecycle transition. It takes no arguments so a
 #: consumer cannot come to depend on transport details leaking through it.
 type LifecycleCallback = Callable[[], Awaitable[None] | None]
+
+
+class _Signal(Enum):
+    """A lifecycle transition, queued alongside events so ordering survives.
+
+    Lifecycle callbacks share the delivery queue rather than running on the
+    reader: otherwise `disconnected` would overtake events still waiting to be
+    delivered, and a consumer reconciling state would see the gap announced
+    before the records that preceded it.
+    """
+
+    CONNECTED = "connected"
+    RECONNECTED = "reconnected"
+    DISCONNECTED = "disconnected"
+    AUTH_FAILED = "auth_failed"
 
 
 class _AuthFailureError(Exception):
@@ -99,7 +135,7 @@ class SecuritySpyEventStream:
 
     def __init__(  # noqa: PLR0913 - four independent lifecycle callbacks plus tuning; all keyword-only
         self,
-        connection: ConnectionSettings,
+        connection: _ConnectionSettings,
         *,
         on_event: EventCallback,
         on_connected: LifecycleCallback | None = None,
@@ -145,10 +181,15 @@ class SecuritySpyEventStream:
                 buffer is dropped.
 
         Raises:
-            ValueError: A tuning value is not a positive, finite number, or
-                the jitter fraction is outside ``[0, 1)``. These are caller
-                mistakes and surface immediately rather than as a stream that
-                silently never reconnects.
+            TypeError: ``heartbeat_misses`` or ``max_record_bytes`` is not an
+                integer. Both are counts, and a float reaches aiohttp as
+                ``content.read(0.5)`` -- failing deep in the transport rather
+                than here, at the caller's mistake.
+            ValueError: A tuning value is not a positive, finite number, the
+                jitter fraction is outside ``[0, 1)``, the backoff multiplier
+                is below 1, or the initial delay exceeds the ceiling. These are
+                caller mistakes and surface immediately rather than as a stream
+                that silently never reconnects.
 
         """
         for label, value in (
@@ -165,8 +206,29 @@ class SecuritySpyEventStream:
             if not math.isfinite(value) or value <= 0:
                 msg = f"{label} must be a positive, finite number"
                 raise ValueError(msg)
+        # Counts, not measurements. `isinstance(True, int)` is True, and a
+        # `bool` here is always a mistake. Same reasoning as the port check in
+        # `connection.py`: annotations do not constrain runtime callers.
+        for label, count in (
+            ("heartbeat_misses", heartbeat_misses),
+            ("max_record_bytes", max_record_bytes),
+        ):
+            if isinstance(count, bool) or not isinstance(count, int):
+                msg = f"{label} must be an integer"
+                raise TypeError(msg)
         if not math.isfinite(backoff_jitter) or not 0 <= backoff_jitter < 1:
             msg = "backoff_jitter must be a finite fraction in [0, 1)"
+            raise ValueError(msg)
+        # A multiplier below 1 shrinks the delay geometrically, turning backoff
+        # into a retry busy-loop against a server that is already unwell.
+        if backoff_multiplier < 1:
+            msg = "backoff_multiplier must be at least 1"
+            raise ValueError(msg)
+        # Otherwise every delay -- including the one after each successful
+        # connection, which is reset to `backoff_initial` unclamped -- exceeds
+        # the ceiling this object documents.
+        if backoff_initial > backoff_max:
+            msg = "backoff_initial must not exceed backoff_max"
             raise ValueError(msg)
 
         self._connection = connection
@@ -184,6 +246,12 @@ class SecuritySpyEventStream:
         self._max_record_bytes = max_record_bytes
 
         self._task: asyncio.Task[None] | None = None
+        # Delivery runs on its own task, fed by a bounded queue, so a slow or
+        # hung consumer callback can never stall the socket read -- which would
+        # otherwise burn the heartbeat deadline and be declared a lost
+        # connection, or wedge the reader with no `disconnected` at all.
+        self._queue: asyncio.Queue[StreamEvent | _Signal] | None = None
+        self._delivery_task: asyncio.Task[None] | None = None
         # An Event rather than a bool because the reader checks it after every
         # await, and a plain attribute would let a type checker assume it
         # cannot have changed across those suspension points.
@@ -191,6 +259,24 @@ class SecuritySpyEventStream:
         self._connected = False
         self._ever_connected = False
         self._paused = False
+        # The consumer's intent, as distinct from what is running right now.
+        # `disconnect()` called from inside a callback cannot await the tasks it
+        # is cancelling, so "should there be a reader?" has to be recorded
+        # rather than inferred from a task that has not finished unwinding.
+        self._desired_running = False
+        self._restart_pending = False
+        # Whether the current attempt has delivered a record. Headers alone do
+        # not prove the stream works, and the backoff reset depends on it.
+        self._received_data = False
+        # Events discarded because the consumer could not keep up, reported in
+        # batches rather than once per drop.
+        self._dropped_events = 0
+        # Event types already reported as carrying no decoded payload, so the
+        # debug log fires once per type rather than once per record: `CLASSIFY`
+        # alone can be 191 records in 95 s (§3.5). Per stream rather than
+        # per process, so a second server's types are not silently swallowed
+        # because the first already logged them.
+        self._reported_unknown_types: set[str] = set()
         # Serializes connect/disconnect/resume. Without it two coroutines can
         # interleave between the "is a reader running?" check and the
         # create_task that answers it, leaving a live reader behind a
@@ -219,7 +305,8 @@ class SecuritySpyEventStream:
         Declines while the stream is paused by an authentication failure: only
         :meth:`resume` reopens that door, so a consumer cannot accidentally
         restart a rejected credential through the ordinary entry point
-        (AD-18).
+        (AD-18). A ``connect()`` that races a pause still resolves to paused --
+        the pause is the newer information -- and :attr:`paused` reports it.
         """
         async with self._lifecycle_lock:
             if self._paused:
@@ -248,28 +335,36 @@ class SecuritySpyEventStream:
         later ``connect()`` walk straight back into it.
         """
         async with self._lifecycle_lock:
+            self._desired_running = False
             self._stopping.set()
-            task = self._task
-            if task is None:
-                self._connected = False
-                return
-            if not task.done():
-                task.cancel()
-            if task is asyncio.current_task():
-                # Called from a consumer callback, so this *is* the reader.
-                # Awaiting it would deadlock, and suppressing the resulting
-                # CancelledError would leave the reader alive -- after which a
-                # later connect() would start a second one. Let the cancellation
-                # unwind naturally instead, and leave `_task` in place so
-                # connect() can see it is not finished yet.
-                self._connected = False
-                return
-            # Awaiting is what makes "no task remains" true rather than merely
-            # requested: cancel() only schedules the cancellation.
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-            self._task = None
             self._connected = False
+            current = asyncio.current_task()
+            # Both tasks are cancelled before either is awaited, so a delivery
+            # task blocked on a consumer callback cannot hold up the reader's
+            # teardown.
+            for task in (self._task, self._delivery_task):
+                if task is not None and not task.done():
+                    task.cancel()
+            if current in (self._task, self._delivery_task):
+                # Called from a consumer callback, which runs on the delivery
+                # task. Awaiting *either* task from here deadlocks: a task
+                # cannot await itself, and the reader's own teardown awaits the
+                # delivery task this callback is running on. The cancellations
+                # are left to unwind as the callback returns, and
+                # `_desired_running` above is what makes a later connect()
+                # correct anyway -- it no longer has to infer intent from a task
+                # that has not finished.
+                return
+            for attr in ("_task", "_delivery_task"):
+                task = getattr(self, attr)
+                if task is None:
+                    continue
+                # Awaiting is what makes "no task remains" true rather than
+                # merely requested: cancel() only schedules the cancellation.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                setattr(self, attr, None)
+            self._queue = None
 
     async def resume(self) -> None:
         """Resume reconnection after an authentication failure paused it.
@@ -282,6 +377,12 @@ class SecuritySpyEventStream:
             if not self._paused:
                 return
             self._paused = False
+            if not self._desired_running:
+                # Paused *and* disconnected: the consumer shut this stream down,
+                # and clearing the pause must not resurrect it behind their back.
+                # A `connect()` is how a disconnected stream comes back.
+                _LOGGER.debug("Cleared the authentication pause on a disconnected stream")
+                return
             # A pause is only ever set on the reader's way out, so the task
             # still referenced here is already terminating -- it may just be
             # part-way through a slow `on_auth_failed` handler. Waiting for it
@@ -296,24 +397,78 @@ class SecuritySpyEventStream:
             self._start()
 
     def _start(self) -> None:
-        """Create the reader task if one is not already running.
+        """Record that a reader is wanted, and create one if none is running.
 
         Called only with the lifecycle lock held. `_task` is never cleared by
-        the reader itself, so a finished task is still visible here and the
-        "is one running?" question is answered by `done()` alone.
+        the reader itself, so a finished task is still visible here.
+
+        A task that is *still running but on its way out* -- a `disconnect()`
+        issued from inside a consumer callback, which could not await itself --
+        cannot simply be treated as "already running": doing so made
+        `connect()` a silent no-op that left the stream permanently dead. The
+        restart is deferred to that task's completion instead, and
+        `_desired_running` is what the deferred restart consults.
         """
+        self._desired_running = True
         task = self._task
         if task is not None and not task.done():
-            # Includes the re-entrant case, where a consumer callback calls
-            # connect() on the very task it is running on.
+            if self._stopping.is_set() and not self._restart_pending:
+                self._restart_pending = True
+                task.add_done_callback(self._restart_if_wanted)
+            return
+        self._stopping.clear()
+        self._task = asyncio.create_task(self._run(), name="aiosecurityspy-event-stream")
+
+    def _restart_if_wanted(self, task: asyncio.Task[None]) -> None:
+        """Start a fresh reader once an outgoing one has finished unwinding.
+
+        Runs as a task callback, without the lifecycle lock -- which is why it
+        re-reads the intent rather than capturing it: a `disconnect()` or an
+        authentication pause arriving in the meantime is the newer decision and
+        must win.
+        """
+        self._restart_pending = False
+        if self._task is task:
+            self._task = None
+        if not self._desired_running or self._paused:
             return
         self._stopping.clear()
         self._task = asyncio.create_task(self._run(), name="aiosecurityspy-event-stream")
 
     async def _run(self) -> None:
         """Own the connect/read/backoff cycle for the object's whole life."""
+        queue: asyncio.Queue[StreamEvent | _Signal] = asyncio.Queue(maxsize=_EVENT_QUEUE_MAXSIZE)
+        self._queue = queue
+        self._delivery_task = asyncio.create_task(
+            self._deliver_forever(queue), name="aiosecurityspy-event-delivery"
+        )
+        try:
+            await self._reconnect_forever()
+        finally:
+            delivery = self._delivery_task
+            self._delivery_task = None
+            self._queue = None
+            if delivery is not asyncio.current_task():
+                if not self._stopping.is_set():
+                    # The reader stopped of its own accord -- an authentication
+                    # pause -- so what is still queued is owed to the consumer,
+                    # `auth_failed` included. A `disconnect()` is the other
+                    # case: the consumer asked to stop and is not waiting on a
+                    # backlog, and awaiting here would re-raise its cancellation.
+                    with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                        async with asyncio.timeout(self._silence_timeout):
+                            await queue.join()
+                delivery.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await delivery
+
+    async def _reconnect_forever(self) -> None:
+        """Connect, read, back off, repeat, until the consumer stops it."""
         delay = self._backoff_initial
         while not self._stopping.is_set():
+            # Reset per attempt: only a connection that actually produced a
+            # record proves the server is healthy enough to reset the backoff.
+            self._received_data = False
             try:
                 await self._read_stream()
             except asyncio.CancelledError:
@@ -326,21 +481,26 @@ class SecuritySpyEventStream:
                 # a slow async handler must still find something to await
                 # rather than starting a second reader.
                 self._paused = True
-                await self._invoke(self._on_auth_failed)
+                self._offer(_Signal.AUTH_FAILED)
                 return
             except Exception as err:  # noqa: BLE001 - a long-lived reader must survive anything the transport raises
                 _LOGGER.debug("Event stream attempt failed: %s", type(err).__name__)
             else:
                 # A stream that ends without error is still a lost connection.
                 _LOGGER.debug("Event stream ended")
-            # Read before `_mark_disconnected` clears it. Backoff exists to
-            # space out *consecutive* failures; a connection that worked and
-            # then dropped proves the server is reachable, so the next attempt
-            # starts from the initial delay again. Without this reset, a server
-            # that drops the stream every few minutes climbs to the ceiling and
-            # never comes back down.
-            reached_the_server = self._connected
-            await self._mark_disconnected()
+            # Backoff exists to space out *consecutive* failures; a connection
+            # that worked and then dropped proves the server is reachable, so
+            # the next attempt starts from the initial delay again. Without this
+            # reset, a server that drops the stream every few minutes climbs to
+            # the ceiling and never comes back down.
+            #
+            # "Worked" means it delivered a record, not merely that headers
+            # arrived: a server answering 200 and immediately closing the body
+            # -- a proxy misconfiguration, or SecuritySpy mid-restart -- would
+            # otherwise reset the delay on every cycle and be hammered at
+            # roughly one request per second, forever.
+            reached_the_server = self._received_data
+            self._mark_disconnected()
             if self._stopping.is_set():
                 return
             if reached_the_server:
@@ -393,11 +553,22 @@ class SecuritySpyEventStream:
             if response.status in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
                 raise _AuthFailureError
             if not _HTTP_OK_MIN <= response.status <= _HTTP_OK_MAX:
+                if response.status in _HTTP_REDIRECTS:
+                    # The REST path already diagnoses this; without the same
+                    # message here a wrong scheme is an infinite silent retry
+                    # with nothing above debug level to explain it.
+                    _LOGGER.warning(
+                        "Event stream was redirected (HTTP %s) and will keep retrying; "
+                        "if the server uses TLS, construct the client with use_https=True",
+                        response.status,
+                    )
+                else:
+                    _LOGGER.warning("Event stream returned HTTP %s; retrying", response.status)
                 msg = f"event stream returned HTTP {response.status}"
                 raise aiohttp.ClientResponseError(
                     response.request_info, response.history, status=response.status, message=msg
                 )
-            await self._mark_connected()
+            self._mark_connected()
             await self._consume(response.content)
 
     async def _consume(self, content: aiohttp.StreamReader) -> None:
@@ -414,10 +585,12 @@ class SecuritySpyEventStream:
         # Resuming at an arbitrary byte would emit that tail as if it were a
         # whole record, so everything up to the next separator is discarded.
         resyncing = False
-        # Never ask for more than the cap in one go, so a single read cannot
-        # carry the buffer far past the size the cap promises.
-        read_size = min(_READ_CHUNK_BYTES, self._max_record_bytes)
         while True:
+            # Ask only for what the cap still allows, rather than a flat chunk:
+            # the drop check runs after the append, so a fixed 64 KiB read on a
+            # 64 KiB cap let occupancy reach twice the documented bound. One
+            # byte past the cap is enough to detect the overrun.
+            read_size = max(1, min(_READ_CHUNK_BYTES, self._max_record_bytes + 1 - len(buffer)))
             # The watchdog is a deadline on each read rather than a timer
             # counting NULL records: three missed heartbeats' worth of total
             # socket silence is the loss condition (AD-11).
@@ -438,7 +611,7 @@ class SecuritySpyEventStream:
                     _LOGGER.debug("Discarding %d bytes of an over-long record", len(record))
                     resyncing = False
                     continue
-                await self._deliver(record)
+                self._deliver(record)
             if len(buffer) > self._max_record_bytes:
                 # No separator in sight and the partial record is past the cap:
                 # this is not the event stream. Drop it rather than growing
@@ -448,8 +621,12 @@ class SecuritySpyEventStream:
                 buffer.clear()
                 resyncing = True
 
-    async def _deliver(self, record: bytes) -> None:
-        """Decode one framed record and hand it to the consumer."""
+    def _deliver(self, record: bytes) -> None:
+        """Decode one framed record and queue it for the consumer.
+
+        Deliberately synchronous: the reader must return to `content.read`
+        without awaiting anything the consumer controls.
+        """
         # `errors="replace"`: a camera named with a mangled byte must not end a
         # stream that is otherwise healthy. A stray LF is stripped defensively
         # -- the research says there are none, but a future server build adding
@@ -460,23 +637,85 @@ class SecuritySpyEventStream:
         event = parse_event_line(text, server_timezone=self._server_timezone)
         if event is None:
             return
-        await self._invoke_event(event)
+        # Any complete record proves the stream is live, which is what the
+        # backoff reset turns on.
+        self._received_data = True
+        if event.payload is None and event.event_type not in self._reported_unknown_types:
+            if len(self._reported_unknown_types) >= _MAX_REPORTED_TYPES:
+                self._reported_unknown_types.clear()
+            self._reported_unknown_types.add(event.event_type)
+            _LOGGER.debug("Event type %s carries no decoded payload", event.event_type)
+        self._offer(event)
 
-    async def _mark_connected(self) -> None:
+    def _offer(self, item: StreamEvent | _Signal) -> None:
+        """Queue one item for delivery, dropping the oldest if the queue is full.
+
+        The reader never blocks here. A consumer that cannot keep up loses the
+        oldest events rather than stalling the socket -- a stalled read burns
+        the heartbeat deadline and is declared a lost connection, which costs
+        the consumer far more than the records it fell behind on.
+        """
+        queue = self._queue
+        if queue is None:
+            return
+        while True:
+            try:
+                queue.put_nowait(item)
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:  # pragma: no cover - drained concurrently
+                    continue
+                queue.task_done()
+                self._dropped_events += 1
+                if self._dropped_events % _EVENT_QUEUE_MAXSIZE == 1:
+                    _LOGGER.warning(
+                        "Event consumer is not keeping up; %d event(s) dropped so far",
+                        self._dropped_events,
+                    )
+            else:
+                return
+
+    async def _deliver_forever(self, queue: asyncio.Queue[StreamEvent | _Signal]) -> None:
+        """Hand queued items to the consumer, one at a time, in order.
+
+        Runs on its own task for the reader's whole life, so the time a handler
+        takes is charged to this task and never to the socket read.
+        """
+        while True:
+            item = await queue.get()
+            try:
+                if isinstance(item, _Signal):
+                    await self._invoke(self._callback_for(item))
+                else:
+                    await self._invoke_event(item)
+            finally:
+                queue.task_done()
+
+    def _callback_for(self, signal: _Signal) -> LifecycleCallback | None:
+        """Return the consumer callback a lifecycle signal maps to."""
+        return {
+            _Signal.CONNECTED: self._on_connected,
+            _Signal.RECONNECTED: self._on_reconnected,
+            _Signal.DISCONNECTED: self._on_disconnected,
+            _Signal.AUTH_FAILED: self._on_auth_failed,
+        }[signal]
+
+    def _mark_connected(self) -> None:
         """Record a live connection and fire ``connected`` or ``reconnected``."""
         self._connected = True
         if self._ever_connected:
-            await self._invoke(self._on_reconnected)
+            self._offer(_Signal.RECONNECTED)
         else:
             self._ever_connected = True
-            await self._invoke(self._on_connected)
+            self._offer(_Signal.CONNECTED)
 
-    async def _mark_disconnected(self) -> None:
+    def _mark_disconnected(self) -> None:
         """Fire ``disconnected`` exactly once per lost connection."""
         if not self._connected:
             return
         self._connected = False
-        await self._invoke(self._on_disconnected)
+        self._offer(_Signal.DISCONNECTED)
 
     async def _invoke(self, callback: LifecycleCallback | None) -> None:
         """Call a lifecycle callback, tolerating both sync and async handlers."""

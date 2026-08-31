@@ -38,6 +38,7 @@ import pytest_asyncio
 
 import live_env
 from aiosecurityspy import (
+    ARM_OVERRIDE_ARMED_1_HOUR,
     ARM_OVERRIDE_UNCHANGED,
     PERM_CAMCONTROL,
     PERM_SCHED,
@@ -130,6 +131,10 @@ async def test_live_permission_masks_decode_and_are_reported(
     for camera in info.cameras.values():
         names = sorted(camera.permission_names)
         _report(f"  {role} camera {camera.number}: mask={camera.permissions} -> {names}")
+        # Live video is the visibility predicate, not merely a common grant --
+        # see `test_live_inventory_is_scoped_to_live_video` for the measurement
+        # and DW-5 for the decision that the library reports this rather than
+        # working around it.
         assert camera.has_permission("live_video"), (
             f"{role} camera {camera.number} is in the inventory without live_video"
         )
@@ -150,6 +155,41 @@ async def test_live_unnamed_bit_1_is_still_set_on_live_cameras(
     with_bit = [n for n, c in info.cameras.items() if c.permissions & UNNAMED_BIT_1]
     _report(f"  bit 1 set on {len(with_bit)}/{len(info.cameras)} cameras: {with_bit}")
     assert info.cameras
+
+
+@pytest.mark.asyncio
+async def test_live_inventory_is_scoped_to_live_video(
+    session: aiohttp.ClientSession,
+) -> None:
+    """`++systemInfo` admits a camera only when the account holds live video on it.
+
+    Measured on 6.21 with a per-camera-custom-permissions account holding a
+    different single permission on each of eleven cameras: only the three
+    granted "Get live video and images" appeared. Cameras granted PTZ control,
+    trigger, set-camera-settings, capture download, capture deletion, PTZ
+    presets or two-way audio were absent despite holding permissions the API
+    honours.
+
+    The project's decision (DW-5) is that this is the server's rule and the
+    library reports it: live video is the prerequisite permission for a camera
+    to be manageable at all, and NFR-9's least-privileged account must include
+    it on every camera it is expected to cover. This test is what keeps that
+    decision honest -- if a future server admits a camera without live video,
+    the premise every consumer builds on has changed and this fails.
+    """
+    info = await _client(session, "PERCAM").async_get_server_info()
+    if not info.cameras:
+        pytest.skip("the per-camera account sees no cameras")
+
+    without = [n for n, c in info.cameras.items() if not c.has_permission("live_video")]
+    _report(
+        f"  inventory admitted {len(info.cameras)} camera(s): {sorted(info.cameras)}; "
+        f"{len(without)} lack live_video"
+    )
+    assert not without, (
+        f"cameras {without} are in the inventory without live_video; the visibility "
+        "predicate has changed and DW-5's decision needs revisiting"
+    )
 
 
 @pytest.mark.asyncio
@@ -211,11 +251,12 @@ async def test_live_control_tier_reveals_whether_control_implies_schedule(
 async def test_live_arming_write_from_a_live_only_account_is_refused(
     session: aiohttp.ClientSession,
 ) -> None:
-    """The expensive failure: a disarm that reports success while changing nothing.
+    """An effective arming write from an account without `schedule` must be refused.
 
-    A "Live" account can see the camera but must not be able to arm it. If this
-    write returns cleanly, the library is reporting success for a write the
-    server refused, and every arming control built on it is lying to the user.
+    Verified against 6.21: the server answers such a write with **401**, not 403
+    (research 5.9), and the disambiguating probe reclassifies it as a permission
+    denial -- so a consumer does not open a reauth flow at a user whose password
+    is fine. This is story 1.11 and 1.14 working end to end on a real server.
     """
     camera = _test_camera()
     client = _client(session, "LIVE")
@@ -229,11 +270,44 @@ async def test_live_arming_write_from_a_live_only_account_is_refused(
         "it must be a 'Live' account for this test to mean anything"
     )
 
+    # An *arming* override, never a disarming one: if enforcement were broken,
+    # the camera would end up more armed rather than less.
     with pytest.raises(SecuritySpyPermissionError) as err:
         await client.async_set_camera_arming(
-            camera, CaptureModes(motion=True), override=ARM_OVERRIDE_UNCHANGED
+            camera, CaptureModes(motion=True), override=ARM_OVERRIDE_ARMED_1_HOUR
         )
     assert err.value.permission == "schedule"
+
+
+@pytest.mark.asyncio
+async def test_live_unchanged_override_is_a_no_op_the_server_accepts(
+    session: aiohttp.ClientSession,
+) -> None:
+    """`override=ARM_OVERRIDE_UNCHANGED` succeeds even without the schedule permission.
+
+    Not a permission bypass: -1 means "leave the existing override alone", and
+    `mode` is a target selector rather than state to assign (story 1.16), so the
+    call applies nothing and the server has nothing to authorize. It answers
+    `200 OK` where the same call with a real override answers 401.
+
+    Recorded because the asymmetry is surprising -- the same method, account and
+    camera raises for one override and not another -- and because
+    `async_set_camera_arming` already refuses the *other* way of producing an
+    undetectable no-op (an empty mode set) with the reasoning "would return 200
+    OK having done nothing". That guard has no twin for this case, so a caller
+    can read success here as evidence of a permission it does not hold.
+    """
+    camera = _test_camera()
+    client = _client(session, "LIVE")
+
+    info = await client.async_get_server_info()
+    if camera not in info.cameras:
+        pytest.skip(f"camera {camera} is not visible to the live-only account")
+
+    await client.async_set_camera_arming(
+        camera, CaptureModes(motion=True), override=ARM_OVERRIDE_UNCHANGED
+    )
+    _report(f"  camera {camera}: override=UNCHANGED accepted without the schedule permission")
 
 
 @pytest.mark.asyncio

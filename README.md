@@ -144,8 +144,10 @@ A few things the protocol makes non-obvious:
   nothing else happens until you call `await stream.resume()` — `connect()` declines while
   paused, and the pause survives `disconnect()`, so the rejected credential has exactly one
   door out of it. The library never re-authenticates and never counts auth failures.
-- **`event.camera is None`** means the record was not camera-specific (the wire format
-  sends `X`), not that it was invalid. `NULL` heartbeats arrive this way.
+- **`event.camera is None`** means the record carried no usable camera number — usually
+  because it was not camera-specific (the wire format sends `X`), which is how `NULL`
+  heartbeats arrive. `event.raw_camera` holds the field exactly as it arrived, so a
+  mis-framed record can be told apart from a genuine server-wide one.
 - **`event.event_number` restarts at 0 on every reconnect.** Record it; never key off it.
 - **The classification vocabulary is open.** A label from a custom CoreML model arrives in
   `ClassificationPayload.classes` unchanged. Use `slugged()` only when you need a
@@ -153,11 +155,24 @@ A few things the protocol makes non-obvious:
 - **`MOTION_END` is unreliable** and is not an inactivity signal; implement your own
   timeout if you need one.
 
-- **Backoff resets after every successful connection**, so a server that drops the stream
-  periodically retries promptly instead of creeping up to the five-minute ceiling.
+- **Backoff resets after every connection that delivered a record**, so a server that
+  drops the stream periodically retries promptly instead of creeping up to the
+  five-minute ceiling. A connection that returns headers and no data does not count: a
+  server answering `200` and closing the body would otherwise be retried once a second
+  forever.
+- **Your `on_event` handler runs on its own task**, fed by a bounded queue, so it never
+  holds up the socket read. A handler that blocks indefinitely no longer wedges the
+  stream; if it falls far enough behind, the oldest queued events are dropped and a
+  warning is logged, because keeping the socket drained matters more than a backlog.
 
 `disconnect()` is idempotent, is safe to call from inside a callback, and leaves no task,
-timer, or socket behind. Your session is untouched either way.
+timer, or socket behind. Your session is untouched either way. `connect()` immediately
+after a `disconnect()` issued from inside a callback restarts the stream as soon as the
+old reader has unwound.
+
+`event_stream()` also forwards the stream's tuning — `heartbeat_interval`,
+`heartbeat_misses`, `backoff_initial`, `backoff_max`, `backoff_multiplier`,
+`backoff_jitter` and `max_record_bytes` — so a slow link does not need the internals.
 
 ### Timezones
 
@@ -298,12 +313,25 @@ Worth knowing:
   falls back to the provisional module default, *not* to the `default=` config you passed.
   Two override keys that normalize to the same pair (`"Delivery Van"` and
   `"DELIVERY_VAN"`) are a `ValueError` rather than a silent last-one-wins.
-- **Episodes close on inactivity, never on low confidence.** A run of below-threshold
-  frames is mid-episode, not the end of one — and `MOTION_END` is far too unreliable to
-  close anything with.
+- **Episodes close on inactivity — no *qualifying* signal for longer than the gap.** A run
+  of below-threshold frames is mid-episode, not the end of one, and never ends an episode
+  by itself; but it does not hold one open either, since an open episode measures from its
+  last qualifying signal. A dense low-confidence run lasting longer than the gap therefore
+  does close the episode. `MOTION_END` cannot anchor closure either: its
+  reliability varies by camera (zero ends against 467 motion signals on one, several a
+  minute on another), and a rule that never fires on some cameras is worse than one that
+  ignores the signal outright.
 - **`peak_confidence` covers the whole span**, including the debounce signals that opened
   the episode and any below-threshold frame inside it. It is never the value at the
   threshold crossing.
+- **Two episodes for one camera and class can overlap in time.** `new.start >= previous.end`
+  is not an invariant. Once an episode has been closed by arrival, a delayed signal stamped
+  inside its span is absorbed by the *successor*, moving that episode's `start` back before
+  its predecessor's `end` and possibly setting its `peak_confidence` from a signal that
+  belonged to the predecessor. This is deliberate: such a signal is evidence about the same
+  continuous presence, so dropping it would discard real data, and a pure reducer cannot
+  retract a close it has already emitted. A consumer building a strictly non-overlapping
+  timeline has to reconcile this itself.
 - **`end` is the instant the episode lapsed** (`last_signal + gap`), not the `now` that
   noticed. A late tick does not stretch an episode, and a signal arriving after the gap
   has already elapsed closes the stale episode before starting a fresh debounce run — so

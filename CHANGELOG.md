@@ -5,6 +5,110 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The event stream delivers events on a task of its own, fed by a bounded queue,
+  rather than awaiting `on_event` inside the read loop. A handler that blocked
+  forever used to park the reader inside it: the heartbeat watchdog wraps the
+  socket read, so it never got another chance to fire and the stream was
+  silently dead with no `disconnected` and no reconnection. Lifecycle callbacks
+  share the queue, so they stay ordered against the events around them. A
+  consumer that falls far enough behind now loses the oldest queued events, with
+  a warning, rather than stalling the socket.
+- `StreamEvent` carries `raw_camera`, the camera field exactly as it arrived.
+  `camera is None` alone could not distinguish "not camera-specific" — a `NULL`
+  heartbeat — from a mis-framed record, so a consumer applied garbage
+  server-wide. Symmetric with the existing `timestamp` / `raw_timestamp` pair.
+- `SecuritySpyClient.event_stream()` forwards the stream's tuning parameters.
+  They were validated by the constructor but unreachable through the
+  construction path the docs point at, so tuning a slow link meant reaching into
+  internal state.
+- Reconnect backoff resets only after a connection that actually delivered a
+  record. Headers alone set `connected`, so a server answering `200` and closing
+  the body reset the delay on every cycle and was retried roughly once a second,
+  indefinitely.
+
+### Fixed
+
+- `connect()` is no longer a silent no-op after a `disconnect()` issued from
+  inside a consumer callback. That path cannot await the task it cancels, so the
+  following `connect()` saw a still-running reader and started nothing — leaving
+  a permanently dead stream that had reported success. Intent is now tracked
+  explicitly and the restart is deferred to the outgoing reader's completion.
+- `resume()` no longer restarts a stream the consumer explicitly disconnected.
+  An authentication pause survives `disconnect()` by design, so auth-fail →
+  `disconnect()` → `resume()` opened a live socket against an object the
+  consumer believed was dead.
+- A camera field that is not an unsigned decimal no longer becomes a camera
+  number. `-1` arrived as camera `-1` and `+3` aliased onto camera 3, so a
+  consumer keying entities by camera number built one that cannot exist.
+- `CLASSIFY` decoding re-syncs after an unparseable confidence instead of
+  stepping by a fixed two. One bad number shifted the label/number phase for the
+  rest of the record, silently dropping every later pair and letting a number be
+  captured as a label.
+- The read buffer is now bounded by `max_record_bytes` rather than reaching
+  roughly twice it. The drop check runs after the chunk is appended, and a flat
+  64 KiB read against the 64 KiB default meant peak occupancy of ~128 KiB.
+- A non-2xx event-stream response is logged at warning level, with the REST
+  path's own "construct the client with `use_https=True`" hint on a redirect. A
+  wrong scheme was an infinite retry loop with nothing above debug to explain it.
+- Unknown-event-type log damping is per stream instead of process-global. Two
+  streams against two servers shared one set, so the second silently never
+  reported a type the first had logged.
+- Tuning that would have failed deep in the transport is rejected at
+  construction: `heartbeat_misses` and `max_record_bytes` must be integers (a
+  float reached `content.read(0.5)` and was swallowed into a forever-failing
+  retry loop), `backoff_multiplier` must be at least 1 (below 1 shrank the delay
+  into a busy-loop), and `backoff_initial` must not exceed `backoff_max`.
+- `validate_host` raises `TypeError` for a non-string host instead of
+  `AttributeError` from `.strip()`, and a non-numeric `timeout` raises `TypeError`
+  naming the parameter instead of one from inside `math`. Both slipped past
+  callers catching `(ValueError, TypeError)`.
+- `ClassificationPayload` wraps a directly-supplied mapping, so the read-only
+  view its annotation promises holds for a hand-built payload too. A value that
+  is not a mapping is left untouched, since the reducer's contract is to
+  tolerate one rather than raise.
+- An `ERROR` description is stripped whether or not the server led with a
+  numeric code, and a `FILE` path no longer keeps trailing whitespace — interior
+  spaces are still preserved.
+
+- `EpisodeReducer` no longer keeps an episode open for the duration of a forward
+  clock skew. A record stamped ahead of the caller's clock used to pin the
+  inactivity deadline to that future instant, so a signal an hour ahead held the
+  episode open for an hour; `tick(now)` now pulls any anchor later than `now`
+  back to it. `tick`'s `now` is the only authority for this — a signal's own
+  timestamp is the value a skew corrupts — so the clamp is the one place where
+  the tick and arrival paths deliberately differ. They still agree instant for
+  instant on unskewed input.
+- `EpisodeReducer.add()` now runs the inactivity check for a signal whose
+  confidence is non-finite. The confidence is still ignored, but the timestamp
+  is usable evidence that time has passed, so a lapsed episode no longer stays
+  open just because the only later signals were NaN.
+- `EpisodeReducer.feed()` no longer raises on a hand-built record: a naive
+  timestamp, a bool camera, and a `ClassificationPayload` whose `classes` is not
+  a mapping are all skipped rather than escaping as `ValueError`/`AttributeError`.
+  The library's own parser cannot produce any of them, but `feed()` promises not
+  to die on one record, and the loop was already hardened for hand-built labels
+  and confidences.
+- `EpisodeReducer.config_for()` rejects a bool camera instead of silently
+  resolving camera 1's override (`True` hashes equal to `1`).
+- A non-mapping `overrides` argument is the documented `ValueError` rather than
+  an `AttributeError` from inside the constructor.
+
+### Documentation
+
+- `DetectionEpisode.start` and `.peak_confidence` now record that two episodes
+  for one camera and class **can overlap**: a delayed signal stamped inside an
+  already-closed episode is absorbed by its successor, moving that episode's
+  `start` back before its predecessor's `end` and possibly setting its peak from
+  a signal that belonged to the predecessor.
+- The claim that episodes close "never on low confidence" is corrected
+  throughout: closure is the absence of a *qualifying* signal for longer than the
+  gap, so a dense below-threshold run lasting longer than the gap does close an
+  episode.
+
 ## [0.2.0] - 2026-08-30
 
 Breaking, pre-1.0. Two public-surface changes shipped in this release that a
@@ -443,8 +547,10 @@ Breaking, pre-1.0. Two public-surface changes shipped in this release that a
   it is the default for works rather than raising.
 - Degradation hardening: an episode's `start` moves back to accommodate an out-of-order
   signal older than the span, so `start <= last_signal` always holds; `close_all(now)`
-  raises `end` to the episode's own last signal when `now` predates it, so no episode ends
-  before it started; a deadline that would overflow near `datetime.max` leaves the track
+  raises `end` to the most recent signal absorbed into the episode when `now` predates it,
+  so no episode ends before it started — that clamp is against the last signal of any kind,
+  so a span whose trailing frames were below threshold can report an `end` later than its
+  own `last_signal`, which is the last *qualifying* one; a deadline that would overflow near `datetime.max` leaves the track
   open instead of raising out of `tick()`; and a hand-built `ClassificationPayload`
   carrying a non-numeric confidence is skipped rather than raising out of `feed()`. A
   multi-class frame emits in slug order, matching every other method here.

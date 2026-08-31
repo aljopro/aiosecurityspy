@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import MappingProxyType
@@ -31,7 +32,6 @@ from .const import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from datetime import tzinfo
 
 __all__ = [
@@ -68,29 +68,6 @@ _CAMERA_NOT_SPECIFIC: Final = "X"
 #: Event types whose payload is a trigger reason bitmask (§3.4).
 _TRIGGER_EVENTS: Final = frozenset({EVENT_TRIGGER_M, EVENT_TRIGGER_A})
 
-#: Ceiling on :data:`_REPORTED_UNKNOWN_TYPES`. The event vocabulary of §3.3 is
-#: a couple of dozen entries, so anything approaching this is a mis-framed or
-#: hostile stream inventing type names -- which must not be able to grow a
-#: process-global set without bound.
-_MAX_REPORTED_TYPES: Final = 64
-
-#: Event types already reported as having no decodable payload, so the debug
-#: log fires once per type rather than once per record. `CLASSIFY` alone can be
-#: 191 records in 95 s (§3.5); logging every one would be a flood. Bounded, and
-#: cleared wholesale when full: this is log damping, not a correctness record,
-#: so re-reporting a type after a reset is harmless.
-_REPORTED_UNKNOWN_TYPES: set[str] = set()
-
-
-def _should_report(event_type: str) -> bool:
-    """Return whether this type's missing payload has yet to be logged."""
-    if event_type in _REPORTED_UNKNOWN_TYPES:
-        return False
-    if len(_REPORTED_UNKNOWN_TYPES) >= _MAX_REPORTED_TYPES:
-        _REPORTED_UNKNOWN_TYPES.clear()
-    _REPORTED_UNKNOWN_TYPES.add(event_type)
-    return True
-
 
 @dataclass(frozen=True, slots=True)
 class MotionPayload:
@@ -122,6 +99,22 @@ class ClassificationPayload:
     #: Confidences as percentages, 0-100, keyed by the raw label. A read-only
     #: view: this model is frozen and its contents are not mutable through it.
     classes: Mapping[str, float]
+
+    def __post_init__(self) -> None:
+        """Wrap the mapping so a directly-constructed payload is read-only too.
+
+        The annotation alone does not enforce it: this class is public and
+        directly constructible, so a caller passing a plain `dict` would keep a
+        live mutable reference into a frozen object.
+
+        A value that is not a mapping at all is left exactly as it arrived.
+        Raising here would turn constructing a malformed payload into an
+        exception, and the reducer's contract is that it tolerates one rather
+        than being taken down by it.
+        """
+        if isinstance(self.classes, MappingProxyType) or not isinstance(self.classes, Mapping):
+            return
+        object.__setattr__(self, "classes", MappingProxyType(dict(self.classes)))
 
     def slugged(self) -> Mapping[str, float]:
         """Return the confidences keyed by :func:`~aiosecurityspy.class_slug`.
@@ -203,9 +196,15 @@ class StreamEvent:
     #: Per-connection counter starting at 0. **Not** a persistent identifier:
     #: it restarts on every reconnect, so nothing may be keyed off it.
     event_number: int
-    #: The camera this event concerns, or ``None`` when the record's camera
-    #: field was ``X`` -- meaning "not camera-specific", never "invalid".
+    #: The camera this event concerns, or ``None`` when the record carried no
+    #: usable camera number. ``None`` is the ordinary case for a ``NULL``
+    #: heartbeat; to tell "not camera-specific" from "the field did not
+    #: decode", compare :attr:`raw_camera` against ``"X"``.
     camera: int | None
+    #: The camera field exactly as it arrived, so ``camera is None`` can be
+    #: told apart from a mis-framed record. Symmetric with the
+    #: :attr:`timestamp` / :attr:`raw_timestamp` pair.
+    raw_camera: str
     #: The raw event type, e.g. ``"MOTION"``. An open vocabulary: a type this
     #: library has never seen arrives here unchanged.
     event_type: str
@@ -286,6 +285,21 @@ def _parse_timestamp(raw: str, server_timezone: tzinfo) -> datetime | None:
         return None
 
 
+def _parse_camera(raw: str) -> int | None:
+    """Decode the camera field, or return ``None`` for no usable camera.
+
+    Deliberately stricter than :func:`_parse_int`, which accepts a leading
+    sign: `-1` is not a camera and `+3` must not alias onto camera 3. A record
+    that carries neither ``X`` nor an unsigned decimal is still delivered --
+    with :attr:`StreamEvent.raw_camera` preserving what actually arrived.
+    """
+    if raw == _CAMERA_NOT_SPECIFIC:
+        return None
+    if not raw.isascii() or not raw.isdigit() or len(raw) > _MAX_INT_DIGITS:
+        return None
+    return int(raw)
+
+
 def _decode_motion(info: str) -> MotionPayload | None:
     """Decode ``X Y W H``; return ``None`` if it is not four integers."""
     fields = info.split()
@@ -306,15 +320,23 @@ def _decode_classification(info: str) -> ClassificationPayload | None:
     Labels are carried through verbatim (AD-9). A trailing label with no
     number, or a number that will not parse, is skipped rather than discarding
     the pairs that did decode.
+
+    A fixed stride of two would not do that: one unparseable number would shift
+    the label/number phase for the rest of the record, dropping every later
+    pair and letting a number be captured as a label. On a failure the cursor
+    advances by one instead, which re-syncs on the next label that is followed
+    by a real number.
     """
     fields = info.split()
     classes: dict[str, float] = {}
-    for index in range(0, len(fields) - 1, 2):
-        label = fields[index]
+    index = 0
+    while index < len(fields) - 1:
         confidence = _parse_float(fields[index + 1])
         if confidence is None:
+            index += 1
             continue
-        classes[label] = confidence
+        classes[fields[index]] = confidence
+        index += 2
     if not classes:
         return None
     return ClassificationPayload(classes=MappingProxyType(classes))
@@ -335,7 +357,9 @@ def _decode_error(info: str) -> ErrorPayload | None:
     head, _, tail = info.partition(" ")
     code = _parse_int(head)
     if code is None:
-        return ErrorPayload(code=None, description=info)
+        # Stripped on both branches: a consumer comparing descriptions must not
+        # get whitespace that depends on whether the server led with a code.
+        return ErrorPayload(code=None, description=info.strip())
     return ErrorPayload(code=code, description=tail.strip())
 
 
@@ -390,7 +414,9 @@ def parse_event_line(line: str, *, server_timezone: tzinfo) -> StreamEvent | Non
         _LOGGER.debug("Skipping event record with %d fields", len(fields))
         return None
     raw_timestamp, raw_number, raw_camera, event_type = fields[:_MIN_FIELDS]
-    info = fields[_MIN_FIELDS] if len(fields) > _MIN_FIELDS else ""
+    # `split` consumes the remainder's leading whitespace but not its tail, and
+    # a padded `FILE` record would otherwise yield a path nothing can stat.
+    info = fields[_MIN_FIELDS].rstrip() if len(fields) > _MIN_FIELDS else ""
 
     if len(raw_timestamp) != _TIMESTAMP_LENGTH:
         # The record contents are deliberately not logged: this is the one
@@ -402,20 +428,20 @@ def parse_event_line(line: str, *, server_timezone: tzinfo) -> StreamEvent | Non
         _LOGGER.debug("Skipping event record with a non-numeric event number")
         return None
 
-    # `X` -- or anything else non-numeric -- means "not camera-specific"
-    # (§3.2). Such a record is delivered with `camera=None`, never dropped and
-    # never attributed to a camera: `NULL` heartbeats arrive this way.
-    camera = None if raw_camera == _CAMERA_NOT_SPECIFIC else _parse_int(raw_camera)
+    # `X` means "not camera-specific" (§3.2), and anything that is not an
+    # unsigned decimal carries no usable camera either. Such a record is
+    # delivered with `camera=None`, never dropped and never attributed to a
+    # camera: `NULL` heartbeats arrive this way.
+    camera = _parse_camera(raw_camera)
 
     payload = _decode_payload(event_type, info)
-    if payload is None and _should_report(event_type):
-        _LOGGER.debug("Event type %s carries no decoded payload", event_type)
 
     return StreamEvent(
         timestamp=_parse_timestamp(raw_timestamp, server_timezone),
         raw_timestamp=raw_timestamp,
         event_number=event_number,
         camera=camera,
+        raw_camera=raw_camera,
         event_type=event_type,
         info=info,
         payload=payload,

@@ -140,6 +140,7 @@ def classify_event(
         raw_timestamp="20260810120000",
         event_number=0,
         camera=camera,
+        raw_camera="X" if camera is None else str(camera),
         event_type=event_type,
         info="",
         payload=payload,  # type: ignore[arg-type]
@@ -969,3 +970,161 @@ def test_episodes_are_frozen() -> None:
     episode = opened(reducer.add(signal(99.0, at=T0)))[0]
     with pytest.raises(AttributeError):
         episode.peak_confidence = 1.0  # type: ignore[misc]
+
+
+# -- follow-up review regressions (2026-08-30) --------------------------------
+
+#: The two qualifying signals fed before the unusable one in the NaN test.
+QUALIFYING_SIGNALS_BEFORE_THE_NAN: Final = 2
+
+
+def test_a_future_stamped_signal_does_not_latch_an_episode_open() -> None:
+    """One skewed-ahead record must not hold an episode open for the whole skew.
+
+    The skewed signal first closes the running episode by arrival, then seeds a
+    fresh track whose anchor sits an hour in the future; the *next* ordinary
+    signals complete a debounce run against that poisoned anchor, so the new
+    episode opens with `last_signal` an hour ahead and, before this fix, could
+    not lapse until wall-clock reached it. `tick`'s `now` is the caller's single
+    authoritative clock, so an anchor later than it is pulled back and the
+    episode lapses one gap after the tick that noticed.
+    """
+    reducer = EpisodeReducer(default=ReducerConfig(threshold=70.0, debounce=2))
+    reducer.add(signal(90.0, at=T0))
+    reducer.add(signal(90.0, at=T0 + timedelta(seconds=1)))
+    assert len(reducer.open_episodes) == 1
+
+    # Closes the running episode by arrival, then starts a new debounce run.
+    reducer.add(signal(90.0, at=T0 + timedelta(hours=1)))
+    reducer.add(signal(90.0, at=T0 + timedelta(seconds=4)))
+    latched = reducer.open_episodes
+    assert len(latched) == 1
+
+    now = T0 + timedelta(seconds=5)
+    assert reducer.tick(now) == ()
+
+    emitted = reducer.tick(now + GAP + timedelta(seconds=1))
+    episodes = closed(emitted)
+    assert len(episodes) == 1
+    assert episodes[0].end == now + GAP
+    # The clamp keeps the model's own `start <= last_signal` invariant intact.
+    assert episodes[0].start <= episodes[0].last_signal
+
+
+def test_the_forward_clamp_is_a_no_op_on_unskewed_input() -> None:
+    """Tick and arrival still agree instant for instant on ordinary signals."""
+    by_tick = EpisodeReducer(default=ReducerConfig(threshold=70.0, debounce=2))
+    by_arrival = EpisodeReducer(default=ReducerConfig(threshold=70.0, debounce=2))
+    for offset in (0, 1):
+        at = T0 + timedelta(seconds=offset)
+        by_tick.add(signal(90.0, at=at))
+        by_arrival.add(signal(90.0, at=at))
+
+    last = T0 + timedelta(seconds=1)
+    ticked = closed(by_tick.tick(last + GAP + timedelta(seconds=1)))
+    arrived = closed(by_arrival.add(signal(90.0, at=last + GAP + timedelta(seconds=5))))
+    assert len(ticked) == len(arrived) == 1
+    assert ticked[0].end == arrived[0].end == last + GAP
+
+
+def test_a_non_finite_signal_still_drives_the_inactivity_check() -> None:
+    """A NaN confidence is unusable; its timestamp is still evidence of time."""
+    reducer = EpisodeReducer(default=ReducerConfig(threshold=70.0, debounce=2))
+    reducer.add(signal(90.0, at=T0))
+    reducer.add(signal(90.0, at=T0 + timedelta(seconds=1)))
+    before = reducer.open_episodes
+    assert len(before) == 1
+
+    emitted = reducer.add(signal(float("nan"), at=T0 + timedelta(seconds=1) + GAP + timedelta(1)))
+    episodes = closed(emitted)
+    assert len(episodes) == 1
+    assert episodes[0].end == T0 + timedelta(seconds=1) + GAP
+    # Unusable, so it neither reopened anything nor was counted.
+    assert not reducer.open_episodes
+    assert episodes[0].signal_count == QUALIFYING_SIGNALS_BEFORE_THE_NAN
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"at": datetime(2026, 8, 10, 12, 0, 0)}, id="naive-timestamp"),  # noqa: DTZ001
+        pytest.param({"camera": True}, id="bool-camera"),
+    ],
+)
+def test_feed_never_raises_on_a_hand_built_record(kwargs: dict[str, object]) -> None:
+    """`feed` must not die on one record, whatever a caller hands it."""
+    reducer = EpisodeReducer()
+    assert reducer.feed(classify_event({"Human": 90.0}, **kwargs)) == ()  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("classes", [[("Human", 90.0)], None, "Human"])
+def test_feed_never_raises_on_a_payload_whose_classes_is_not_a_mapping(classes: object) -> None:
+    """The loop's hand-built hardening is worthless if `.items()` raises first."""
+    reducer = EpisodeReducer()
+    payload = ClassificationPayload(classes=classes)  # type: ignore[arg-type]
+    assert reducer.feed(classify_event({}, payload_override=payload)) == ()
+
+
+def test_config_for_rejects_a_bool_camera() -> None:
+    """`True` hashes equal to 1 and would silently resolve camera 1's override."""
+    reducer = EpisodeReducer(overrides={(1, "human"): ReducerConfig(threshold=10.0)})
+    bool_camera: object = True
+    with pytest.raises(ValueError, match="camera"):
+        reducer.config_for(bool_camera, "human")  # type: ignore[arg-type]
+
+
+def test_overrides_must_be_a_mapping() -> None:
+    """A caller mistake is the documented ValueError, not an AttributeError."""
+    with pytest.raises(ValueError, match="mapping"):
+        EpisodeReducer(overrides=[((1, "human"), ReducerConfig())])  # type: ignore[arg-type]
+
+
+def test_close_all_can_end_an_episode_after_its_last_qualifying_signal() -> None:
+    """The clamp is against the last signal of any kind, not `last_signal`.
+
+    The distinction is invisible at `debounce=1` with a single qualifying
+    signal, which is why the original test could not see it: when the trailing
+    signals of a span are below threshold, `end` legitimately exceeds the
+    emitted `last_signal`.
+    """
+    reducer = EpisodeReducer(default=ReducerConfig(threshold=70.0, debounce=1))
+    reducer.add(signal(90.0, at=T0))
+    reducer.add(signal(10.0, at=T0 + timedelta(seconds=10)))
+
+    episodes = closed(reducer.close_all(T0 + timedelta(seconds=2)))
+    assert len(episodes) == 1
+    assert episodes[0].last_signal == T0
+    assert episodes[0].end == T0 + timedelta(seconds=10)
+    assert episodes[0].end > episodes[0].last_signal
+
+
+def test_the_reference_burst_still_reduces_to_one_episode_with_realistic_jitter() -> None:
+    """§3.5 describes the burst as "0-2 s apart", not evenly spaced.
+
+    `reference_signals()` lays its 191 signals down at a uniform 95s/190 = 0.5 s,
+    which never approaches the 30 s gap, so the headline case exercises no
+    inactivity interaction at all. This runs the same confidence sequence with
+    the straggler pattern the research actually describes: the reduction must
+    still be one episode, because a 2 s straggler is well inside the gap.
+    """
+    gaps = (0, 1, 2, 0, 2, 1)
+    at = T0
+    reducer = EpisodeReducer()
+    emitted: list[EpisodeEvent] = []
+    signals_fed = 0
+    for index in range(REFERENCE_SIGNALS):
+        emitted.extend(reducer.add(signal(SEQUENCE[index % len(SEQUENCE)], at=at)))
+        signals_fed += 1
+        at += timedelta(seconds=gaps[index % len(gaps)])
+    emitted.extend(reducer.tick(at + GAP + timedelta(seconds=1)))
+
+    assert signals_fed == REFERENCE_SIGNALS
+    assert len(opened(tuple(emitted))) == 1
+    assert len(closed(tuple(emitted))) == 1
+    assert signals_fed / len(emitted) >= MIN_REDUCTION_RATIO
+
+    episode = closed(tuple(emitted))[0]
+    assert episode.peak_confidence == REFERENCE_PEAK
+    assert episode.signal_count == REFERENCE_SIGNALS
+    # The widest straggler is well inside the gap, so nothing lapsed mid-burst.
+    assert max(gaps) * 1.0 < GAP.total_seconds()

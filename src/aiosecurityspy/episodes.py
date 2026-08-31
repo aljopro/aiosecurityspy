@@ -22,6 +22,7 @@ marked as such there.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final
@@ -41,7 +42,7 @@ from .const import (
 from .events import ClassificationPayload, _prefers
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable
 
     from .events import StreamEvent
 
@@ -100,6 +101,16 @@ def _is_nonempty_str(value: object) -> bool:
 def _is_timedelta(value: object) -> bool:
     """Return whether `value` is a ``timedelta``."""
     return isinstance(value, timedelta)
+
+
+def _is_mapping(value: object) -> bool:
+    """Return whether `value` is a mapping.
+
+    Takes ``object`` for the same reason the other predicates do: the annotated
+    parameter is already a ``Mapping | None``, so an ``isinstance`` written
+    inline would be pruned as unreachable and the runtime check would be gone.
+    """
+    return isinstance(value, Mapping)
 
 
 def _is_pair(value: object) -> bool:
@@ -291,6 +302,14 @@ class DetectionEpisode:
     #: presence. Always ``<= last_signal``: an out-of-order arrival older than
     #: the span moves this back rather than leaving the episode starting after
     #: one of its own signals.
+    #:
+    #: **Two episodes for one ``(camera, class)`` key can overlap in time**, so
+    #: ``new.start >= previous.end`` is *not* an invariant to rely on. Once an
+    #: episode has been closed by arrival, a delayed signal stamped inside its
+    #: span is absorbed by the *successor* track and moves this field back
+    #: before the predecessor's `end`. That is deliberate: such a signal is
+    #: evidence about the same continuous presence, dropping it would discard
+    #: real data, and a pure reducer cannot retract a close it has emitted.
     start: datetime
     #: When the episode lapsed, or ``None`` while it is still open. Normally
     #: ``last_signal + gap`` -- the instant it actually went quiet, never the
@@ -304,9 +323,17 @@ class DetectionEpisode:
     #: The highest confidence anywhere in the span (FR-6) -- including the
     #: debounce signals that opened it and any below-threshold signal inside
     #: it. Never the value at the threshold crossing.
+    #:
+    #: For the same reason :attr:`start` can reach back past a predecessor's
+    #: `end`, this **can carry a value that belonged to a closed predecessor**:
+    #: a delayed signal absorbed by the successor sets the successor's peak. A
+    #: consumer reading a peak is reading the highest confidence attributed to
+    #: this episode, which is not always the highest it observed while open.
     peak_confidence: float
-    #: Every signal absorbed into the span, qualifying or not. Divide by one to
-    #: get the reduction ratio this episode achieved.
+    #: Every signal absorbed into the span, qualifying or not -- so this counts
+    #: the below-threshold frames inside the span as well as the qualifying
+    #: ones, and is the numerator of the per-episode reduction: 191 signals
+    #: standing in for the single episode of the §3.5 reference case.
     signal_count: int
 
     @property
@@ -351,14 +378,39 @@ class _Track:
     run: int = 0
     opened: bool = False
 
+    def clamp_future(self, now: datetime) -> None:
+        """Pull any instant later than `now` back to `now`.
+
+        A timestamp ahead of the caller's own clock is not credible evidence
+        about when this track was last active: one signal stamped an hour ahead
+        would otherwise pin the inactivity deadline an hour out and hold the
+        episode open for the whole skew. `now` here always comes from
+        :meth:`EpisodeReducer.tick`, the caller's single authoritative clock --
+        never from a signal's own timestamp, which is exactly the value under
+        suspicion. Clamping `start` too keeps the documented
+        ``start <= last_signal`` invariant intact.
+        """
+        self.start = min(self.start, now)
+        self.last_any = min(self.last_any, now)
+        if self.last_qualifying is not None:
+            self.last_qualifying = min(self.last_qualifying, now)
+
     def deadline(self, gap: timedelta) -> datetime | None:
         """Return the instant this track lapses, or ``None`` if it cannot.
 
-        Inactivity is the *only* thing that ends an episode here. The obvious
-        alternative, the stream's own MOTION_END event, is unusable: research
-        §3.5 recorded 467 motion signals and **zero** ends on camera 10, and 1
-        end against 383 signals on camera 7. Closing on a run of below-threshold
-        signals is equally wrong -- §3.5's sequence has `88, 8, 54` in
+        Inactivity is the *only* thing that ends an episode here -- meaning no
+        *qualifying* signal for longer than the gap. A dense run of
+        below-threshold signals does not by itself keep an episode alive, since
+        an open track measures from its last qualifying signal; what it cannot
+        do is *end* one on its own. The obvious
+        alternative, the stream's own MOTION_END event, cannot be depended on:
+        research §3.5 recorded 467 motion signals and **zero** ends on camera 10,
+        and 1 end against 383 signals on camera 7. Its reliability varies by
+        camera rather than being uniformly absent -- a later live capture saw
+        camera 7 emit 9 ends in 5 minutes -- which is precisely why it cannot
+        anchor closure: a rule that works on one camera and never fires on
+        another is worse than one that ignores the signal entirely. Closing on a
+        run of below-threshold signals is equally wrong -- §3.5's sequence has `88, 8, 54` in
         consecutive frames for one subject, so a low run is mid-episode, not the
         end of one. Only silence reliably means "gone".
 
@@ -434,7 +486,8 @@ class EpisodeReducer:
                 :meth:`config_for`.
 
         Raises:
-            ValueError: A `default` or an override value that is not a
+            ValueError: An `overrides` that is not a mapping; a `default` or an
+                override value that is not a
                 :class:`ReducerConfig`; an override key that is not a
                 ``(camera, class)`` pair of the right types; the key
                 ``(None, None)``, which would silently never be consulted
@@ -445,6 +498,9 @@ class EpisodeReducer:
         self._default = _require_config(
             default if default is not None else ReducerConfig(), "default"
         )
+        if overrides is not None and not _is_mapping(overrides):
+            message = "overrides must be a mapping"
+            raise ValueError(message)
         self._overrides: dict[OverrideKey, ReducerConfig] = {}
         for key, config in (overrides or {}).items():
             normalized = _normalize_override_key(key)
@@ -493,7 +549,14 @@ class EpisodeReducer:
         Returns:
             The most specific matching configuration.
 
+        Raises:
+            ValueError: `camera` is not an ``int``. ``True`` hashes equal to 1,
+                so without this a bool would silently resolve camera 1's
+                override -- and this is the one public entry point that did not
+                apply the same check :class:`ClassificationSignal` already does.
+
         """
+        _require_int(camera, "camera")
         slug = class_slug(object_class)
         for key in ((camera, slug), (camera, None), (None, slug)):
             config = self._overrides.get(key)
@@ -526,10 +589,9 @@ class EpisodeReducer:
             absorbs further signals silently.
 
         """
-        if not signal.is_usable:
-            return ()
         emitted = list(self._expire(signal.timestamp, keys=((signal.camera, signal.slug),)))
-        emitted.extend(self._absorb(signal))
+        if signal.is_usable:
+            emitted.extend(self._absorb(signal))
         return tuple(emitted)
 
     def feed(self, event: StreamEvent) -> tuple[EpisodeEvent, ...]:
@@ -574,7 +636,7 @@ class EpisodeReducer:
 
         """
         _require_aware(now, "now")
-        return self._expire(now, keys=sorted(self._tracks))
+        return self._expire(now, keys=sorted(self._tracks), authoritative=True)
 
     def close_all(self, now: datetime) -> tuple[EpisodeEvent, ...]:
         """Close every open episode at `now` and discard all state.
@@ -586,10 +648,16 @@ class EpisodeReducer:
 
         Args:
             now: The instant every open episode is declared to have ended at.
-                A `now` that predates an episode's own last signal is raised to
-                that signal instead, so no episode can be emitted ending before
-                it started. :meth:`tick` is hardened against a clock that
-                stepped backwards; this must be too.
+                A `now` that predates the most recent signal absorbed into an
+                episode is raised to that signal instead, so no episode can be
+                emitted ending before it started. :meth:`tick` is hardened
+                against a clock that stepped backwards; this must be too.
+
+                That clamp is against the last signal of **any** kind, which is
+                not the same as the emitted :attr:`DetectionEpisode.last_signal`
+                -- that field is the last *qualifying* signal. When the trailing
+                signals of a span were below threshold, the emitted `end` can
+                therefore be later than the emitted `last_signal`.
 
         Returns:
             One :class:`EpisodeClosed` per open episode, camera order. A
@@ -641,10 +709,21 @@ class EpisodeReducer:
             return ()
         timestamp = event.timestamp
         camera = event.camera
+        # `parse_event_line` never produces a naive timestamp, a bool camera or
+        # a non-mapping `classes`, but a hand-built record can carry all three,
+        # and each would raise straight out of a method a live stream calls once
+        # per record. The loop below is already hardened against a hand-built
+        # payload's label and confidence; these are the same guard, applied
+        # consistently rather than to half the fields.
         if timestamp is None or camera is None:
             return ()
+        if not _is_aware_datetime(timestamp) or not _is_int(camera):
+            return ()
+        classes = getattr(payload, "classes", None)
+        if not isinstance(classes, Mapping):
+            return ()
         best: dict[str, tuple[str, float]] = {}
-        for label, confidence in payload.classes.items():
+        for label, confidence in classes.items():
             # Everything here came off the wire, including -- for a payload a
             # consumer built by hand -- a value that is not a number at all, on
             # which `math.isfinite` would raise. Nothing in this loop may raise:
@@ -668,7 +747,7 @@ class EpisodeReducer:
         )
 
     def _expire(
-        self, now: datetime, *, keys: Iterable[tuple[int, str]]
+        self, now: datetime, *, keys: Iterable[tuple[int, str]], authoritative: bool = False
     ) -> tuple[EpisodeEvent, ...]:
         """Close, or silently forget, whichever of `keys` have gone quiet.
 
@@ -676,12 +755,21 @@ class EpisodeReducer:
         through here, which is what makes an arrival-computed boundary and a
         tick-computed boundary the same instant; they differ only in how much
         of the state they are entitled to judge with the clock they hold.
+
+        `authoritative` marks the one asymmetry between them. Only :meth:`tick`
+        sets it, and only there may a track's own instants be pulled back to
+        `now`: a signal's timestamp is the value a forward clock skew corrupts,
+        so it cannot be the authority on whether it is itself in the future.
+        On unskewed input the flag changes nothing and the two paths still agree
+        instant for instant.
         """
         emitted: list[EpisodeEvent] = []
         for key in keys:
             track = self._tracks.get(key)
             if track is None:
                 continue
+            if authoritative:
+                track.clamp_future(now)
             camera, object_class = key
             config = self.config_for(camera, object_class)
             deadline = track.deadline(config.gap)
