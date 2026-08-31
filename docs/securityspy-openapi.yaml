@@ -1,3 +1,10 @@
+openapi: 3.1.0
+#
+# The version key is deliberately the first line: Swagger/OpenAPI editors that sniff
+# the first line (or the filename) to decide whether to load a document will skip a
+# file that opens with a comment block. Everything below is that block; YAML permits
+# comments anywhere, so nothing here affects parsing.
+#
 # SecuritySpy HTTP API — machine-readable description
 #
 # READ THIS BEFORE GENERATING ANYTHING FROM THIS FILE.
@@ -33,8 +40,6 @@
 # wins; `x-verification` is the field that carries real weight.
 #
 # Companion prose: _bmad-output/planning-artifacts/research/securityspy-6.21-verification.md
-
-openapi: 3.1.0
 info:
   title: SecuritySpy HTTP API (reverse-engineered)
   version: "6.21"
@@ -281,7 +286,7 @@ paths:
       description: |
         `format=json` is REQUIRED. Without it the server returns the settings page as
         ~85 KB of `text/html`, not JSON.
-      description: |
+
         ⚠ The response contains the camera device's `username` and `password` in plaintext.
         Never log this body, and redact credential-shaped keys before publishing it anywhere.
       x-verification: live-6.21
