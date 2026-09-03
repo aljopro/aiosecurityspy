@@ -181,8 +181,12 @@ def _as_error_code(value: object) -> str | None:
 
     ``++systemInfo``'s ``last-error`` is the same concept under a different key
     (research §10 lists the pair as one "error surface"), so it collapses zero
-    the same way. Any other value -- including a non-zero numeric code -- is
-    carried through as the server's own string.
+    the same way. The collapse is done through :func:`_as_float`, so it is not
+    limited to the exact spellings observed on the wire (``0``, ``0.0``,
+    ``"0"``, ``"0.0"``, ``"-0"``) -- anything that parses as numeric zero
+    collapses, including a spelling never seen in practice such as ``"0e1"``.
+    Any value that is not a number at all, including a non-zero numeric code,
+    is carried through as the server's own string.
     """
     text = _as_str(value)
     if text is None:
