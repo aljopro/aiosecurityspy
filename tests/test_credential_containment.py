@@ -280,7 +280,10 @@ class FakeResponse:
     def __await__(self) -> Any:  # noqa: ANN401 - mirrors aiohttp's own awaitable get()
         """Support ``response = await session.get(...)``, used by ``_stream_bytes``."""
 
-        async def _return() -> Self:
+        # `-> FakeResponse`, not `-> Self`: a nested function's return type isn't
+        # bound to the enclosing method's `Self` typevar, so mypy --strict sees
+        # a mismatch between the two here even though the value is `self`.
+        async def _return() -> FakeResponse:
             return self
 
         return _return().__await__()
