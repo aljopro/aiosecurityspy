@@ -429,6 +429,27 @@ async def test_empty_patch_issues_no_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_settings_with_a_lone_surrogate_raises_connect_error_without_echoing_it() -> None:
+    """A settings field carrying a lone surrogate is unencodable as a URL component.
+
+    ``urllib.parse.quote(value, safe="")`` raises ``UnicodeEncodeError`` -- a
+    ``ValueError`` subclass -- on a lone surrogate. The intent contract forbids
+    any ``ValueError`` from escaping a public method, so this becomes a
+    ``SecuritySpyConnectError`` whose message and args do not echo the value
+    (the value is caller-supplied and may carry identifying detail).
+    """
+    session = FakeSession()
+    with pytest.raises(SecuritySpyConnectError) as err:
+        await make_client(session).async_set_camera_settings(
+            3, CameraSettingsPatch(name="Camera With\ud800 Name")
+        )
+    assert session.calls == []
+    assert "\ud800" not in str(err.value)
+    assert "\ud800" not in repr(err.value)
+    assert "\ud800" not in err.value.args
+
+
+@pytest.mark.asyncio
 async def test_partial_write_leaves_every_other_field_identical() -> None:
     session = SettingsServer(settings_payload())
     client = make_client(session)

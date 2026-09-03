@@ -32,6 +32,10 @@ from aiosecurityspy import (
     ENDPOINT_CAM_STATUS,
     ENDPOINT_CAPTURE_LIST,
     ENDPOINT_EVENT_STREAM,
+    ENDPOINT_GET_FILE,
+    ENDPOINT_GET_FILE_HIGH_BANDWIDTH,
+    ENDPOINT_GET_FILE_LOW_BANDWIDTH,
+    ENDPOINT_GET_PREVIEW,
     ENDPOINT_SETTINGS_CAMERAS,
     ENDPOINT_SYSTEM_INFO,
     CameraSettingsPatch,
@@ -41,6 +45,7 @@ from aiosecurityspy import (
     is_credential_key,
 )
 from aiosecurityspy.connection import _ConnectionSettings
+from aiosecurityspy.models import Capture
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -133,6 +138,45 @@ CAM_STATUS: Final = [
     {"num": 3, "enabled": True, "online": True, "open": False, "err": "", "errDesc": ""}
 ]
 
+#: A JPEG/movie-shaped body for the capture preview and file endpoints. Content,
+#: not shape, is what the sweep cares about: neither is decoded, only redacted.
+PREVIEW_BYTES: Final = b"\xff\xd8\xff\xe0" + b"\x00" * 16
+FILE_BYTES: Final = b"\x00\x00\x00\x1c" + b"\x00" * 16
+
+
+#: A plain, non-sentinel filename. The path/filename is caller-supplied and
+#: legitimately travels in the URL byte for byte -- it is not credential- or
+#: PII-shaped, so it must NOT be one of `SENTINELS`, or the whole-library "no
+#: sentinel reaches a URL" sweep below would fail on a value that was never
+#: supposed to be hidden in the first place.
+CAPTURE_FILENAME: Final = "M+2026-08-09_17-35-19_C.jpg"
+
+
+def make_capture() -> Capture:
+    """Build a `Capture` for exercising the preview and file fetch paths.
+
+    Independent of `CAPTURE_LIST`/`async_get_captures`: the preview and file
+    fetches build their URL from the `Capture` the caller passes in, not from
+    a server-returned one, and both failing phases (401, undecodable body)
+    must still be able to exercise them even though `async_get_captures`
+    itself raises before returning anything in those phases.
+    """
+    return Capture(
+        camera=CAMERA,
+        start=None,
+        duration=None,
+        capture_type=1,
+        object_classes=frozenset(),
+        filename=CAPTURE_FILENAME,
+        folder_date="2026-08-09",
+        file_size_mb=None,
+        tag_id=None,
+        archived=False,
+        unread=False,
+        path=f"{CAMERA}/2026-08-09/{CAPTURE_FILENAME}",
+    )
+
+
 #: ``(url suffix, JSON body)`` pairs `FakeServer._respond` checks in order, kept
 #: as a table rather than a chain of `if`s so a new endpoint costs one row.
 _ENDPOINT_BODIES: Final[tuple[tuple[str, object], ...]] = (
@@ -180,11 +224,25 @@ class StreamContent:
 
 
 class FakeResponse:
-    """Minimal stand-in for an aiohttp response, buffered or streaming."""
+    """Minimal stand-in for an aiohttp response, buffered or streaming.
 
-    def __init__(self, status: int, body: bytes | Sequence[bytes | object]) -> None:
-        """Store the canned status and body."""
+    Supports both ways the client obtains one: ``async with session.get(...) as
+    response`` (``_request``/``_request_bytes``, via ``__aenter__``) and
+    ``response = await session.get(...)`` (``_stream_bytes``, via ``__await__``)
+    -- the same instance answers either protocol, since ``FakeServer.get``
+    itself is synchronous and returns one object regardless of which the
+    caller uses.
+    """
+
+    def __init__(
+        self,
+        status: int,
+        body: bytes | Sequence[bytes | object],
+        content_type: str = "application/json",
+    ) -> None:
+        """Store the canned status, body and content type."""
         self.status = status
+        self.content_type = content_type
         self.content: BufferedContent | StreamContent
         if isinstance(body, bytes):
             self._raw: bytes | None = body
@@ -192,6 +250,7 @@ class FakeResponse:
         else:
             self._raw = None
             self.content = StreamContent(body)
+        self._released = False
 
     @property
     def content_length(self) -> int | None:
@@ -201,6 +260,10 @@ class FakeResponse:
     def get_encoding(self) -> str:
         """Return the charset the response declares."""
         return "utf-8"
+
+    def release(self) -> None:
+        """Mark the response released, mirroring aiohttp's own no-arg release."""
+        self._released = True
 
     async def __aenter__(self) -> Self:
         """Enter the response context."""
@@ -213,6 +276,14 @@ class FakeResponse:
         tb: TracebackType | None,
     ) -> None:
         """Leave the response context without suppressing anything."""
+
+    def __await__(self) -> Any:  # noqa: ANN401 - mirrors aiohttp's own awaitable get()
+        """Support ``response = await session.get(...)``, used by ``_stream_bytes``."""
+
+        async def _return() -> Self:
+            return self
+
+        return _return().__await__()
 
 
 class FakeServer:
@@ -251,6 +322,18 @@ class FakeServer:
             return FakeResponse(self.status, [MOTION_RECORD, SILENCE])
         if self.body is not None:
             return FakeResponse(self.status, self.body.encode())
+        # The preview/file paths carry a literal embedded `?` and per-component
+        # percent-encoding (research §4.3), so they never land on a clean
+        # `endswith` match the way the JSON endpoints below do.
+        if ENDPOINT_GET_PREVIEW in url:
+            return FakeResponse(self.status, PREVIEW_BYTES, content_type="image/jpeg")
+        file_endpoints = (
+            ENDPOINT_GET_FILE,
+            ENDPOINT_GET_FILE_HIGH_BANDWIDTH,
+            ENDPOINT_GET_FILE_LOW_BANDWIDTH,
+        )
+        if any(endpoint in url for endpoint in file_endpoints):
+            return FakeResponse(self.status, FILE_BYTES, content_type="video/quicktime")
         for suffix, payload in _ENDPOINT_BODIES:
             if url.endswith(suffix):
                 return FakeResponse(self.status, json.dumps(payload).encode())
@@ -268,6 +351,14 @@ async def until(condition: Callable[[], bool]) -> None:
     async with asyncio.timeout(PATIENCE):
         while not condition():  # noqa: ASYNC110 - polling a property, not awaiting a signal
             await asyncio.sleep(0)
+
+
+async def drain_capture_file(client: SecuritySpyClient) -> None:
+    """Fetch and fully drain a capture file, so the URL and the streamed body both run."""
+    stream = await client.async_get_capture_file(make_capture())
+    async with stream:
+        async for _chunk in stream:
+            pass
 
 
 async def drive_every_path(server: FakeServer) -> list[SecuritySpyError]:
@@ -294,6 +385,8 @@ async def drive_every_path(server: FakeServer) -> list[SecuritySpyError]:
         lambda: client.async_get_captures(
             [CAMERA], start_date=DAY, end_date=DAY, server_timezone=UTC
         ),
+        lambda: client.async_get_capture_preview(make_capture()),
+        lambda: drain_capture_file(client),
     )
     for call in calls:
         try:

@@ -1755,6 +1755,46 @@ async def test_preview_empty_path_raises() -> None:
 
 
 @pytest.mark.asyncio
+async def test_preview_with_a_lone_surrogate_in_path_raises_connect_error_without_echoing_it() -> (
+    None
+):
+    """A capture path carrying a lone surrogate is unencodable as a URL component.
+
+    ``urllib.parse.quote(part, safe="")`` raises ``UnicodeEncodeError`` on a
+    lone surrogate. The intent contract forbids any ``ValueError`` (UnicodeEncodeError
+    is one) from escaping a public method, so this becomes a ``SecuritySpyConnectError``
+    whose message and args do not echo the value.
+    """
+    session = FakeStreamSession(200, JPEG_BYTES, JPEG_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    capture = Capture(
+        camera=4,
+        start=None,
+        duration=None,
+        capture_type=1,
+        object_classes=frozenset(),
+        filename="test\ud800.mp4",
+        folder_date="2026-08-09",
+        file_size_mb=None,
+        tag_id=None,
+        archived=False,
+        unread=False,
+        path="4/2026-08-09/test\ud800.mp4",
+    )
+    with pytest.raises(SecuritySpyConnectError, match="not encodable") as err:
+        await client.async_get_capture_preview(capture)
+    assert "\ud800" not in str(err.value)
+    assert "\ud800" not in repr(err.value)
+    assert "\ud800" not in err.value.args
+
+
+@pytest.mark.asyncio
 async def test_preview_transport_error_wrapped() -> None:
     session = FakeStreamSession(error=aiohttp.ClientConnectionError("boom"))
     client = SecuritySpyClient(
@@ -1963,6 +2003,42 @@ async def test_file_empty_path_raises() -> None:
     )
     with pytest.raises(SecuritySpyConnectError, match="no addressable file path"):
         await client.async_get_capture_file(capture)
+
+
+@pytest.mark.asyncio
+async def test_file_with_a_lone_surrogate_in_path_raises_connect_error_without_echoing_it() -> None:
+    """A capture path carrying a lone surrogate is unencodable as a URL component.
+
+    Same exception-containment guarantee as the preview path: the URL builder's
+    ``quote()`` call must not leak ``UnicodeEncodeError`` out of a public method.
+    """
+    session = FakeStreamSession(200, MOVIE_BYTES, MOVIE_CONTENT_TYPE)
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", session),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    capture = Capture(
+        camera=4,
+        start=None,
+        duration=None,
+        capture_type=1,
+        object_classes=frozenset(),
+        filename="test\ud800.mp4",
+        folder_date="2026-08-09",
+        file_size_mb=None,
+        tag_id=None,
+        archived=False,
+        unread=False,
+        path="4/2026-08-09/test\ud800.mp4",
+    )
+    with pytest.raises(SecuritySpyConnectError, match="not encodable") as err:
+        await client.async_get_capture_file(capture)
+    assert "\ud800" not in str(err.value)
+    assert "\ud800" not in repr(err.value)
+    assert "\ud800" not in err.value.args
 
 
 @pytest.mark.asyncio

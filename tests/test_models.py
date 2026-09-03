@@ -31,6 +31,7 @@ from aiosecurityspy import (
     CameraScheduleAssignment,
     CameraStatus,
     Capture,
+    CapturePreview,
     SecuritySpyUnsupportedVersionError,
     ServerInfo,
     capture_filter_for_class,
@@ -632,6 +633,24 @@ def test_reprs_are_informative_and_short() -> None:
     assert "ServerInfo(" in repr(info)
     assert "cameras=3" in repr(info)
     assert "Camera(number=0" in repr(info.cameras[0])
+
+
+def test_capture_preview_repr_omits_the_bytes_payload() -> None:
+    """``CapturePreview.data`` is up to 8 MiB of JPEG.
+
+    The default dataclass repr echoes up to 8 MiB per instance -- a real
+    log-amplifier and a real traceback-frame-bloater (e.g. ``pytest --showlocals``).
+    The minimal ``__repr__`` follows the same pattern as :class:`CameraSettings`.
+    """
+    preview = CapturePreview(
+        data=b"\xff\xd8" + b"x" * 8000 + b"\xff\xd9", content_type="image/jpeg"
+    )
+    text = repr(preview)
+    assert "image/jpeg" in text
+    # 200 is a sanity ceiling: a default dataclass repr of an 8 KiB payload is
+    # ~8 KiB; the minimal repr is ~50 bytes.
+    assert len(text) < 200  # noqa: PLR2004 - sanity ceiling, not a wire value
+    assert b"x" * 100 not in text.encode("utf-8", errors="replace")
 
 
 @pytest.mark.parametrize(
@@ -1567,3 +1586,22 @@ def test_resolve_names_against_empty_mapping_never_raises() -> None:
         continuous_schedule_id=0, motion_schedule_id=1, actions_schedule_id=2
     )
     assert assignment.resolve_names({}) == (None, None, None)
+
+
+def test_a_negative_schedule_id_is_accepted_as_an_opaque_key() -> None:
+    """Neither `_decode_schedules` nor `resolve_names` validates the id's range.
+
+    Camera numbers are explicitly validated non-negative elsewhere in this
+    library (`_validated_camera_number`), but a schedule id is never used as
+    an addressable resource on its own -- it is only ever looked up in the
+    map `_decode_schedules` builds from the same payload -- so a negative
+    value from either side is carried through as an opaque key rather than
+    rejected, and the two still agree with each other.
+    """
+    payload = wrap(SERVER, [])
+    payload["system"]["schedule-list"] = [{"name": "Negative", "id": -1}]
+    info = ServerInfo.from_api(payload)
+    assert info.schedules == {-1: "Negative"}
+
+    assignment = CameraScheduleAssignment(continuous_schedule_id=-1)
+    assert assignment.resolve_names(info.schedules) == ("Negative", None, None)

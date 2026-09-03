@@ -181,8 +181,12 @@ def _as_error_code(value: object) -> str | None:
 
     ``++systemInfo``'s ``last-error`` is the same concept under a different key
     (research §10 lists the pair as one "error surface"), so it collapses zero
-    the same way. Any other value -- including a non-zero numeric code -- is
-    carried through as the server's own string.
+    the same way. The collapse is done through :func:`_as_float`, so it is not
+    limited to the exact spellings observed on the wire (``0``, ``0.0``,
+    ``"0"``, ``"0.0"``, ``"-0"``) -- anything that parses as numeric zero
+    collapses, including a spelling never seen in practice such as ``"0e1"``.
+    Any value that is not a number at all, including a non-zero numeric code,
+    is carried through as the server's own string.
     """
     text = _as_str(value)
     if text is None:
@@ -1339,6 +1343,17 @@ class CapturePreview:
 
     data: bytes
     content_type: str
+
+    def __repr__(self) -> str:
+        """Return a representation that omits the bytes payload.
+
+        ``data`` is up to 8 MiB of JPEG bytes, and a default dataclass
+        ``repr`` echoes it in full -- so a log line, a traceback frame, or
+        ``pytest --showlocals`` can produce up to 8 MB per ``CapturePreview``.
+        This follows the same minimal pattern as :class:`CameraSettings`,
+        which suppresses its payload for the same reason (research §8.3).
+        """
+        return f"CapturePreview(content_type={self.content_type!r}, size={len(self.data)})"
 
 
 @dataclass(frozen=True, slots=True)
