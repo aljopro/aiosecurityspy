@@ -1586,3 +1586,22 @@ def test_resolve_names_against_empty_mapping_never_raises() -> None:
         continuous_schedule_id=0, motion_schedule_id=1, actions_schedule_id=2
     )
     assert assignment.resolve_names({}) == (None, None, None)
+
+
+def test_a_negative_schedule_id_is_accepted_as_an_opaque_key() -> None:
+    """Neither `_decode_schedules` nor `resolve_names` validates the id's range.
+
+    Camera numbers are explicitly validated non-negative elsewhere in this
+    library (`_validated_camera_number`), but a schedule id is never used as
+    an addressable resource on its own -- it is only ever looked up in the
+    map `_decode_schedules` builds from the same payload -- so a negative
+    value from either side is carried through as an opaque key rather than
+    rejected, and the two still agree with each other.
+    """
+    payload = wrap(SERVER, [])
+    payload["system"]["schedule-list"] = [{"name": "Negative", "id": -1}]
+    info = ServerInfo.from_api(payload)
+    assert info.schedules == {-1: "Negative"}
+
+    assignment = CameraScheduleAssignment(continuous_schedule_id=-1)
+    assert assignment.resolve_names(info.schedules) == ("Negative", None, None)

@@ -1521,8 +1521,10 @@ class SecuritySpyClient:
                 rather than rejected credentials.
 
         """
-        number = _validated_camera_number(camera_number)
-        await self.async_set_camera_settings(number, CameraSettingsPatch(enabled=enabled))
+        # Not validated here: `async_set_camera_settings` validates `camera_number`
+        # itself (single-source-of-truth), so pre-validating would only run the
+        # same check twice on every call.
+        await self.async_set_camera_settings(camera_number, CameraSettingsPatch(enabled=enabled))
 
     async def async_set_camera_arming(
         self,
