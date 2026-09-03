@@ -6,7 +6,7 @@ This file provides guidance to AI coding agents (Claude Code and others) when wo
 
 `aiosecurityspy` — an async, fully-typed Python client library for the Ben Software SecuritySpy HTTP and event API. It owns *all* SecuritySpy protocol knowledge (endpoint URLs, event-stream framing, capture-field/bitmask decoding, the detection-episode reducer, credential-safe diagnostics) as an ordinary PyPI package usable from any script — no Home Assistant import anywhere in it.
 
-This directory is both a subtree of `ha-securityspy` (a Home Assistant custom integration that consumes this library as a dev/editable dependency) and mirrored as the standalone GitHub repo `aljopro/aiosecurityspy`, published to PyPI. If you're working from inside `ha-securityspy`, see that repo's root `CLAUDE.md` for how the two fit together and how commits get ported between them.
+This directory is both a subtree of `ha-securityspy` (a Home Assistant custom integration that consumes this library as a dev/editable dependency) and mirrored as the standalone GitHub repo `aljopro/aiosecurityspy`, published to PyPI. If you're working from inside `ha-securityspy`, see that repo's root `AGENTS.md`, section "Porting `aiosecurityspy` changes to the standalone repo", for how the two fit together and how commits get ported between them — in short: `git subtree split` + merge, one way only (subtree → standalone), never a hand-edit of this repo's working tree from outside it.
 
 Design constraints that shape everything here:
 - **Session-injected**: `aiohttp` is a dependency, but the library never creates, reconfigures, or closes a session. The caller owns it. `SecuritySpyClient` deliberately has no `close()`.
