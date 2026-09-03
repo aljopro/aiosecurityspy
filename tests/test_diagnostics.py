@@ -751,6 +751,53 @@ def test_a_percent_encoded_nested_url_is_decoded_before_it_is_trusted() -> None:
     assert redact_url("http://h/x?q=a%20b&plain=1+2") == "http://h/x?q=a%20b&plain=1+2"
 
 
+def test_a_percent_encoded_url_nested_in_the_bare_path_is_still_decoded() -> None:
+    """The path's bare first segment gets the same percent-decode pass as a parameter.
+
+    ``_redact_path`` routed a matrix-parameter value through the decode-then-
+    recheck logic but sent the bare segment before the first ``;`` through the
+    literal-pattern pass alone, so a URL nested there by percent-encoding --
+    rather than written out literally -- survived intact.
+    """
+    nested = quote("http://bob:s3cret@z/", safe="")
+    redacted = redact_url(f"http://h/proxy/{nested}")
+
+    assert "s3cret" not in unquote(redacted)
+    assert REDACTED in unquote(redacted)
+    # A path with no nested credential, percent-encoded or not, is unchanged.
+    assert redact_url("http://h/proxy/%2Fplain%2Fpath") == "http://h/proxy/%2Fplain%2Fpath"
+
+
+def test_identifying_query_and_matrix_keys_are_redacted_in_urls_too() -> None:
+    """`redact_url` and `anonymize` must agree on what an identifying key is.
+
+    `is_identifying_key` names -- `ddnsName`, `wanAddress` -- were only checked
+    by `anonymize`'s mapping walk. A URL carrying the same key in its query
+    string or as a path matrix parameter passed `redact_url` untouched.
+    """
+    assert redact_url("http://h/x?ddnsName=example.dyndns.org") == (
+        f"http://h/x?ddnsName={REDACTED}"
+    )
+    assert redact_url("http://h/x;wanAddress=203.0.113.9") == (
+        f"http://h/x;wanAddress={REDACTED}"
+    )
+    # A non-identifying key is untouched.
+    assert redact_url("http://h/x?cameraNum=3") == "http://h/x?cameraNum=3"
+
+
+def test_userinfo_with_a_present_but_empty_password_is_not_fabricated_or_dropped() -> None:
+    """`http://bob:@host/` has a colon but no password -- distinct from both neighbors.
+
+    `http://bob@host/` (no colon) must not gain a fabricated password, and
+    `http://bob:pw@host/` (a real password) must still be redacted. The
+    colon-present-but-empty case sits between them: the colon is real and is
+    replayed, but there is still no password value to invent a redaction for.
+    """
+    assert redact_url("http://bob@host/") == f"http://{REDACTED}@host/"
+    assert redact_url("http://bob:@host/") == f"http://{REDACTED}:@host/"
+    assert redact_url("http://bob:pw@host/") == f"http://{REDACTED}:{REDACTED}@host/"
+
+
 def test_an_embedded_protocol_relative_reference_matches_the_anchored_rule() -> None:
     """The two passes must agree about what a URL is, or free text is the leaking side.
 

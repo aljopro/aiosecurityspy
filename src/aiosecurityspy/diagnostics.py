@@ -18,9 +18,9 @@ value are redacted:
 2. **Identifying network detail** -- matched by
    :data:`aiosecurityspy.const.IDENTIFYING_KEYS` (``wan-address``, ``ddns-name``,
    ``deviceList`` -- research §5.11, §5.17.2).
-3. **Stream-URL credentials** -- ``?auth=`` in both its base64 and ``!``-prefixed
-   scoped-token forms (research §5.16.1), plus userinfo in URL authority and
-   every nested URL.
+3. **Stream-URL credentials** -- ``?auth=`` regardless of its value's shape
+   (base64 or ``!``-prefixed scoped token, research §5.16.1), plus userinfo in
+   URL authority and every nested URL.
 
 Everything here is pure: no network, no I/O, no logger, no state. It imports the
 standard library and :mod:`aiosecurityspy.const` and nothing else -- deliberately
@@ -267,11 +267,18 @@ def _redact_userinfo(authority: str) -> str:
         # `http://@host/` carries no credential. Redacting it would tell the
         # reader one had been there, which is a fabricated fact.
         return authority
-    # Same argument one line down: `http://bob@host/` carries a username and no
-    # password, so emitting `**REDACTED**:**REDACTED**` would invent a password
-    # that was never in the string. The colon is replayed only if it arrived.
-    _, colon, _ = userinfo.partition(":")
-    return f"{REDACTED}{f':{REDACTED}' if colon else ''}@{host}"
+    # `http://bob@host/` carries a username and no password, so emitting
+    # `**REDACTED**:**REDACTED**` would invent a password that was never in the
+    # string -- the colon is replayed only if it arrived. `http://bob:@host/`
+    # carries a colon but an *empty* password: the colon is replayed (it was
+    # there), but nothing is redacted after it, since there is no password to
+    # hide either way.
+    _, colon, password = userinfo.partition(":")
+    if not colon:
+        return f"{REDACTED}@{host}"
+    if not password:
+        return f"{REDACTED}:@{host}"
+    return f"{REDACTED}:{REDACTED}@{host}"
 
 
 def _redact_query(query: str) -> str:
@@ -294,16 +301,47 @@ def _redact_query(query: str) -> str:
         key, separator, _ = piece.partition("=")
         # The name is unquoted before the test but the original text is what goes
         # back out, so `auth%54oken=x` cannot slip past the predicate.
-        if separator and is_credential_key(unquote(key)):
+        if separator and _is_redacted_key(unquote(key)):
             pieces[index] = f"{key}={REDACTED}"
         else:
             pieces[index] = _redact_parameter_value(piece)
     return "".join(pieces)
 
 
+def _is_redacted_key(key: str) -> bool:
+    """Whether a parameter or matrix-segment name is credential- or PII-shaped.
+
+    Both :func:`redact_url`'s query/path parameters and :func:`anonymize`'s
+    mapping keys must agree on what counts as sensitive, so this checks the same
+    two predicates :func:`anonymize` does.
+    """
+    return is_credential_key(key) or is_identifying_key(key)
+
+
 def _redact_nested_urls(text: str) -> str:
     """Redact every URL *embedded* in a longer string, leaving the rest alone."""
     return _EMBEDDED_URL_RE.sub(lambda found: redact_url(found.group()), text)
+
+
+def _redact_nested_urls_deep(text: str) -> str:
+    """Redact nested URLs in ``text``, including ones hidden by percent-encoding.
+
+    A single :func:`~urllib.parse.unquote` recovers a URL that was nested by
+    percent-encoding it into a parameter value or a bare path segment -- the
+    normal way to embed one. Re-encoding happens only when the decoded form
+    actually held a URL to redact, so text this function did not change comes
+    back byte for byte as it went in.
+    """
+    redacted = _redact_nested_urls(text)
+    if redacted != text:
+        return redacted
+    if "%" not in text:
+        return text
+    decoded = unquote(text)
+    decoded_redacted = _redact_nested_urls(decoded)
+    if decoded_redacted == decoded:
+        return text
+    return quote(decoded_redacted, safe="")
 
 
 def _redact_parameter_value(pair: str) -> str:
@@ -312,25 +350,18 @@ def _redact_parameter_value(pair: str) -> str:
     A callback or a ``next=`` target carries its own userinfo, and the outer pass
     consumed this whole string as one match, so nothing else will look at it.
     Only the parameter *name* is tested by the caller; the value needs its own
-    look.
-
-    The value is also examined percent-decoded, because percent-encoding is the
-    normal way to nest a URL inside a parameter and a single ``unquote`` recovers
-    the credential from it. Re-encoding happens only when the decoded form
-    actually held one, so a parameter this function did not change comes back
-    byte for byte as it went in.
+    look, including percent-decoded.
     """
     redacted = _redact_nested_urls(pair)
     if redacted != pair:
         return redacted
     key, separator, value = pair.partition("=")
-    if not separator or "%" not in value:
+    if not separator:
         return pair
-    decoded = unquote(value)
-    decoded_redacted = _redact_nested_urls(decoded)
-    if decoded_redacted == decoded:
+    value_redacted = _redact_nested_urls_deep(value)
+    if value_redacted == value:
         return pair
-    return f"{key}={quote(decoded_redacted, safe='')}"
+    return f"{key}={value_redacted}"
 
 
 def _redact_path(path: str) -> str:
@@ -347,12 +378,12 @@ def _redact_path(path: str) -> str:
     the outer match consumes the nested URL and no later pass sees it.
     """
     if ";" not in path:
-        return _redact_nested_urls(path)
+        return _redact_nested_urls_deep(path)
     segments = path.split(";")
-    segments[0] = _redact_nested_urls(segments[0])
+    segments[0] = _redact_nested_urls_deep(segments[0])
     for index, segment in enumerate(segments[1:], start=1):
         key, separator, _ = segment.partition("=")
-        if separator and is_credential_key(unquote(key)):
+        if separator and _is_redacted_key(unquote(key)):
             segments[index] = f"{key}={REDACTED}"
         else:
             segments[index] = _redact_parameter_value(segment)
