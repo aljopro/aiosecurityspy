@@ -1340,6 +1340,17 @@ class CapturePreview:
     data: bytes
     content_type: str
 
+    def __repr__(self) -> str:
+        """Return a representation that omits the bytes payload.
+
+        ``data`` is up to 8 MiB of JPEG bytes, and a default dataclass
+        ``repr`` echoes it in full -- so a log line, a traceback frame, or
+        ``pytest --showlocals`` can produce up to 8 MB per ``CapturePreview``.
+        This follows the same minimal pattern as :class:`CameraSettings`,
+        which suppresses its payload for the same reason (research §8.3).
+        """
+        return f"CapturePreview(content_type={self.content_type!r}, size={len(self.data)})"
+
 
 @dataclass(frozen=True, slots=True)
 class CaptureFileBandwidth:

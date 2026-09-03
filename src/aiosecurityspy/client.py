@@ -917,7 +917,19 @@ class SecuritySpyClient:
         # The getpreview URL uses a literal second '?' (research §4.3): the
         # archive flag is part of the path string, not a separate query param.
         # The filename is percent-encoded per the existing precedent in client.py.
-        encoded_path = "/".join(quote(part, safe="") for part in capture.path.split("/", 2))
+        try:
+            encoded_path = "/".join(quote(part, safe="") for part in capture.path.split("/", 2))
+        except UnicodeEncodeError as err:
+            # `quote()` raises UnicodeEncodeError on a lone surrogate. The
+            # intent contract forbids any ValueError (UnicodeEncodeError is
+            # one) from escaping a public method, so map to the typed
+            # hierarchy here. The message names the operation, not the input
+            # -- the value is caller-supplied and may carry identifying detail.
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "capture path is not encodable as a URL component",
+            ) from err
         path = f"{ENDPOINT_GET_PREVIEW}?/{encoded_path}?archive={archive}"
         body, content_type = await self._request_bytes(
             path, permission=PERMISSION_NAMES[PERM_FILES], camera_number=capture.camera
@@ -1308,7 +1320,19 @@ class SecuritySpyClient:
                 unexpected status, or the transport failed.
 
         """
-        encoded_suffix = "/".join(quote(part, safe="") for part in path_suffix.split("/", 2))
+        try:
+            encoded_suffix = "/".join(quote(part, safe="") for part in path_suffix.split("/", 2))
+        except UnicodeEncodeError as err:
+            # `quote()` raises UnicodeEncodeError on a lone surrogate. The
+            # intent contract forbids any ValueError (UnicodeEncodeError is
+            # one) from escaping a public method, so map to the typed
+            # hierarchy here. The message names the operation, not the input
+            # -- the value is caller-supplied and may carry identifying detail.
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "capture path is not encodable as a URL component",
+            ) from err
         path = f"{endpoint}/{encoded_suffix}"
         url = self._connection.build_url(path)
         _LOGGER.debug(
@@ -1445,7 +1469,21 @@ class SecuritySpyClient:
         # which one the server uses is unknown.
         # `safe=""` leaves nothing unescaped, so `&`, `=`, `+` and `%` in a value cannot
         # forge a field separator, and a literal `+` round-trips as `%2B`.
-        parts.extend(f"{key}={quote(value, safe='')}" for key, value in fields.items())
+        try:
+            parts.extend(f"{key}={quote(value, safe='')}" for key, value in fields.items())
+        except UnicodeEncodeError as err:
+            # `quote()` raises UnicodeEncodeError on a lone surrogate. The
+            # intent contract forbids any ValueError (UnicodeEncodeError is
+            # one) from escaping a public method, so map to the typed
+            # hierarchy here. The message names the operation, not the input
+            # -- the value is the caller-supplied patch field, which may
+            # carry a camera name, an overlay string, or any other field
+            # the user could be configuring.
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "settings field is not encodable as a URL component",
+            ) from err
         # The patch itself is not logged: it can carry a camera name or an
         # overlay string, and settings payloads are never logged (research §8.3).
         _LOGGER.debug("Writing %s settings field(s) to camera %s", len(fields), number)
