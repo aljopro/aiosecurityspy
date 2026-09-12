@@ -778,9 +778,7 @@ def test_identifying_query_and_matrix_keys_are_redacted_in_urls_too() -> None:
     assert redact_url("http://h/x?ddnsName=example.dyndns.org") == (
         f"http://h/x?ddnsName={REDACTED}"
     )
-    assert redact_url("http://h/x;wanAddress=203.0.113.9") == (
-        f"http://h/x;wanAddress={REDACTED}"
-    )
+    assert redact_url("http://h/x;wanAddress=203.0.113.9") == (f"http://h/x;wanAddress={REDACTED}")
     # A non-identifying key is untouched.
     assert redact_url("http://h/x?cameraNum=3") == "http://h/x?cameraNum=3"
 
