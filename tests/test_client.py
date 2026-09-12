@@ -1003,9 +1003,18 @@ async def test_auth_rejection_surfaces_from_the_shared_seam() -> None:
 
 @pytest.mark.asyncio
 async def test_permission_rejection_surfaces_from_the_shared_seam() -> None:
+    """`++caplist` is 'files'-gated, the same as ++getpreview/++getfile.
+
+    Regression: the call site used to omit `permission=`, so a denied
+    account got `SecuritySpyPermissionError("unknown", ...)` here while
+    getting the correctly-named `"files"` from the sibling media methods for
+    the same underlying permission bit (research §5, "Get captured footage"
+    -> PERM_FILES).
+    """
     session = FakeSession(403, "")
-    with pytest.raises(SecuritySpyPermissionError):
+    with pytest.raises(SecuritySpyPermissionError) as err:
         await get_captures(session)
+    assert err.value.permission == PERMISSION_NAMES[PERM_FILES]
 
 
 # --- ordering ---------------------------------------------------------------

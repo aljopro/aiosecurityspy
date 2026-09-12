@@ -855,6 +855,13 @@ class SecuritySpyClient:
                 "endDate": end_date.isoformat(),
                 "filter": str(filter_value),
             },
+            # `++caplist` is the same 'files'-gated capture-access surface as
+            # `++getpreview`/`++getfile` (research §5, "Get captured footage"
+            # -> PERM_FILES): a permission-denied account must be told which
+            # permission is missing, not `_PERMISSION_UNKNOWN`. No single
+            # `camera_number` applies -- this request spans every camera in
+            # `numbers`.
+            permission=PERMISSION_NAMES[PERM_FILES],
         )
         return self._decode_captures(payload, server_timezone)
 

@@ -108,6 +108,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   even with a perfectly valid ceiling set; `deadline()` now falls back to the
   ceiling in that case, since the ceiling is computed from `now + gap` and
   cannot itself overflow.)
+- `SecuritySpyClient.async_get_captures()` (`++caplist`) now names the
+  `'files'` permission on a denied request instead of `"unknown"`. `++caplist`
+  is the same 'files'-gated capture-access surface as `++getpreview` and
+  `++getfile` (research §5, "Get captured footage" -> `PERM_FILES`), but its
+  request never passed a `permission=` context, so `SecuritySpyPermissionError`
+  fell back to its unknown-permission sentinel for this one call site while its
+  sibling media methods correctly named `'files'` for the identical bit.
 - `EpisodeReducer.add()` now runs the inactivity check for a signal whose
   confidence is non-finite. The confidence is still ignored, but the timestamp
   is usable evidence that time has passed, so a lapsed episode no longer stays
