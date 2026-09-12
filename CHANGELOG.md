@@ -77,11 +77,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `EpisodeReducer` no longer keeps an episode open for the duration of a forward
   clock skew. A record stamped ahead of the caller's clock used to pin the
   inactivity deadline to that future instant, so a signal an hour ahead held the
-  episode open for an hour; `tick(now)` now pulls any anchor later than `now`
-  back to it. `tick`'s `now` is the only authority for this — a signal's own
-  timestamp is the value a skew corrupts — so the clamp is the one place where
-  the tick and arrival paths deliberately differ. They still agree instant for
-  instant on unskewed input.
+  episode open for an hour; `tick(now)` now bounds such a track's deadline to
+  one gap past the tick that first noticed the anchor was ahead of `now`.
+  `tick`'s `now` is the only authority for this — a signal's own timestamp is
+  the value a skew corrupts — so this bound is the one place where the tick
+  and arrival paths deliberately differ. They still agree instant for instant
+  on unskewed input.
+  (Follow-up, 2026-09-12: the first version of this fix pulled the track's
+  own `last_qualifying`/`last_any`/`start` back to `now` in place. That
+  mutation was one-way (`min()`, never restored), so an ordinary, small clock
+  disagreement between the signal source and the caller's clock — not just an
+  hour-scale anomaly — could freeze a track's deadline permanently at
+  whatever `now` happened to be on the first tick that noticed it, closing the
+  episode earlier than the true deadline by an amount that depended on tick
+  cadence rather than on the actual clock disagreement. The bound is now a
+  separate `skew_ceiling` that never touches the track's real timestamps: the
+  emitted episode still reports the true, unmutated `last_signal`/`start`, the
+  worst-case latency is bounded by the clock disagreement itself rather than
+  by polling cadence, and the bound clears itself once `now` naturally catches
+  up to the anchor.)
+  (Second follow-up, same day, independent review: the ceiling from the first
+  follow-up was still set once and frozen — a continuously-active track under
+  sustained drift kept its anchor exactly that far ahead of `now` forever, so
+  the frozen ceiling closed it after one gap of real time regardless of
+  ongoing signals. The ceiling now tracks the anchor value it was computed
+  against and re-extends whenever the anchor has genuinely advanced since,
+  freezing only once the anchor itself stalls. Also: `deadline()` returned
+  `None` on an overflowing `anchor + gap` before ever checking the ceiling, so
+  an extreme (near-`datetime.max`) anchor made a track permanently unclosable
+  even with a perfectly valid ceiling set; `deadline()` now falls back to the
+  ceiling in that case, since the ceiling is computed from `now + gap` and
+  cannot itself overflow.)
 - `EpisodeReducer.add()` now runs the inactivity check for a signal whose
   confidence is non-finite. The confidence is still ignored, but the timestamp
   is usable evidence that time has passed, so a lapsed episode no longer stays

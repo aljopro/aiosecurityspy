@@ -377,23 +377,72 @@ class _Track:
     last_qualifying: datetime | None = None
     run: int = 0
     opened: bool = False
+    #: Set while this track's anchor looks ahead of `now`; ``None`` otherwise.
+    #: See :meth:`observe_now`.
+    skew_ceiling: datetime | None = None
+    #: The anchor value `skew_ceiling` was last computed against. Lets
+    #: :meth:`observe_now` tell "still receiving fresh signals" (the anchor
+    #: keeps advancing) from "gone quiet since the ceiling was set" (it
+    #: hasn't) -- see :meth:`observe_now`.
+    skew_anchor_seen: datetime | None = None
 
-    def clamp_future(self, now: datetime) -> None:
-        """Pull any instant later than `now` back to `now`.
+    def observe_now(self, now: datetime, gap: timedelta) -> None:
+        """Bound how long a future-stamped anchor can hold this track open.
 
-        A timestamp ahead of the caller's own clock is not credible evidence
-        about when this track was last active: one signal stamped an hour ahead
-        would otherwise pin the inactivity deadline an hour out and hold the
-        episode open for the whole skew. `now` here always comes from
-        :meth:`EpisodeReducer.tick`, the caller's single authoritative clock --
-        never from a signal's own timestamp, which is exactly the value under
-        suspicion. Clamping `start` too keeps the documented
-        ``start <= last_signal`` invariant intact.
+        This never touches `start`, `last_any` or `last_qualifying`: a
+        timestamp ahead of the caller's own clock is not credible evidence
+        about when this track was last active, but it is still the only
+        record of *when the signal actually arrived*, and overwriting it would
+        both lie in every emitted :class:`DetectionEpisode` and permanently
+        destroy the true anchor -- including for a track that keeps receiving
+        further, ordinary signals, since :meth:`EpisodeReducer._absorb` only
+        ever advances `last_qualifying` forward and could never recover a
+        value clobbered down to some earlier tick's `now`.
+
+        Instead, a tick that notices the anchor is ahead of `now` records a
+        ceiling of ``now + gap``: the deadline this track will be held to
+        regardless of how far ahead the anchor claims to be. That bounds the
+        worst case to one gap from the moment the skew was noticed -- not the
+        full skew -- while a benign, small clock disagreement between the
+        caller's clock and the signal source converges on its own, within
+        roughly the size of that disagreement, as soon as `now` naturally
+        catches up to the anchor. The ceiling is cleared the moment that
+        happens, so a track that goes on to receive genuinely-future signals
+        is not left permanently capped by whatever `now` happened to be at
+        first detection.
+
+        The ceiling is only ever set **once** per anchor value, not once per
+        track. A track under a small, *sustained* clock disagreement --
+        every camera whose clock simply runs a few seconds ahead of the
+        caller's, ordinary in a deployment with no NTP guarantee between the
+        two -- keeps advancing its own anchor as genuine signals keep
+        arriving, always staying roughly that disagreement ahead of `now`.
+        If the ceiling were fixed at the *first* tick that noticed this and
+        never moved again, such a track would close after one gap of real
+        time regardless of how long the detection legitimately continues --
+        which is what an earlier version of this method did. So each call
+        compares the anchor against `skew_anchor_seen`, the anchor value the
+        current ceiling was computed against: an unchanged anchor means no
+        fresh signal arrived since, and the existing ceiling is left to run
+        out (the "one bad signal, then silence" case this exists for); an
+        advanced anchor means genuine new evidence arrived, and the ceiling
+        is recomputed against the current `now` (the "still being detected,
+        just on a drifting clock" case).
+
+        `now` here always comes from :meth:`EpisodeReducer.tick`, the caller's
+        single authoritative clock -- never from a signal's own timestamp,
+        which is exactly the value under suspicion.
         """
-        self.start = min(self.start, now)
-        self.last_any = min(self.last_any, now)
-        if self.last_qualifying is not None:
-            self.last_qualifying = min(self.last_qualifying, now)
+        anchor = self.last_qualifying if self.opened and self.last_qualifying is not None else None
+        if anchor is None:
+            anchor = self.last_any
+        if anchor > now:
+            if self.skew_ceiling is None or anchor != self.skew_anchor_seen:
+                self.skew_ceiling = now + gap
+                self.skew_anchor_seen = anchor
+        else:
+            self.skew_ceiling = None
+            self.skew_anchor_seen = None
 
     def deadline(self, gap: timedelta) -> datetime | None:
         """Return the instant this track lapses, or ``None`` if it cannot.
@@ -421,19 +470,30 @@ class _Track:
 
         Returns:
             The lapse instant, or ``None`` when adding the gap would run off the
-            end of the representable range. Such a track is reported as
-            not-yet-lapsed rather than raising ``OverflowError`` out of a public
-            method -- the same choice :func:`~aiosecurityspy.parse_event_line`
-            makes about an unrepresentable instant.
+            end of the representable range *and* no `skew_ceiling` bound
+            applies. Such a track is reported as not-yet-lapsed rather than
+            raising ``OverflowError`` out of a public method -- the same
+            choice :func:`~aiosecurityspy.parse_event_line` makes about an
+            unrepresentable instant. An overflowing anchor does not bypass the
+            ceiling: :meth:`observe_now` computes it from `now` and `gap`, not
+            from the anchor, so it cannot itself overflow, and a track cannot
+            be allowed to become unclosable simply because its anchor is an
+            extreme, likely-bogus timestamp.
 
         """
         anchor = self.last_qualifying if self.opened and self.last_qualifying is not None else None
         if anchor is None:
             anchor = self.last_any
         try:
-            return anchor + gap
+            true_deadline: datetime | None = anchor + gap
         except OverflowError:
-            return None
+            true_deadline = None
+        ceiling_applies = self.skew_ceiling is not None and (
+            true_deadline is None or self.skew_ceiling < true_deadline
+        )
+        if ceiling_applies:
+            return self.skew_ceiling
+        return true_deadline
 
     def snapshot(self, camera: int, object_class: str, *, end: datetime | None) -> DetectionEpisode:
         """Freeze the current accumulation into a public episode."""
@@ -757,21 +817,21 @@ class EpisodeReducer:
         of the state they are entitled to judge with the clock they hold.
 
         `authoritative` marks the one asymmetry between them. Only :meth:`tick`
-        sets it, and only there may a track's own instants be pulled back to
-        `now`: a signal's timestamp is the value a forward clock skew corrupts,
-        so it cannot be the authority on whether it is itself in the future.
-        On unskewed input the flag changes nothing and the two paths still agree
-        instant for instant.
+        sets it, and only there may a track's deadline be bounded against
+        `now`: a signal's timestamp is the value a forward clock skew
+        corrupts, so it cannot be the authority on whether it is itself in the
+        future. On unskewed input the flag changes nothing and the two paths
+        still agree instant for instant.
         """
         emitted: list[EpisodeEvent] = []
         for key in keys:
             track = self._tracks.get(key)
             if track is None:
                 continue
-            if authoritative:
-                track.clamp_future(now)
             camera, object_class = key
             config = self.config_for(camera, object_class)
+            if authoritative:
+                track.observe_now(now, config.gap)
             deadline = track.deadline(config.gap)
             if deadline is None or now <= deadline:
                 continue

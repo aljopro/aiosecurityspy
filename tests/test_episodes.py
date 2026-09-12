@@ -1007,8 +1007,13 @@ def test_a_future_stamped_signal_does_not_latch_an_episode_open() -> None:
     episodes = closed(emitted)
     assert len(episodes) == 1
     assert episodes[0].end == now + GAP
-    # The clamp keeps the model's own `start <= last_signal` invariant intact.
+    # `start` is never mutated by the skew bound, so the model's own
+    # `start <= last_signal` invariant holds on its own -- no clamp needed.
     assert episodes[0].start <= episodes[0].last_signal
+    # The poisoned anchor is reported truthfully rather than silently
+    # corrected: the bound caps only the *deadline*, never the timestamps a
+    # consumer reads back off the emitted episode.
+    assert episodes[0].last_signal == T0 + timedelta(hours=1)
 
 
 def test_the_forward_clamp_is_a_no_op_on_unskewed_input() -> None:
@@ -1025,6 +1030,104 @@ def test_the_forward_clamp_is_a_no_op_on_unskewed_input() -> None:
     arrived = closed(by_arrival.add(signal(90.0, at=last + GAP + timedelta(seconds=5))))
     assert len(ticked) == len(arrived) == 1
     assert ticked[0].end == arrived[0].end == last + GAP
+
+
+def test_sustained_small_clock_drift_bounds_worst_case_but_does_not_close_early() -> None:
+    """A benign, ongoing drift must not repeatedly re-clamp a track's deadline.
+
+    Regression for a real deployment risk: signal timestamps come from the
+    SecuritySpy server's own clock while a consumer is expected to call
+    `tick(datetime.now(UTC))` against its own host clock (README). A small,
+    constant drift between the two (the server running a few seconds ahead,
+    with no NTP guarantee) must not, on its own, cause the reducer to fabricate
+    a deadline earlier than one gap past the true last qualifying signal by
+    more than the drift itself -- regardless of how many times `tick` happens
+    to be called while the drift is still "in the future" relative to `now`.
+    """
+    drift = timedelta(seconds=3)
+    reducer = EpisodeReducer(default=ReducerConfig(threshold=70.0, debounce=1))
+
+    # The last qualifying signal, stamped by a clock `drift` ahead of `tick`'s.
+    last_qualifying_at = T0 + drift
+    reducer.add(signal(90.0, at=last_qualifying_at))
+    assert len(reducer.open_episodes) == 1
+
+    # Repeated ticks while `now` is still behind the drifted anchor must not
+    # each re-clamp the deadline down to that tick's own `now` -- only the
+    # first such tick may set a bound, and it must not be tighter than one
+    # gap past the true anchor, minus at most the drift itself.
+    for offset in (timedelta(seconds=0), timedelta(seconds=1), timedelta(seconds=2)):
+        assert reducer.tick(T0 + offset) == ()
+
+    # `now` has now caught up to (and passed) the drifted anchor: the bound
+    # must clear, and the true deadline (anchor + gap) governs again.
+    emitted = reducer.tick(last_qualifying_at + GAP + timedelta(seconds=1))
+    episodes = closed(emitted)
+    assert len(episodes) == 1
+    assert episodes[0].end == last_qualifying_at + GAP
+
+
+def test_continuous_activity_under_sustained_drift_does_not_close_early() -> None:
+    """A track that keeps receiving fresh signals must not close on schedule.
+
+    Regression: an earlier version of the skew ceiling was set once, on the
+    first tick that noticed the anchor ahead of `now`, and never moved again
+    while non-``None``. Under a small, *sustained* drift (a camera clock a few
+    seconds ahead of the caller's, with no NTP guarantee between the two --
+    ordinary, not anomalous) a still-active track's anchor stays that same
+    amount ahead of `now` indefinitely, so the frozen ceiling would fire and
+    close the episode after about one gap of real time had passed since the
+    *first* tick -- regardless of how long the genuine detection continued.
+    The ceiling must instead keep pace with fresh signals and only stop moving
+    once the anchor itself stops advancing.
+    """
+    drift = timedelta(seconds=3)
+    reducer = EpisodeReducer(default=ReducerConfig(threshold=70.0, debounce=1))
+
+    real_start = T0
+    reducer.add(signal(90.0, at=real_start + drift))
+
+    # Ten seconds of continuous, genuine activity -- signal every 2s, tick
+    # every 2s in between -- well past where the old, frozen ceiling
+    # (first_tick_now + GAP) would have fired for a longer-lived detection.
+    for step in range(1, 11):
+        real_now = real_start + timedelta(seconds=2 * step)
+        reducer.add(signal(90.0, at=real_now + drift))
+        assert reducer.tick(real_now) == ()
+
+    # Still open: the last signal was well within `gap` of "now".
+    assert len(reducer.open_episodes) == 1
+
+    # Detection genuinely stops. One gap after the *last* real signal (not
+    # one gap after the very first tick), the episode closes.
+    last_real = real_start + timedelta(seconds=20)
+    emitted = reducer.tick(last_real + drift + GAP + timedelta(seconds=1))
+    episodes = closed(emitted)
+    assert len(episodes) == 1
+    assert episodes[0].end == last_real + drift + GAP
+
+
+def test_an_overflowing_anchor_still_closes_via_the_skew_ceiling() -> None:
+    """A ceiling must not be defeated by the very overflow guard it exists for.
+
+    Regression: `deadline()` used to compute `anchor + gap` first and return
+    `None` on `OverflowError` before ever consulting `skew_ceiling`. An anchor
+    near `datetime.max` -- a hand-built or malformed signal, not something
+    `parse_event_line` produces -- would therefore overflow and make the track
+    permanently unclosable by `tick()`, even though `observe_now` had already
+    recorded a perfectly ordinary, non-overflowing ceiling for it.
+    """
+    reducer = EpisodeReducer(default=ReducerConfig(threshold=70.0, debounce=1))
+    reducer.add(signal(90.0, at=datetime.max.replace(tzinfo=UTC) - timedelta(seconds=1)))
+    assert len(reducer.open_episodes) == 1
+
+    now = T0
+    assert reducer.tick(now) == ()
+
+    emitted = reducer.tick(now + GAP + timedelta(seconds=1))
+    episodes = closed(emitted)
+    assert len(episodes) == 1
+    assert episodes[0].end == now + GAP
 
 
 def test_a_non_finite_signal_still_drives_the_inactivity_check() -> None:
