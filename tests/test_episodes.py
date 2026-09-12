@@ -1107,6 +1107,42 @@ def test_continuous_activity_under_sustained_drift_does_not_close_early() -> Non
     assert episodes[0].end == last_real + drift + GAP
 
 
+def test_a_stale_ceiling_from_an_earlier_tick_does_not_split_an_active_episode() -> None:
+    """`add()`'s arrival check must never be bounded by a tick's own ceiling.
+
+    Regression: an earlier version of `deadline()` applied `skew_ceiling`
+    unconditionally, so `add()`'s "close by arrival" check (which shares the
+    same `_expire` path as `tick()`) could be bounded by a ceiling a *tick*
+    had set earlier and never touch again. Under ordinary, sustained clock
+    drift, a track fed only through `add()`/`feed()` between infrequent ticks
+    keeps its anchor exactly `drift` ahead of real time -- so once real time,
+    as carried by a later *arriving signal's own timestamp*, passed that
+    stale ceiling, the still-genuinely-active episode was closed on arrival
+    and split into two, with no tick involved at all.
+    """
+    drift = timedelta(seconds=3)
+    reducer = EpisodeReducer(default=ReducerConfig(threshold=70.0, debounce=1))
+
+    real_start = T0
+    reducer.add(signal(90.0, at=real_start + drift))
+    assert len(reducer.open_episodes) == 1
+
+    # One tick, early, while the anchor still looks ahead of `now`: this is
+    # exactly what sets a `skew_ceiling` in the first place.
+    assert reducer.tick(real_start) == ()
+
+    # From here on, ONLY `add()` -- no further tick(). Comfortably past
+    # `real_start + GAP`, where a frozen ceiling from the one tick above
+    # would misfire if `add()` still consulted it.
+    steps = int(GAP.total_seconds()) // 2 + 5
+    for step in range(1, steps + 1):
+        real_now = real_start + timedelta(seconds=2 * step)
+        emitted = reducer.add(signal(90.0, at=real_now + drift))
+        assert emitted == (), f"episode closed on arrival at step {step}"
+
+    assert len(reducer.open_episodes) == 1
+
+
 def test_an_overflowing_anchor_still_closes_via_the_skew_ceiling() -> None:
     """A ceiling must not be defeated by the very overflow guard it exists for.
 
@@ -1128,6 +1164,25 @@ def test_an_overflowing_anchor_still_closes_via_the_skew_ceiling() -> None:
     episodes = closed(emitted)
     assert len(episodes) == 1
     assert episodes[0].end == now + GAP
+
+
+def test_observe_now_never_raises_when_now_itself_is_near_datetime_max() -> None:
+    """Setting a ceiling must not overflow just because `now` is extreme too.
+
+    Regression: `observe_now` computed `self.skew_ceiling = now + gap`
+    unguarded, unlike `deadline()`'s already-guarded `anchor + gap`. A `now`
+    within one gap of `datetime.max` -- reachable only by handing `tick()` an
+    extreme instant, not something a real clock produces -- overflowed that
+    addition and raised `OverflowError` straight out of `tick()`.
+    """
+    reducer = EpisodeReducer(default=ReducerConfig(threshold=70.0, debounce=1))
+    reducer.add(signal(90.0, at=datetime.max.replace(tzinfo=UTC)))
+    assert len(reducer.open_episodes) == 1
+
+    now = datetime.max.replace(tzinfo=UTC) - GAP / 2
+    # Must not raise: `now + GAP` here would overflow `datetime.max`.
+    assert reducer.tick(now) == ()
+    assert len(reducer.open_episodes) == 1
 
 
 def test_a_non_finite_signal_still_drives_the_inactivity_check() -> None:

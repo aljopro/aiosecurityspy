@@ -386,6 +386,19 @@ class _Track:
     #: hasn't) -- see :meth:`observe_now`.
     skew_anchor_seen: datetime | None = None
 
+    @property
+    def _anchor(self) -> datetime:
+        """The instant inactivity is measured from.
+
+        An opened track's last **qualifying** signal, or -- for a track that
+        never opened -- its last signal of any kind. Shared by
+        :meth:`observe_now` and :meth:`deadline` so the two can never drift
+        apart on what "the track's anchor" means.
+        """
+        if self.opened and self.last_qualifying is not None:
+            return self.last_qualifying
+        return self.last_any
+
     def observe_now(self, now: datetime, gap: timedelta) -> None:
         """Bound how long a future-stamped anchor can hold this track open.
 
@@ -433,18 +446,26 @@ class _Track:
         single authoritative clock -- never from a signal's own timestamp,
         which is exactly the value under suspicion.
         """
-        anchor = self.last_qualifying if self.opened and self.last_qualifying is not None else None
-        if anchor is None:
-            anchor = self.last_any
+        anchor = self._anchor
         if anchor > now:
             if self.skew_ceiling is None or anchor != self.skew_anchor_seen:
-                self.skew_ceiling = now + gap
-                self.skew_anchor_seen = anchor
+                try:
+                    self.skew_ceiling = now + gap
+                except OverflowError:
+                    # `now` itself is too close to `datetime.max` for even one
+                    # gap to be representable. There is no sane bound to set;
+                    # leaving the ceiling exactly where it stood (unset, or an
+                    # earlier, still-representable value) is the total,
+                    # never-raise-out-of-a-public-method choice `deadline`
+                    # already makes for the equivalent case in `anchor + gap`.
+                    pass
+                else:
+                    self.skew_anchor_seen = anchor
         else:
             self.skew_ceiling = None
             self.skew_anchor_seen = None
 
-    def deadline(self, gap: timedelta) -> datetime | None:
+    def deadline(self, gap: timedelta, *, apply_ceiling: bool = True) -> datetime | None:
         """Return the instant this track lapses, or ``None`` if it cannot.
 
         Inactivity is the *only* thing that ends an episode here -- meaning no
@@ -468,28 +489,48 @@ class _Track:
         is only being kept so a later debounce run can report the presence's
         real start, and after a gap of silence that context is stale.
 
+        Args:
+            apply_ceiling: Whether a `skew_ceiling` set by an earlier
+                authoritative tick may bound the result. ``True`` (the
+                default) for :meth:`EpisodeReducer.tick`'s own evaluation.
+                :meth:`EpisodeReducer.add`'s "close by arrival" check passes
+                ``False``: the ceiling is *tick's* assessment of how long a
+                bogus anchor may hold a track open, computed against tick's
+                authoritative clock. Letting a later *arrival* -- whose own
+                timestamp is exactly the value under suspicion -- close a
+                still-genuinely-active track against that same fixed ceiling
+                would reproduce the sustained-drift bug this mechanism exists
+                to prevent, just via the other path: a continuously-active
+                track under ordinary drift would hit a ceiling set by some
+                earlier tick and get closed (and its episode split into two)
+                on arrival, even though fresh qualifying signals kept
+                genuinely advancing its anchor the whole time. An arrival
+                check must instead measure only against the anchor's own
+                current, true deadline.
+
         Returns:
             The lapse instant, or ``None`` when adding the gap would run off the
-            end of the representable range *and* no `skew_ceiling` bound
-            applies. Such a track is reported as not-yet-lapsed rather than
-            raising ``OverflowError`` out of a public method -- the same
+            end of the representable range *and* no applicable `skew_ceiling`
+            bound exists. Such a track is reported as not-yet-lapsed rather
+            than raising ``OverflowError`` out of a public method -- the same
             choice :func:`~aiosecurityspy.parse_event_line` makes about an
-            unrepresentable instant. An overflowing anchor does not bypass the
-            ceiling: :meth:`observe_now` computes it from `now` and `gap`, not
-            from the anchor, so it cannot itself overflow, and a track cannot
-            be allowed to become unclosable simply because its anchor is an
-            extreme, likely-bogus timestamp.
+            unrepresentable instant. An overflowing anchor does not bypass an
+            *applicable* ceiling: :meth:`observe_now` computes it from `now`
+            and `gap`, not from the anchor, so it cannot itself overflow (short
+            of `now` itself sitting within one gap of `datetime.max`), and a
+            track cannot be allowed to become unclosable simply because its
+            anchor is an extreme, likely-bogus timestamp.
 
         """
-        anchor = self.last_qualifying if self.opened and self.last_qualifying is not None else None
-        if anchor is None:
-            anchor = self.last_any
+        anchor = self._anchor
         try:
             true_deadline: datetime | None = anchor + gap
         except OverflowError:
             true_deadline = None
-        ceiling_applies = self.skew_ceiling is not None and (
-            true_deadline is None or self.skew_ceiling < true_deadline
+        ceiling_applies = (
+            apply_ceiling
+            and self.skew_ceiling is not None
+            and (true_deadline is None or self.skew_ceiling < true_deadline)
         )
         if ceiling_applies:
             return self.skew_ceiling
@@ -817,11 +858,19 @@ class EpisodeReducer:
         of the state they are entitled to judge with the clock they hold.
 
         `authoritative` marks the one asymmetry between them. Only :meth:`tick`
-        sets it, and only there may a track's deadline be bounded against
-        `now`: a signal's timestamp is the value a forward clock skew
+        sets it, and only there may a track record or extend a `skew_ceiling`
+        bound against `now`, and consult that bound when computing its own
+        deadline: a signal's timestamp is the value a forward clock skew
         corrupts, so it cannot be the authority on whether it is itself in the
-        future. On unskewed input the flag changes nothing and the two paths
-        still agree instant for instant.
+        future, or on how long an anchor it does not trust may hold a track
+        open. :meth:`add`'s arrival check (`authoritative=False`) therefore
+        always measures against the anchor's own true deadline, never a
+        ceiling some earlier tick set -- otherwise a continuously-active track
+        under ordinary clock drift could hit a stale ceiling on arrival and
+        have its episode split in two, even though fresh signals kept
+        genuinely advancing its anchor the whole time. On unskewed input the
+        flag changes nothing and the two paths still agree instant for
+        instant.
         """
         emitted: list[EpisodeEvent] = []
         for key in keys:
@@ -832,7 +881,7 @@ class EpisodeReducer:
             config = self.config_for(camera, object_class)
             if authoritative:
                 track.observe_now(now, config.gap)
-            deadline = track.deadline(config.gap)
+            deadline = track.deadline(config.gap, apply_ceiling=authoritative)
             if deadline is None or now <= deadline:
                 continue
             if track.opened:
