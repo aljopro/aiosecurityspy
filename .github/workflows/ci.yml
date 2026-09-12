@@ -64,14 +64,21 @@ jobs:
         run: |
           set -euo pipefail
           sdist="$(ls dist/*.tar.gz)"
-          tar -tzf "$sdist" | grep -q 'docs/securityspy-openapi.yaml'
+          # `grep -q` exits as soon as it finds a match, closing its end of the
+          # pipe early; under `pipefail` that can make `tar` see a broken pipe
+          # (SIGPIPE) and report a nonzero "write error" even though the file
+          # was found. Capturing the full listing first avoids the race.
+          listing="$(tar -tzf "$sdist")"
+          grep -q 'docs/securityspy-openapi.yaml' <<< "$listing"
           echo "OpenAPI description present in ${sdist}"
 
       - name: Verify the wheel ships py.typed
         run: |
           set -euo pipefail
           wheel="$(ls dist/*.whl)"
-          unzip -l "$wheel" | grep -q 'aiosecurityspy/py.typed'
+          # Same early-exit-vs-pipefail hazard as the sdist check above.
+          listing="$(unzip -l "$wheel")"
+          grep -q 'aiosecurityspy/py.typed' <<< "$listing"
           echo "py.typed present in ${wheel}"
 
       - name: Import from a bare environment with no Home Assistant
