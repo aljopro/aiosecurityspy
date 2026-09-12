@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-12
+
+Breaking, pre-1.0. Two public-surface changes in this release that a 0.1.0
+consumer must adapt to (the full list of breaking changes is under ### Changed
+below):
+
+- `server_timezone` is now a **required** keyword on `client.event_stream()`,
+  `client.async_get_captures()`, `parse_event_line()` and `Capture.from_api()`.
+  It previously defaulted to UTC, which silently shifted every event and capture
+  time on a server in any other zone (story 1.13). SecuritySpy publishes an
+  *offset*, not a timezone; build one with `timezone(info.utc_offset)`.
+- `Capture.file_size` is renamed **`Capture.file_size_mb`** and decodes as
+  fractional megabytes rather than an integer byte count, which is what
+  `caplist`'s `m` field actually carries (story 1.15).
+
 ### Changed
 
 - The event stream delivers events on a task of its own, fed by a bounded queue,
@@ -135,20 +150,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   throughout: closure is the absence of a *qualifying* signal for longer than the
   gap, so a dense below-threshold run lasting longer than the gap does close an
   episode.
-
-## [0.2.0] - 2026-08-30
-
-Breaking, pre-1.0. Two public-surface changes shipped in this release that a
-0.1.0 consumer must adapt to:
-
-- `server_timezone` is now a **required** keyword on `client.event_stream()`,
-  `client.async_get_captures()`, `parse_event_line()` and `Capture.from_api()`.
-  It previously defaulted to UTC, which silently shifted every event and capture
-  time on a server in any other zone (story 1.13). SecuritySpy publishes an
-  *offset*, not a timezone; build one with `timezone(info.utc_offset)`.
-- `Capture.file_size` is renamed **`Capture.file_size_mb`** and decodes as
-  fractional megabytes rather than an integer byte count, which is what
-  `caplist`'s `m` field actually carries (story 1.15).
 
 ### Added
 
