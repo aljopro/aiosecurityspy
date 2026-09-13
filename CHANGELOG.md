@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (including the malformed single-slash `rtsp:/host:port/…` form) to its own address,
   drops `WWW-Authenticate`, `SS-UUID` and `Server`, and copies interleaved RTP
   untouched. TCP interleaved transport only. The upstream leg is cleartext RTSP on the
-  LAN, as SecuritySpy offers no RTSPS.
+  LAN, as SecuritySpy offers no RTSPS. `max_connections` (default 16) caps the consumer
+  connections served at once; more are answered `503`.
 - `client.unsecured_stream_url(server_info, camera_number)`: SecuritySpy's own RTSP
   URL for a camera, with no credential in it.
 - `ServerInfo.rtsp_port`: the web server's `http-port` when `http-enabled` is truthy,

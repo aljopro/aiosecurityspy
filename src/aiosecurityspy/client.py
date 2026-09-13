@@ -67,6 +67,7 @@ from .models import (
     capture_file_bandwidth,
     visible_camera_views,
 )
+from .relay import MAX_CONNECTIONS as RELAY_MAX_CONNECTIONS
 from .relay import RtspRelay
 from .stream import SecuritySpyEventStream
 
@@ -796,6 +797,7 @@ class SecuritySpyClient:
         bind_host: str = "127.0.0.1",
         bind_port: int = 0,
         advertised_host: str | None = None,
+        max_connections: int = RELAY_MAX_CONNECTIONS,
     ) -> RtspRelay:
         """Create a local RTSP relay for the cameras in ``server_info``.
 
@@ -811,10 +813,16 @@ class SecuritySpyClient:
             bind_port: Local port; ``0`` picks a free one.
             advertised_host: Host placed in relay URLs. Required when
                 ``bind_host`` is a wildcard address.
+            max_connections: Consumer connections the relay serves at once;
+                more are answered ``503``. Each playing connection holds its
+                own upstream connection to SecuritySpy, so size this to the
+                players you expect (for example two per camera), not higher.
 
         Raises:
-            ValueError: ``server_info.rtsp_port`` is ``None``, or ``bind_host``
-                is a wildcard without ``advertised_host``.
+            ValueError: ``server_info.rtsp_port`` is ``None``, ``bind_host`` is
+                a wildcard without ``advertised_host``, or ``max_connections``
+                is less than 1.
+            TypeError: ``bind_port`` or ``max_connections`` is not an integer.
 
         Returns:
             The unstarted relay.
@@ -828,6 +836,7 @@ class SecuritySpyClient:
             bind_host=bind_host,
             bind_port=bind_port,
             advertised_host=advertised_host,
+            max_connections=max_connections,
         )
 
     async def async_get_captures(  # noqa: PLR0913 - the camera set, the two date bounds and the two filter forms are irreducible; everything but `cameras` is keyword-only

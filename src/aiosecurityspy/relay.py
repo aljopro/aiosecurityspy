@@ -323,7 +323,8 @@ class RtspRelay:
     <aiosecurityspy.SecuritySpyClient.create_rtsp_relay>`, start it, then hand
     each consumer :meth:`stream_url`. Each consumer connection gets its own
     upstream connection; when either side closes, so does the other. At most
-    :data:`MAX_CONNECTIONS` consumer connections are served at once.
+    ``max_connections`` consumer connections (:data:`MAX_CONNECTIONS` by default)
+    are served at once; more are answered ``503`` and closed.
 
     Example:
         >>> async def main(client, server_info) -> None:
@@ -332,7 +333,7 @@ class RtspRelay:
 
     """
 
-    def __init__(  # noqa: PLR0913 - upstream identity plus the three bind choices; the latter are keyword-only
+    def __init__(  # noqa: PLR0913 - upstream identity plus the bind and capacity choices; the latter are keyword-only
         self,
         connection: _ConnectionSettings,
         rtsp_port: int,
@@ -341,6 +342,7 @@ class RtspRelay:
         bind_host: str = "127.0.0.1",
         bind_port: int = 0,
         advertised_host: str | None = None,
+        max_connections: int = MAX_CONNECTIONS,
     ) -> None:
         """Prepare a relay; nothing listens until :meth:`async_start`.
 
@@ -354,11 +356,15 @@ class RtspRelay:
             advertised_host: Host placed in :meth:`stream_url`. Required when
                 ``bind_host`` is a wildcard such as ``0.0.0.0``, since a
                 wildcard is not an address a consumer can connect to.
+            max_connections: Consumer connections served at once. Each playing
+                connection holds its own authenticated upstream connection, so
+                this also bounds the load the relay puts on SecuritySpy.
 
         Raises:
             ValueError: ``bind_host`` is a wildcard and no ``advertised_host``
-                was given, or a host or port is unusable.
-            TypeError: ``bind_port`` is not an integer.
+                was given, a host or port is unusable, or ``max_connections``
+                is less than 1.
+            TypeError: ``bind_port`` or ``max_connections`` is not an integer.
 
         """
         if isinstance(bind_port, bool) or not isinstance(cast("object", bind_port), int):
@@ -366,6 +372,14 @@ class RtspRelay:
             raise TypeError(msg)
         if not 0 <= bind_port <= _MAX_PORT:
             msg = "bind_port must be between 0 and 65535"
+            raise ValueError(msg)
+        if isinstance(max_connections, bool) or not isinstance(
+            cast("object", max_connections), int
+        ):
+            msg = "max_connections must be an integer"
+            raise TypeError(msg)
+        if max_connections < 1:
+            msg = "max_connections must be at least 1"
             raise ValueError(msg)
         if advertised_host is None:
             if _is_wildcard(bind_host):
@@ -384,6 +398,7 @@ class RtspRelay:
         self._server: asyncio.Server | None = None
         self._bound_port: int | None = None
         self._tasks: set[asyncio.Task[None]] = set()
+        self._max_connections = max_connections
 
     def __repr__(self) -> str:
         """Return a representation carrying no credential, identifier or path."""
@@ -500,7 +515,7 @@ class RtspRelay:
     async def _handle_consumer(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        if len(self._tasks) >= MAX_CONNECTIONS:
+        if len(self._tasks) >= self._max_connections:
             _LOGGER.info("Relay refused a connection: already serving the maximum")
             writer.write(_simple_response("503 Service Unavailable", None))
             with contextlib.suppress(Exception):

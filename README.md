@@ -629,6 +629,10 @@ contain the credential, an identifier or a requested path.
 - To serve other hosts, pass `bind_host`. A wildcard such as `"0.0.0.0"` also needs
   `advertised_host`, the address consumers should use. Anyone who can reach the relay
   and holds a URL can watch that camera.
+- The relay serves at most `max_connections` consumer connections at once (16 by
+  default); more get `503`. Each playing connection holds its own upstream connection
+  to SecuritySpy, so size it to the players you expect, for example two per camera:
+  `client.create_rtsp_relay(info, max_connections=2 * len(info.cameras))`.
 - **The upstream leg is cleartext RTSP on your LAN.** SecuritySpy offers no RTSPS, so
   the Basic credential crosses the network between the relay and the server in base64,
   as it does for plain-HTTP API calls. Run the relay close to the server.

@@ -713,6 +713,20 @@ def test_bad_bind_port_is_refused() -> None:
         client.create_rtsp_relay(server_info(1), bind_port=70000)
 
 
+def test_max_connections_defaults_and_is_validated() -> None:
+    client = make_client()
+    assert client.create_rtsp_relay(server_info(1))._max_connections == (  # noqa: SLF001
+        relay_module.MAX_CONNECTIONS
+    )
+    assert client.create_rtsp_relay(server_info(1), max_connections=40)._max_connections == 40  # noqa: SLF001, PLR2004
+    for bad in (0, -3):
+        with pytest.raises(ValueError, match="max_connections"):
+            client.create_rtsp_relay(server_info(1), max_connections=bad)
+    for wrong in (cast("int", "8"), cast("int", 2.0), cast("int", True)):  # noqa: FBT003 - a bool must be refused
+        with pytest.raises(TypeError, match="max_connections"):
+            client.create_rtsp_relay(server_info(1), max_connections=wrong)
+
+
 @pytest.mark.asyncio
 async def test_unbindable_address_raises_oserror_without_naming_a_stream() -> None:
     with socket.socket() as taken:
@@ -1218,20 +1232,18 @@ async def scenario_frames_need_a_negotiated_channel() -> None:
     assert upstream.received_frames == []
 
 
-async def scenario_connections_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:
-    with monkeypatch.context() as patch:
-        patch.setattr(relay_module, "MAX_CONNECTIONS", 1)
-        async with make_client().create_rtsp_relay(server_info(1)) as relay:
-            _, writer = await asyncio.open_connection("127.0.0.1", relay.bound_port)
-            try:
-                async with asyncio.timeout(PATIENCE):
-                    while not relay._tasks:  # noqa: SLF001, ASYNC110 - no event signals registration
-                        await asyncio.sleep(0.01)
-                refused = await send_and_collect(relay.bound_port, b"")
-            finally:
-                writer.close()
-                with contextlib.suppress(ConnectionError):
-                    await writer.wait_closed()
+async def scenario_connections_are_capped() -> None:
+    async with make_client().create_rtsp_relay(server_info(1), max_connections=1) as relay:
+        _, writer = await asyncio.open_connection("127.0.0.1", relay.bound_port)
+        try:
+            async with asyncio.timeout(PATIENCE):
+                while not relay._tasks:  # noqa: SLF001, ASYNC110 - no event signals registration
+                    await asyncio.sleep(0.01)
+            refused = await send_and_collect(relay.bound_port, b"")
+        finally:
+            writer.close()
+            with contextlib.suppress(ConnectionError):
+                await writer.wait_closed()
     assert refused == b"RTSP/1.0 503 Service Unavailable\r\n\r\n"
 
 
@@ -1266,8 +1278,8 @@ async def test_frames_need_a_negotiated_channel() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connections_beyond_the_cap_are_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    await scenario_connections_are_capped(monkeypatch)
+async def test_connections_beyond_the_cap_are_refused() -> None:
+    await scenario_connections_are_capped()
 
 
 @pytest.mark.asyncio
@@ -1290,7 +1302,7 @@ async def test_second_review_scenarios_log_nothing_secret(
         await scenario_response_headers_are_allowlisted_and_redirects_refused()
         await scenario_a_reused_cseq_cannot_start_a_stream()
         await scenario_frames_need_a_negotiated_channel()
-        await scenario_connections_are_capped(monkeypatch)
+        await scenario_connections_are_capped()
 
     assert issued
     assert any(r.name == "aiosecurityspy.relay" for r in caplog.records)
