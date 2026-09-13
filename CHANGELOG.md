@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `RtspRelay`, created with `client.create_rtsp_relay(server_info)`: a local asyncio
+  RTSP relay that hands a consumer (ffmpeg, go2rtc, VLC, Frigate) a URL of the form
+  `rtsp://127.0.0.1:<port>/<id>` carrying no credential. `<id>` is an unguessable
+  per-camera token, fixed for the relay's life. The relay authenticates upstream with
+  an `Authorization: Basic` header only, rewrites every SecuritySpy URL in responses
+  (including the malformed single-slash `rtsp:/host:port/…` form) to its own address,
+  drops `WWW-Authenticate`, `SS-UUID` and `Server`, and copies interleaved RTP
+  untouched. TCP interleaved transport only. The upstream leg is cleartext RTSP on the
+  LAN, as SecuritySpy offers no RTSPS.
+- `client.unsecured_stream_url(server_info, camera_number)`: SecuritySpy's own RTSP
+  URL for a camera, with no credential in it.
+- `ServerInfo.rtsp_port`: the web server's `http-port` when `http-enabled` is truthy,
+  otherwise `None`. SecuritySpy serves RTSP on that listener.
+
 ## [0.2.0] - 2026-09-12
 
 Breaking, pre-1.0. Two public-surface changes in this release that a 0.1.0

@@ -36,6 +36,7 @@ from .const import (
     HEARTBEAT_INTERVAL,
     HEARTBEAT_MISSES_BEFORE_LOSS,
     PERM_FILES,
+    PERM_LIVEVIDEO,
     PERM_SCHED,
     PERM_SETTINGS,
     PERMISSION_NAMES,
@@ -66,6 +67,7 @@ from .models import (
     capture_file_bandwidth,
     visible_camera_views,
 )
+from .relay import RtspRelay
 from .stream import SecuritySpyEventStream
 
 if TYPE_CHECKING:
@@ -747,6 +749,86 @@ class SecuritySpyClient:
         """
         statuses = await self.async_get_camera_status()
         return visible_camera_views(server_info, statuses)
+
+    @staticmethod
+    def _rtsp_port_for(server_info: ServerInfo) -> int:
+        port = server_info.rtsp_port
+        if port is None:
+            msg = "server is not serving RTSP (its HTTP listener is disabled)"
+            raise ValueError(msg)
+        return port
+
+    def unsecured_stream_url(self, server_info: ServerInfo, camera_number: int) -> str:
+        """Return SecuritySpy's own RTSP URL for a camera, carrying no credential.
+
+        "Unsecured" because the URL carries no credential, so the server refuses
+        it unless the consumer sends its own ``Authorization`` header. To hand a
+        stream to a consumer that cannot, use :meth:`create_rtsp_relay`.
+
+        Args:
+            server_info: A previously fetched permission-scoped inventory; it
+                supplies the RTSP port and which cameras are visible.
+            camera_number: The camera to address.
+
+        Raises:
+            ValueError: ``server_info.rtsp_port`` is ``None``, or the camera
+                number is not a non-negative integer.
+            SecuritySpyPermissionError: The camera is not in
+                ``server_info.cameras``.
+
+        Returns:
+            ``rtsp://host:port/stream?cameraNum=N&vcodec=h26x&acodec=src``.
+
+        """
+        port = self._rtsp_port_for(server_info)
+        number = _validated_camera_number(camera_number)
+        if number not in server_info.cameras:
+            raise SecuritySpyPermissionError(PERMISSION_NAMES[PERM_LIVEVIDEO], number)
+        return (
+            f"rtsp://{self._connection.url_host}:{port}"
+            f"/stream?cameraNum={number}&vcodec=h26x&acodec=src"
+        )
+
+    def create_rtsp_relay(
+        self,
+        server_info: ServerInfo,
+        *,
+        bind_host: str = "127.0.0.1",
+        bind_port: int = 0,
+        advertised_host: str | None = None,
+    ) -> RtspRelay:
+        """Create a local RTSP relay for the cameras in ``server_info``.
+
+        The relay authenticates upstream with this client's credential as an
+        ``Authorization`` header and hands consumers URLs that carry none. The
+        upstream leg is cleartext RTSP on the LAN: SecuritySpy offers no RTSPS.
+        The relay is not started; use ``async with`` or
+        :meth:`RtspRelay.async_start`.
+
+        Args:
+            server_info: A previously fetched permission-scoped inventory.
+            bind_host: Local address to listen on. Loopback by default.
+            bind_port: Local port; ``0`` picks a free one.
+            advertised_host: Host placed in relay URLs. Required when
+                ``bind_host`` is a wildcard address.
+
+        Raises:
+            ValueError: ``server_info.rtsp_port`` is ``None``, or ``bind_host``
+                is a wildcard without ``advertised_host``.
+
+        Returns:
+            The unstarted relay.
+
+        """
+        port = self._rtsp_port_for(server_info)
+        return RtspRelay(
+            self._connection,
+            port,
+            server_info.cameras,
+            bind_host=bind_host,
+            bind_port=bind_port,
+            advertised_host=advertised_host,
+        )
 
     async def async_get_captures(  # noqa: PLR0913 - the camera set, the two date bounds and the two filter forms are irreducible; everything but `cameras` is keyword-only
         self,

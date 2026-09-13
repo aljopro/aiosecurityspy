@@ -599,6 +599,46 @@ decoded with its code, never independently: when the code folds to `None`, so do
 the two as one error surface. An entry with no usable camera number is skipped, the same precedent
 `Camera.from_api` follows, and the rest of the response still decodes.
 
+### Relay live video without handing out the credential
+
+SecuritySpy's RTSP stream needs the account credential, and a plain RTSP consumer can
+only supply it inside the URL, where tools echo it into their logs. Hand the consumer a
+relay URL instead:
+
+```python
+info = await client.async_get_server_info()
+async with client.create_rtsp_relay(info) as relay:
+    url = relay.stream_url(4)  # rtsp://127.0.0.1:<port>/<unguessable id>
+    # give `url` to ffmpeg, go2rtc, VLC or Frigate
+```
+
+The relay listens on loopback by default. It opens one upstream connection per consumer
+connection, authenticates with an `Authorization: Basic` header built from the client's
+credential, and rewrites every SecuritySpy URL in the responses it relays to its own
+address. That covers `Content-Base`, `Content-Location`, `RTP-Info` and any URL in the
+SDP. It drops the `WWW-Authenticate`, `SS-UUID` and `Server` headers and copies RTP
+bytes untouched. No URL it hands out or sends carries a credential, and its logs never
+contain the credential, an identifier or a requested path.
+
+- `stream_url(n)` raises `SecuritySpyPermissionError` for a camera not in
+  `info.cameras`. The identifier is issued on first request, stays fixed for the
+  relay's life, and differs on every relay. Treat it as access to that camera.
+- Only RTSP over TCP (interleaved) is supported. A UDP `SETUP` gets `461 Unsupported
+  Transport`, an unknown identifier gets `404`, a camera the account may not view gets
+  `403`, and an unreachable server gets `503`.
+- To serve other hosts, pass `bind_host`. A wildcard such as `"0.0.0.0"` also needs
+  `advertised_host`, the address consumers should use. Anyone who can reach the relay
+  and holds a URL can watch that camera.
+- **The upstream leg is cleartext RTSP on your LAN.** SecuritySpy offers no RTSPS, so
+  the Basic credential crosses the network between the relay and the server in base64,
+  as it does for plain-HTTP API calls. Run the relay close to the server.
+- `ServerInfo.rtsp_port` is `None` when the server's HTTP listener is disabled. In that
+  case `create_rtsp_relay()` and `unsecured_stream_url()` raise `ValueError`.
+
+`client.unsecured_stream_url(info, n)` returns SecuritySpy's own RTSP URL with no
+credential in it. It is only useful to a consumer that can send its own `Authorization`
+header.
+
 ### Fetch capture previews and recordings
 
 `async_get_capture_preview()` returns the JPEG thumbnail for a capture as raw bytes, and

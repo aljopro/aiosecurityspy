@@ -35,6 +35,10 @@ def test_version_matches_distribution_metadata() -> None:
 
 def test_public_surface() -> None:
     assert "__version__" in aiosecurityspy.__all__
+    # The relay is public: its URLs are what a consumer is handed instead of a
+    # credential-bearing SecuritySpy URL.
+    assert "RtspRelay" in aiosecurityspy.__all__
+    assert aiosecurityspy.RtspRelay.__module__ == "aiosecurityspy.relay"
 
 
 def test_home_assistant_is_not_installed() -> None:

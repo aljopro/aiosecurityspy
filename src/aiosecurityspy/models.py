@@ -971,6 +971,26 @@ def _decode_utc_offset(seconds_from_gmt: object) -> timedelta | None:
     return timedelta(seconds=offset)
 
 
+_MAX_PORT: Final = 65535
+
+
+def _decode_rtsp_port(server: dict[str, object]) -> int | None:
+    """Return the RTSP port from a server block, or ``None`` when RTSP is not served.
+
+    SecuritySpy serves RTSP on its web server's HTTP listener, so the port is
+    ``http-port`` -- but only while ``http-enabled`` is truthy. A missing or
+    malformed value of either decodes to ``None`` rather than failing the
+    whole ``++systemInfo`` decode.
+    """
+    if not _as_bool(server.get("http-enabled")):
+        return None
+    port = _as_int(server.get("http-port"))
+    if port is None or not 1 <= port <= _MAX_PORT:
+        _LOGGER.debug("Server published no usable HTTP port; RTSP is treated as unavailable")
+        return None
+    return port
+
+
 @dataclass(frozen=True, slots=True)
 class ServerInfo:
     """The SecuritySpy server and its camera inventory.
@@ -1030,6 +1050,12 @@ class ServerInfo:
     #: who knows the server's real IANA zone should pass a :class:`~zoneinfo.ZoneInfo`
     #: to the decode entry points instead, for DST-correct historical decoding.
     utc_offset: timedelta | None = None
+    #: The port SecuritySpy serves RTSP on. RTSP shares the web server's HTTP
+    #: listener, so this is ``http-port`` when ``http-enabled`` is truthy and
+    #: ``None`` otherwise -- including when either value is missing or
+    #: malformed. A camera's own ``port-rtsp`` is the camera *device's* port and
+    #: is deliberately not used.
+    rtsp_port: int | None = None
 
     @classmethod
     def from_api(cls, payload: object) -> ServerInfo:
@@ -1113,6 +1139,7 @@ class ServerInfo:
             # `_as_str` keeps it because it is truthy.
             update_version=(_as_str(server.get("new-version")) or "").strip() or None,
             utc_offset=utc_offset,
+            rtsp_port=_decode_rtsp_port(server),
         )
 
     @staticmethod

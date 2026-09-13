@@ -522,6 +522,51 @@ def test_no_url_the_library_builds_can_carry_a_credential() -> None:
 
 
 @pytest.mark.asyncio
+async def test_no_rtsp_url_the_library_builds_can_carry_a_credential() -> None:
+    """``unsecured_stream_url`` and every relay ``stream_url``, through the same claim.
+
+    Neither builder goes through ``build_url``, so the sweep above cannot see
+    them; each is swept here for every visible camera, on a started relay.
+    """
+    client = SecuritySpyClient(
+        cast("aiohttp.ClientSession", FakeServer()),
+        HOST,
+        PORT,
+        username=USERNAME,
+        password=PASSWORD,
+    )
+    info = aiosecurityspy.ServerInfo.from_api(
+        {
+            "system": {
+                "server": {
+                    "uuid": "abc",
+                    "version": "6.21",
+                    "http-enabled": True,
+                    "http-port": 8000,
+                },
+                "cameralist": {"camera": [{"number": n} for n in (0, 3, 11)]},
+            }
+        }
+    )
+    assert info.rtsp_port is not None
+    assert set(info.cameras) == {0, 3, 11}
+    for number in info.cameras:
+        assert_url_carries_no_credential(client.unsecured_stream_url(info, number), {})
+    relays = (
+        client.create_rtsp_relay(info),
+        client.create_rtsp_relay(
+            info,
+            bind_host="0.0.0.0",  # noqa: S104 - the advertised-host path is the one swept
+            advertised_host="relay.example.com",
+        ),
+    )
+    for relay in relays:
+        async with relay:
+            for number in info.cameras:
+                assert_url_carries_no_credential(relay.stream_url(number), {})
+
+
+@pytest.mark.asyncio
 async def test_no_url_the_client_or_the_stream_sends_carries_a_credential() -> None:
     """The credential travels as an ``Authorization`` header, on every request, without exception.
 

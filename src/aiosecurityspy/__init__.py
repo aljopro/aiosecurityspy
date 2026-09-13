@@ -164,6 +164,7 @@ from .models import (
     require_permission,
     visible_camera_views,
 )
+from .relay import RtspRelay
 from .stream import EventCallback, LifecycleCallback, SecuritySpyEventStream
 
 try:
@@ -299,6 +300,7 @@ __all__ = [
     "MotionPayload",
     "OverrideKey",
     "ReducerConfig",
+    "RtspRelay",
     "SecuritySpyAuthError",
     "SecuritySpyCertificateError",
     "SecuritySpyClient",

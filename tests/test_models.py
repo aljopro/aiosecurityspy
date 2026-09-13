@@ -1605,3 +1605,41 @@ def test_a_negative_schedule_id_is_accepted_as_an_opaque_key() -> None:
 
     assignment = CameraScheduleAssignment(continuous_schedule_id=-1)
     assert assignment.resolve_names(info.schedules) == ("Negative", None, None)
+
+
+# --- rtsp_port ------------------------------------------------------------------
+
+FIXTURE_HTTP_PORT = 8000
+
+
+def test_rtsp_port_is_the_http_port_when_http_is_enabled() -> None:
+    """The fixture sends `http-enabled: "yes"` and `http-port: "8000"`."""
+    assert ServerInfo.from_api(load_system_info()).rtsp_port == FIXTURE_HTTP_PORT
+
+
+@pytest.mark.parametrize(
+    ("enabled", "port", "expected"),
+    [
+        (True, 8000, FIXTURE_HTTP_PORT),  # live JSON sends booleans
+        ("true", "8000", FIXTURE_HTTP_PORT),
+        (1, "8000", FIXTURE_HTTP_PORT),
+        ("no", "8000", None),
+        (False, 8000, None),
+        (None, "8000", None),
+        ("yes", None, None),
+        ("yes", "eight thousand", None),
+        ("yes", "0", None),
+        ("yes", "70000", None),
+        ("yes", True, None),
+        ("maybe", "8000", None),
+    ],
+)
+def test_rtsp_port_decodes_enabled_disabled_missing_and_malformed(
+    enabled: object, port: object, expected: int | None
+) -> None:
+    server: dict[str, object] = {**SERVER}
+    if enabled is not None:
+        server["http-enabled"] = enabled
+    if port is not None:
+        server["http-port"] = port
+    assert ServerInfo.from_api(wrap(server, [])).rtsp_port == expected

@@ -28,6 +28,8 @@ here must be diagnosable from status codes and shapes alone.
 
 from __future__ import annotations
 
+import asyncio
+import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -415,3 +417,60 @@ def _capture_modes_of(info: ServerInfo, number: int) -> CaptureModes | None:
         if camera.number == number:
             return camera.capture_modes
     return None
+
+
+# --- the RTSP relay -----------------------------------------------------------
+
+#: Upper bound on one ffprobe run against the relay.
+FFPROBE_SECONDS = 60
+
+
+@pytest.mark.asyncio
+async def test_live_relay_stream_decodes_through_ffprobe(session: aiohttp.ClientSession) -> None:
+    """A relay ``stream_url`` opened by ffprobe on this host over TCP decodes video.
+
+    The URL is never reported: it carries a relay identifier, which is access
+    to the camera. Only the decoded stream types are.
+    """
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        pytest.skip("ffprobe is not installed")
+    client = _client(session, "LIVE")
+    camera = _test_camera()
+    info = await client.async_get_server_info()
+    if info.rtsp_port is None:
+        pytest.skip("the server is not serving RTSP")
+    if camera not in info.cameras:
+        pytest.skip("SECURITYSPY_TEST_CAMERA is not visible to the LIVE account")
+    async with client.create_rtsp_relay(info) as relay:
+        # `trace` makes ffprobe print every RTSP response it received, which is
+        # what must carry no trace of SecuritySpy. The trace is asserted on,
+        # never reported: it contains the relay identifier.
+        process = await asyncio.create_subprocess_exec(
+            ffprobe,
+            "-loglevel",
+            "trace",
+            "-rtsp_transport",
+            "tcp",
+            "-show_entries",
+            "stream=codec_name,codec_type",
+            "-of",
+            "csv=p=0",
+            relay.stream_url(camera),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), FFPROBE_SECONDS)
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+    streams = [line.split(",") for line in stdout.decode(errors="replace").split()]
+    _report(f"relay streams: {streams}")
+    assert process.returncode == 0
+    assert any(len(fields) == 2 and fields[1] == "video" for fields in streams), streams  # noqa: PLR2004 - codec_name,codec_type
+    trace = stderr.decode(errors="replace")
+    assert client.host not in trace, "SecuritySpy's host reached the consumer"
+    assert "auth=" not in trace
+    assert "WWW-Authenticate" not in trace

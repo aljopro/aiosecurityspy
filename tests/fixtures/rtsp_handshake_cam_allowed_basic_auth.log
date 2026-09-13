@@ -1,0 +1,1835 @@
+Probing rtsp score:100 size:0
+[rtsp @ 0x8db014000] Sending:
+OPTIONS rtsp://securityspy.local:8000/stream?cameraNum=4&vcodec=h26x&acodec=src RTSP/1.0
+CSeq: 1
+User-Agent: Lavf63.1.101
+
+--
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=4f [O]
+[rtsp @ 0x8db014000] ret=1 c=4b [K]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='RTSP/1.0 200 OK'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=76 [v]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=42 [B]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=56 [V]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=36 [6]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=4d [M]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=4a [J]
+[rtsp @ 0x8db014000] ret=1 c=5a [Z]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Server: BBVS/6.0/REDACTED_SERVER_UUID'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=49 [I]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=4d [M]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=4a [J]
+[rtsp @ 0x8db014000] ret=1 c=5a [Z]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='SS-UUID: REDACTED_SERVER_UUID'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=71 [q]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='CSeq: 1'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Cache-Control: no-cache'
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=4f [O]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=49 [I]
+[rtsp @ 0x8db014000] ret=1 c=4f [O]
+[rtsp @ 0x8db014000] ret=1 c=4e [N]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=2c [,]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=45 [E]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=49 [I]
+[rtsp @ 0x8db014000] ret=1 c=42 [B]
+[rtsp @ 0x8db014000] ret=1 c=45 [E]
+[rtsp @ 0x8db014000] ret=1 c=2c [,]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=45 [E]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=2c [,]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=45 [E]
+[rtsp @ 0x8db014000] ret=1 c=41 [A]
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=4f [O]
+[rtsp @ 0x8db014000] ret=1 c=57 [W]
+[rtsp @ 0x8db014000] ret=1 c=4e [N]
+[rtsp @ 0x8db014000] ret=1 c=2c [,]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=41 [A]
+[rtsp @ 0x8db014000] ret=1 c=59 [Y]
+[rtsp @ 0x8db014000] ret=1 c=2c [,]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=41 [A]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=45 [E]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Public: OPTIONS, DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE'
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line=''
+[rtsp @ 0x8db014000] Sending:
+DESCRIBE rtsp://securityspy.local:8000/stream?cameraNum=4&vcodec=h26x&acodec=src RTSP/1.0
+Accept: application/sdp
+CSeq: 2
+User-Agent: Lavf63.1.101
+
+--
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=7a [z]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='RTSP/1.0 401 Unauthorized'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=76 [v]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=42 [B]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=56 [V]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=36 [6]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=4d [M]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=4a [J]
+[rtsp @ 0x8db014000] ret=1 c=5a [Z]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Server: BBVS/6.0/REDACTED_SERVER_UUID'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=78 [x]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=2c [,]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=76 [v]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Cache-Control: max-age=0, must-revalidate'
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Pragma: no-cache'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=49 [I]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=4d [M]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=4a [J]
+[rtsp @ 0x8db014000] ret=1 c=5a [Z]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='SS-UUID: REDACTED_SERVER_UUID'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=71 [q]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='CSeq: 2'
+[rtsp @ 0x8db014000] ret=1 c=57 [W]
+    Last message repeated 2 times
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=41 [A]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=42 [B]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=22 ["]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=79 [y]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=79 [y]
+[rtsp @ 0x8db014000] ret=1 c=22 ["]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='WWW-Authenticate: Basic realm="SecuritySpy"'
+[rtsp @ 0x8db014000] ret=1 c=4b [K]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=41 [A]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=76 [v]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=2c [,]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=78 [x]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Keep-Alive: timeout=20, max=100'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=4b [K]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=41 [A]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=76 [v]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Connection: Keep-Alive'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Content-Length: 0'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=79 [y]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=78 [x]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Content-Type: text/plain'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=79 [y]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=79 [y]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=27 [']
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=27 [']
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Content-Security-Policy: frame-ancestors 'self''
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line=''
+[rtsp @ 0x8db014000] Sending:
+DESCRIBE rtsp://securityspy.local:8000/stream?cameraNum=4&vcodec=h26x&acodec=src RTSP/1.0
+Accept: application/sdp
+CSeq: 3
+User-Agent: Lavf63.1.101
+Authorization: Basic REDACTED_AUTH
+
+--
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=4f [O]
+[rtsp @ 0x8db014000] ret=1 c=4b [K]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='RTSP/1.0 200 OK'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=76 [v]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=42 [B]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=56 [V]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=36 [6]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=4d [M]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=4a [J]
+[rtsp @ 0x8db014000] ret=1 c=5a [Z]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Server: BBVS/6.0/REDACTED_SERVER_UUID'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=49 [I]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=4d [M]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=4a [J]
+[rtsp @ 0x8db014000] ret=1 c=5a [Z]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='SS-UUID: REDACTED_SERVER_UUID'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=71 [q]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=33 [3]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='CSeq: 3'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Cache-Control: no-cache'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=42 [B]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=39 [9]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=36 [6]
+[rtsp @ 0x8db014000] ret=1 c=38 [8]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=38 [8]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+    Last message repeated 2 times
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=3f [?]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=4e [N]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=26 [&]
+[rtsp @ 0x8db014000] ret=1 c=76 [v]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=36 [6]
+[rtsp @ 0x8db014000] ret=1 c=78 [x]
+[rtsp @ 0x8db014000] ret=1 c=26 [&]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Content-Base: rtsp:/securityspy.local:8000/stream?cameraNum=4&vcodec=h26x&acodec=src'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=79 [y]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Content-Type: application/sdp'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=39 [9]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Content-Length: 291'
+[rtsp @ 0x8db014000] ret=1 c=78 [x]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=41 [A]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='x-Accept-Retransmit: our-retransmit'
+[rtsp @ 0x8db014000] ret=1 c=78 [x]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=41 [A]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=79 [y]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='x-Accept-Dynamic-Rate: 1'
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line=''
+[rtsp @ 0x8db014000] SDP:
+v=0
+o=- 1 1 IN IP4 0.0.0.0
+s=Live Stream
+c=IN IP4 0.0.0.0
+t=0 0
+a=range:npt=now-
+m=video 0 RTP/AVP 97
+a=rtpmap:97 H264/90000
+a=fmtp:97 packetization-mode=1;profile-level-id=4D0033;sprop-parameter-sets=Z00AM+dAUB7TUBAQHwAAAwABAAADACgxAACimAAHny3//Ao=,aO48gA==
+a=control:trackID=0
+
+
+[rtsp @ 0x8db014000] sdp: v='0'
+[rtsp @ 0x8db014000] sdp: o='- 1 1 IN IP4 0.0.0.0'
+[rtsp @ 0x8db014000] sdp: s='Live Stream'
+[rtsp @ 0x8db014000] sdp: c='IN IP4 0.0.0.0'
+[rtsp @ 0x8db014000] sdp: t='0 0'
+[rtsp @ 0x8db014000] sdp: a='range:npt=now-'
+[rtsp @ 0x8db014000] sdp: m='video 0 RTP/AVP 97'
+[rtsp @ 0x8db014000] sdp: a='rtpmap:97 H264/90000'
+[rtsp @ 0x8db014000] video codec set to: h264
+[rtsp @ 0x8db014000] sdp: a='fmtp:97 packetization-mode=1;profile-level-id=4D0033;sprop-parameter-sets=Z00AM+dAUB7TUBAQHwAAAwABAAADACgxAACimAAHny3//Ao=,aO48gA=='
+[rtsp @ 0x8db014000] RTP Packetization Mode: 1
+[rtsp @ 0x8db014000] RTP Profile IDC: 4d Profile IOP: 0 Level: 33
+[rtsp @ 0x8db014000] Extradata set to 0x10849ad40 (size: 47)
+[rtsp @ 0x8db014000] sdp: a='control:trackID=0'
+[rtsp @ 0x8db014000] Sending:
+SETUP rtsp:/securityspy.local:8000/stream?cameraNum=4&vcodec=h26x&acodec=src/trackID=0 RTSP/1.0
+Transport: RTP/AVP/TCP;unicast;interleaved=0-1
+x-Dynamic-Rate: 0
+CSeq: 4
+User-Agent: Lavf63.1.101
+Authorization: Basic REDACTED_AUTH
+
+--
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=4f [O]
+[rtsp @ 0x8db014000] ret=1 c=4b [K]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='RTSP/1.0 200 OK'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=76 [v]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=42 [B]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=56 [V]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=36 [6]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=4d [M]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=4a [J]
+[rtsp @ 0x8db014000] ret=1 c=5a [Z]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Server: BBVS/6.0/REDACTED_SERVER_UUID'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=49 [I]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=4d [M]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=4a [J]
+[rtsp @ 0x8db014000] ret=1 c=5a [Z]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='SS-UUID: REDACTED_SERVER_UUID'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=71 [q]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='CSeq: 4'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Cache-Control: no-cache'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=33 [3]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Session: 3'
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=41 [A]
+[rtsp @ 0x8db014000] ret=1 c=56 [V]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=3b [;]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=3b [;]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=76 [v]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Transport: RTP/AVP/TCP;unicast;interleaved=0-1'
+[rtsp @ 0x8db014000] ret=1 c=78 [x]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=39 [9]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+    Last message repeated 4 times
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='x-transport-options: late-tolerance=2.900000'
+[rtsp @ 0x8db014000] ret=1 c=78 [x]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='x-Retransmit: our-retransmit'
+[rtsp @ 0x8db014000] ret=1 c=78 [x]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=79 [y]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='x-Dynamic-Rate: 1'
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line=''
+[rtsp @ 0x8db014000] setting jitter buffer size to 0
+[rtsp @ 0x8db014000] hello state=0
+[rtsp @ 0x8db014000] Sending:
+PLAY rtsp:/securityspy.local:8000/stream?cameraNum=4&vcodec=h26x&acodec=src RTSP/1.0
+Range: npt=0.000-
+CSeq: 5
+User-Agent: Lavf63.1.101
+Session: 3
+Authorization: Basic REDACTED_AUTH
+
+--
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=4f [O]
+[rtsp @ 0x8db014000] ret=1 c=4b [K]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='RTSP/1.0 200 OK'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=76 [v]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=42 [B]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=56 [V]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=36 [6]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=4d [M]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=4a [J]
+[rtsp @ 0x8db014000] ret=1 c=5a [Z]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Server: BBVS/6.0/REDACTED_SERVER_UUID'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=49 [I]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=55 [U]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=4d [M]
+[rtsp @ 0x8db014000] ret=1 c=4c [L]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=62 [b]
+[rtsp @ 0x8db014000] ret=1 c=4a [J]
+[rtsp @ 0x8db014000] ret=1 c=5a [Z]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='SS-UUID: REDACTED_SERVER_UUID'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=71 [q]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=35 [5]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='CSeq: 5'
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=43 [C]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Cache-Control: no-cache'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=5a [Z]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=36 [6]
+[rtsp @ 0x8db014000] ret=1 c=33 [3]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='SS-PTZ: 63'
+[rtsp @ 0x8db014000] ret=1 c=53 [S]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+    Last message repeated 1 times
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=33 [3]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Session: 3'
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=67 [g]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+    Last message repeated 3 times
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='Range: npt=0.0000-'
+Failed to parse interval end specification ''
+[rtsp @ 0x8db014000] ret=1 c=52 [R]
+[rtsp @ 0x8db014000] ret=1 c=54 [T]
+[rtsp @ 0x8db014000] ret=1 c=50 [P]
+[rtsp @ 0x8db014000] ret=1 c=2d [-]
+[rtsp @ 0x8db014000] ret=1 c=49 [I]
+[rtsp @ 0x8db014000] ret=1 c=6e [n]
+[rtsp @ 0x8db014000] ret=1 c=66 [f]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=20 [ ]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=6c [l]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=39 [9]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=31 [1]
+[rtsp @ 0x8db014000] ret=1 c=36 [6]
+[rtsp @ 0x8db014000] ret=1 c=38 [8]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=2e [.]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=3a [:]
+[rtsp @ 0x8db014000] ret=1 c=38 [8]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+    Last message repeated 2 times
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=3f [?]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=4e [N]
+[rtsp @ 0x8db014000] ret=1 c=75 [u]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=34 [4]
+[rtsp @ 0x8db014000] ret=1 c=26 [&]
+[rtsp @ 0x8db014000] ret=1 c=76 [v]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=68 [h]
+[rtsp @ 0x8db014000] ret=1 c=32 [2]
+[rtsp @ 0x8db014000] ret=1 c=36 [6]
+[rtsp @ 0x8db014000] ret=1 c=78 [x]
+[rtsp @ 0x8db014000] ret=1 c=26 [&]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=6f [o]
+[rtsp @ 0x8db014000] ret=1 c=64 [d]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=2f [/]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=61 [a]
+[rtsp @ 0x8db014000] ret=1 c=63 [c]
+[rtsp @ 0x8db014000] ret=1 c=6b [k]
+[rtsp @ 0x8db014000] ret=1 c=49 [I]
+[rtsp @ 0x8db014000] ret=1 c=44 [D]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=3b [;]
+[rtsp @ 0x8db014000] ret=1 c=73 [s]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=71 [q]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=3b [;]
+[rtsp @ 0x8db014000] ret=1 c=72 [r]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=70 [p]
+[rtsp @ 0x8db014000] ret=1 c=74 [t]
+[rtsp @ 0x8db014000] ret=1 c=69 [i]
+[rtsp @ 0x8db014000] ret=1 c=6d [m]
+[rtsp @ 0x8db014000] ret=1 c=65 [e]
+[rtsp @ 0x8db014000] ret=1 c=3d [=]
+[rtsp @ 0x8db014000] ret=1 c=30 [0]
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line='RTP-Info: url=rtsp:/securityspy.local:8000/stream?cameraNum=4&vcodec=h26x&acodec=src/trackID=0;seq=0;rtptime=0'
+[rtsp @ 0x8db014000] ret=1 c=0d [
+]
+[rtsp @ 0x8db014000] ret=1 c=0a [
+]
+[rtsp @ 0x8db014000] line=''
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=1462
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=334
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=135
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=110
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=73
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=171
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=105
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=125
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=118
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=105
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=118
+[rtsp @ 0x8db014000] first_dts 30450 not matching first dts NOPTS (pts NOPTS, duration 4500) in the queue
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=148
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=133
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=187
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=170
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=175
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=154
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=164
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=80
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=145
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=252
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=108
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=88
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=139
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=204
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=108
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=188
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=118
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=63
+[rtsp @ 0x8db014000] tcp_read_packet:
+[rtsp @ 0x8db014000] ret=1 c=24 [$]
+[rtsp @ 0x8db014000] id=0 len=122
+[rtsp @ 0x8db014000] All info found
+[rtsp @ 0x8db014000] stream 0: start_time: 0.138333 duration: NOPTS
+[rtsp @ 0x8db014000] format: start_time: 0.138333 duration: NOPTS (estimate from bit rate) bitrate=0 kb/s
+Input #0, rtsp, from 'rtsp://REDACTED_AUTH:REDACTED_AUTH@securityspy.local:8000/stream?cameraNum=4&vcodec=h26x&acodec=src':
+  Metadata:
+    title           : Live Stream
+  Duration: N/A, start: 0.138333, bitrate: N/A
+  Stream #0:0, 28, 1/90000: Video: h264 (Main), 1 reference frame, yuv420p(tv, bt709, progressive, left), 640x480, 0/1, 20 fps, 40 tbr, 90k tbn, start 0.138333
+[rtsp @ 0x8db014000] Sending:
+TEARDOWN rtsp:/securityspy.local:8000/stream?cameraNum=4&vcodec=h26x&acodec=src RTSP/1.0
+CSeq: 6
+User-Agent: Lavf63.1.101
+Session: 3
+Authorization: Basic REDACTED_AUTH
+
+--
