@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-13
+
 ### Added
 
 - `RtspRelay`, created with `client.create_rtsp_relay(server_info)`: a local asyncio
@@ -740,4 +742,6 @@ below):
 - ruff (lint + format) and `mypy --strict` gates, plus a pytest suite.
 - GitHub Actions CI and a PyPI trusted-publisher (OIDC) release workflow.
 
+[0.3.0]: https://github.com/aljopro/aiosecurityspy/releases/tag/v0.3.0
+[0.2.0]: https://github.com/aljopro/aiosecurityspy/releases/tag/v0.2.0
 [0.1.0]: https://github.com/aljopro/aiosecurityspy/releases/tag/v0.1.0
