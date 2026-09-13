@@ -67,6 +67,7 @@ __all__ = [
     "ENDPOINT_GET_FILE_HIGH_BANDWIDTH",
     "ENDPOINT_GET_FILE_LOW_BANDWIDTH",
     "ENDPOINT_GET_PREVIEW",
+    "ENDPOINT_IMAGE",
     "ENDPOINT_PREFIX",
     "ENDPOINT_SETTINGS_CAMERAS",
     "ENDPOINT_SET_SCHEDULE",
@@ -174,6 +175,11 @@ ENDPOINT_SET_SCHEDULE: Final = f"{ENDPOINT_PREFIX}ssSetSchedule"
 #: the ``archive`` flag inside the path string itself (``?archive=``), not as
 #: a separate query parameter -- the server's parser splits on the *last* ``?``.
 ENDPOINT_GET_PREVIEW: Final = f"{ENDPOINT_PREFIX}getpreview"
+
+#: Live still-image endpoint. Takes ``cameraNum`` and optional ``width`` and
+#: ``quality`` as ordinary query parameters, and needs the live-video
+#: permission on the camera.
+ENDPOINT_IMAGE: Final = f"{ENDPOINT_PREFIX}image"
 
 #: Standard-bandwidth capture file endpoint (research §4b.1). Returns
 #: ``video/quicktime``.

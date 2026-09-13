@@ -643,6 +643,23 @@ contain the credential, an identifier or a requested path.
 credential in it. It is only useful to a consumer that can send its own `Authorization`
 header.
 
+### Fetch a camera's live still image
+
+`async_get_camera_image()` returns a camera's current still image, fetched with the
+credential in the `Authorization` header, never in the URL. Pass the `ServerInfo` you
+already hold: a camera not in `info.cameras` is refused locally with
+`SecuritySpyPermissionError`, without a request.
+
+```python
+image = await client.async_get_camera_image(info, 4, width=640, quality=70)
+# image.data is the JPEG bytes, image.content_type is "image/jpeg"
+```
+
+`width` (at least 1) and `quality` (0-100) are optional. A 401 that turns out to be a
+missing live-video permission raises `SecuritySpyPermissionError`, not
+`SecuritySpyAuthError`, and a response that is not an image raises
+`SecuritySpyConnectError`.
+
 ### Fetch capture previews and recordings
 
 `async_get_capture_preview()` returns the JPEG thumbnail for a capture as raw bytes, and

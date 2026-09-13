@@ -28,6 +28,7 @@ from aiosecurityspy import (
     PERM_SETTINGS,
     PERM_TRIGGER,
     Camera,
+    CameraImage,
     CameraScheduleAssignment,
     CameraStatus,
     Capture,
@@ -651,6 +652,17 @@ def test_capture_preview_repr_omits_the_bytes_payload() -> None:
     # ~8 KiB; the minimal repr is ~50 bytes.
     assert len(text) < 200  # noqa: PLR2004 - sanity ceiling, not a wire value
     assert b"x" * 100 not in text.encode("utf-8", errors="replace")
+
+
+def test_camera_image_repr_omits_the_bytes_payload() -> None:
+    """``CameraImage.data`` is up to 8 MiB of image bytes; the repr must not echo it."""
+    image = CameraImage(data=b"\xff\xd8" + b"x" * 8000 + b"\xff\xd9", content_type="image/jpeg")
+    text = repr(image)
+    assert text.startswith("CameraImage(")
+    assert "image/jpeg" in text
+    assert "size=8004" in text
+    assert len(text) < 200  # noqa: PLR2004 - sanity ceiling, not a wire value
+    assert "xxxx" not in text
 
 
 @pytest.mark.parametrize(

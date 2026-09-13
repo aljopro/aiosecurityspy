@@ -36,6 +36,7 @@ from aiosecurityspy import (
     ENDPOINT_GET_FILE_HIGH_BANDWIDTH,
     ENDPOINT_GET_FILE_LOW_BANDWIDTH,
     ENDPOINT_GET_PREVIEW,
+    ENDPOINT_IMAGE,
     ENDPOINT_SETTINGS_CAMERAS,
     ENDPOINT_SYSTEM_INFO,
     CameraSettingsPatch,
@@ -45,7 +46,7 @@ from aiosecurityspy import (
     is_credential_key,
 )
 from aiosecurityspy.connection import _ConnectionSettings
-from aiosecurityspy.models import Capture
+from aiosecurityspy.models import Capture, ServerInfo
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -93,6 +94,7 @@ EXPECTED_ENDPOINT_NAMES: Final = frozenset(
         "ENDPOINT_GET_FILE_HIGH_BANDWIDTH",
         "ENDPOINT_GET_FILE_LOW_BANDWIDTH",
         "ENDPOINT_GET_PREVIEW",
+        "ENDPOINT_IMAGE",
         "ENDPOINT_SETTINGS_CAMERAS",
         "ENDPOINT_SET_SCHEDULE",
         "ENDPOINT_SYSTEM_INFO",
@@ -328,7 +330,7 @@ class FakeServer:
         # The preview/file paths carry a literal embedded `?` and per-component
         # percent-encoding (research §4.3), so they never land on a clean
         # `endswith` match the way the JSON endpoints below do.
-        if ENDPOINT_GET_PREVIEW in url:
+        if ENDPOINT_GET_PREVIEW in url or ENDPOINT_IMAGE in url:
             return FakeResponse(self.status, PREVIEW_BYTES, content_type="image/jpeg")
         file_endpoints = (
             ENDPOINT_GET_FILE,
@@ -389,6 +391,9 @@ async def drive_every_path(server: FakeServer) -> list[SecuritySpyError]:
             [CAMERA], start_date=DAY, end_date=DAY, server_timezone=UTC
         ),
         lambda: client.async_get_capture_preview(make_capture()),
+        lambda: client.async_get_camera_image(
+            ServerInfo.from_api(SYSTEM_INFO), CAMERA, width=320, quality=50
+        ),
         lambda: drain_capture_file(client),
     )
     for call in calls:

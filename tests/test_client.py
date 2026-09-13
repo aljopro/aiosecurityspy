@@ -28,6 +28,7 @@ from aiosecurityspy import (
     CAPTURE_FILTER_VEHICLE,
     DEFAULT_TIMEOUT,
     PERM_FILES,
+    PERM_LIVEVIDEO,
     PERM_SCHED,
     PERMISSION_NAMES,
     CameraSettingsPatch,
@@ -2817,3 +2818,155 @@ async def test_buffered_media_401_releases_the_connection_before_probing() -> No
     client = make_media_client(session)
     with pytest.raises(SecuritySpyPermissionError):
         await client.async_get_capture_preview(make_capture())
+
+
+# --- async_get_camera_image (story 1.20) --------------------------------------
+
+IMAGE_URL = f"http://{HOST}:{PORT}/++image"
+IMAGE_TEST_CAMERA = 4
+IMAGE_WIDTH = 320
+IMAGE_QUALITY = 50
+
+
+def image_server_info(*, permitted_number: int = IMAGE_TEST_CAMERA) -> ServerInfo:
+    """Build an inventory in which only ``permitted_number`` is visible."""
+    return ServerInfo.from_api(
+        json.loads(restricted_system_info_body(permitted_number=permitted_number))
+    )
+
+
+@pytest.mark.asyncio
+async def test_camera_image_happy_path_sends_header_auth_and_no_userinfo() -> None:
+    session = FakeStreamSession(200, JPEG_BYTES, JPEG_CONTENT_TYPE)
+    client = make_media_client(session)
+    image = await client.async_get_camera_image(image_server_info(), IMAGE_TEST_CAMERA)
+    assert image.data == JPEG_BYTES
+    assert image.content_type == JPEG_CONTENT_TYPE
+    assert len(session.calls) == 1
+    url, kwargs = session.calls[0]
+    assert url == f"{IMAGE_URL}?cameraNum={IMAGE_TEST_CAMERA}"
+    assert "Authorization" in kwargs["headers"]
+    assert "auth" not in kwargs
+    assert "@" not in yarl.URL(url).raw_authority
+    assert USERNAME not in url
+    assert PASSWORD not in url
+
+
+@pytest.mark.asyncio
+async def test_camera_image_sizing_parameters_are_sent_in_order() -> None:
+    session = FakeStreamSession(200, JPEG_BYTES, JPEG_CONTENT_TYPE)
+    client = make_media_client(session)
+    await client.async_get_camera_image(
+        image_server_info(), IMAGE_TEST_CAMERA, width=IMAGE_WIDTH, quality=IMAGE_QUALITY
+    )
+    url, _ = session.calls[0]
+    assert url == (
+        f"{IMAGE_URL}?cameraNum={IMAGE_TEST_CAMERA}&width={IMAGE_WIDTH}&quality={IMAGE_QUALITY}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("camera_number", "kwargs"),
+    [
+        pytest.param(IMAGE_TEST_CAMERA, {"width": 0}, id="width-zero"),
+        pytest.param(IMAGE_TEST_CAMERA, {"width": True}, id="width-bool"),
+        pytest.param(IMAGE_TEST_CAMERA, {"quality": 101}, id="quality-over"),
+        pytest.param(IMAGE_TEST_CAMERA, {"quality": -1}, id="quality-under"),
+        pytest.param(IMAGE_TEST_CAMERA, {"quality": True}, id="quality-bool"),
+        pytest.param(IMAGE_TEST_CAMERA, {"width": 320.0}, id="width-float"),
+        pytest.param(IMAGE_TEST_CAMERA, {"quality": "50"}, id="quality-string"),
+        pytest.param("4", {}, id="camera-string"),
+        pytest.param(-1, {}, id="camera-negative"),
+        pytest.param(True, {}, id="camera-bool"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_camera_image_bad_arguments_raise_value_error_without_a_request(
+    camera_number: object, kwargs: dict[str, Any]
+) -> None:
+    session = FakeStreamSession(200, JPEG_BYTES, JPEG_CONTENT_TYPE)
+    client = make_media_client(session)
+    with pytest.raises(ValueError, match="must be"):
+        await client.async_get_camera_image(
+            image_server_info(), cast("int", camera_number), **kwargs
+        )
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_camera_image_invisible_camera_is_refused_without_a_request() -> None:
+    session = FakeStreamSession(200, JPEG_BYTES, JPEG_CONTENT_TYPE)
+    client = make_media_client(session)
+    invisible = 9
+    with pytest.raises(SecuritySpyPermissionError) as err:
+        await client.async_get_camera_image(image_server_info(), invisible)
+    assert err.value.permission == PERMISSION_NAMES[PERM_LIVEVIDEO]
+    assert err.value.camera_number == invisible
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_camera_image_401_with_a_succeeding_probe_is_a_permission_error() -> None:
+    session = SequencedFakeStreamSession(
+        [(401, b"", ""), (200, fixture_body().encode(), "application/json")]
+    )
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyPermissionError) as err:
+        await client.async_get_camera_image(image_server_info(), IMAGE_TEST_CAMERA)
+    assert err.value.permission == PERMISSION_NAMES[PERM_LIVEVIDEO]
+    assert err.value.camera_number == IMAGE_TEST_CAMERA
+    assert len(session.calls) == TWO_STATUSES
+
+
+@pytest.mark.asyncio
+async def test_camera_image_401_with_a_failing_probe_is_an_auth_error() -> None:
+    session = SequencedFakeStreamSession([(401, b"", ""), (401, b"", "")])
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyAuthError):
+        await client.async_get_camera_image(image_server_info(), IMAGE_TEST_CAMERA)
+    assert len(session.calls) == TWO_STATUSES
+
+
+@pytest.mark.asyncio
+async def test_camera_image_non_image_body_is_a_connect_error_without_the_body() -> None:
+    body = b"<html>sentinel-body-marker</html>"
+    session = FakeStreamSession(200, body, "text/html")
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyConnectError, match="did not return an image") as err:
+        await client.async_get_camera_image(image_server_info(), IMAGE_TEST_CAMERA)
+    rendered = f"{err.value}{err.value!r}{''.join(traceback.format_exception(err.value))}"
+    assert "sentinel-body-marker" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_camera_image_empty_body_is_a_connect_error() -> None:
+    session = FakeStreamSession(200, b"", JPEG_CONTENT_TYPE)
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyConnectError, match="did not return an image"):
+        await client.async_get_camera_image(image_server_info(), IMAGE_TEST_CAMERA)
+
+
+@pytest.mark.asyncio
+async def test_camera_image_content_type_is_matched_case_insensitively() -> None:
+    session = FakeStreamSession(200, JPEG_BYTES, "Image/JPEG")
+    client = make_media_client(session)
+    image = await client.async_get_camera_image(image_server_info(), IMAGE_TEST_CAMERA)
+    assert image.data == JPEG_BYTES
+
+
+@pytest.mark.asyncio
+async def test_camera_image_403_is_a_permission_error() -> None:
+    session = FakeStreamSession(403, b"", "")
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyPermissionError) as err:
+        await client.async_get_camera_image(image_server_info(), IMAGE_TEST_CAMERA)
+    assert err.value.permission == PERMISSION_NAMES[PERM_LIVEVIDEO]
+    assert err.value.camera_number == IMAGE_TEST_CAMERA
+
+
+@pytest.mark.asyncio
+async def test_camera_image_transport_failure_is_a_connect_error() -> None:
+    session = FakeStreamSession(error=TimeoutError("timed out"))
+    client = make_media_client(session)
+    with pytest.raises(SecuritySpyConnectError):
+        await client.async_get_camera_image(image_server_info(), IMAGE_TEST_CAMERA)

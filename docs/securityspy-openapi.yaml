@@ -278,6 +278,43 @@ paths:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /++image:
+    get:
+      operationId: getCameraImage
+      tags: [streaming]
+      summary: A camera's current still image.
+      description: |
+        Returns the camera's live frame as a JPEG. Requires the live-video permission on
+        the camera. `aiosecurityspy` sends the credential in the `Authorization` header only
+        and refuses locally a camera absent from `++systemInfo`, which lists only cameras
+        the account may view live.
+      x-verification: live-6.21
+      x-vendor-documented: true
+      x-quirks:
+        - >-
+          ⚠ A `401` may be a missing live-video permission rather than bad credentials;
+          `aiosecurityspy` disambiguates it by re-reading `++systemInfo` (story 1.14).
+      parameters:
+        - name: cameraNum
+          in: query
+          required: true
+          schema: { type: integer, minimum: 0 }
+        - name: width
+          in: query
+          description: Output width in pixels.
+          schema: { type: integer, minimum: 1 }
+        - name: quality
+          in: query
+          description: JPEG quality.
+          schema: { type: integer, minimum: 0, maximum: 100 }
+      responses:
+        "200":
+          description: The current still image.
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /++settings-cameras:
     get:
       operationId: getCameraSettings

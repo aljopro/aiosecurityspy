@@ -58,6 +58,7 @@ __all__ = [
     "ARM_OVERRIDES",
     "ArmOverride",
     "Camera",
+    "CameraImage",
     "CameraScheduleAssignment",
     "CameraSettings",
     "CameraSettingsPatch",
@@ -1381,6 +1382,28 @@ class CapturePreview:
         which suppresses its payload for the same reason (research §8.3).
         """
         return f"CapturePreview(content_type={self.content_type!r}, size={len(self.data)})"
+
+
+@dataclass(frozen=True, slots=True)
+class CameraImage:
+    """A camera's current still image returned by ``++image``.
+
+    Distinct from :class:`CapturePreview`, which is a *recorded* capture's
+    thumbnail. ``data`` is the raw image bytes, never text-decoded, capped at
+    8 MiB by the transport layer. ``content_type`` is what the server sent and
+    always starts with ``image/``.
+    """
+
+    data: bytes
+    content_type: str
+
+    def __repr__(self) -> str:
+        """Return a representation that omits the bytes payload.
+
+        Same reason as :class:`CapturePreview`: a default dataclass ``repr``
+        would echo up to 8 MiB of image bytes into a log line or traceback.
+        """
+        return f"CameraImage(content_type={self.content_type!r}, size={len(self.data)})"
 
 
 @dataclass(frozen=True, slots=True)

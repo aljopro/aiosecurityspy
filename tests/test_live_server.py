@@ -367,6 +367,23 @@ async def test_live_media_fetch_from_a_live_only_account_is_a_permission_error(
         )
 
 
+@pytest.mark.asyncio
+async def test_live_camera_image_is_a_jpeg(
+    session: aiohttp.ClientSession,
+) -> None:
+    """Story 1.20: ``++image`` answers a visible camera with a decodable JPEG."""
+    camera = _test_camera()
+    client = _client(session, "ADMIN")
+    info = await client.async_get_server_info()
+    if camera not in info.cameras:
+        pytest.skip(f"camera {camera} is not visible to the admin account")
+
+    image = await client.async_get_camera_image(info, camera)
+    assert image.content_type.startswith("image/jpeg")
+    assert image.data.startswith(b"\xff\xd8")
+    _report(f"  camera {camera}: ++image returned {len(image.data)} bytes of {image.content_type}")
+
+
 # --- writes that actually change the server (opt-in) --------------------------
 
 

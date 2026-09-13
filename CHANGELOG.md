@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `client.async_get_camera_image(server_info, camera_number, *, width=None, quality=None)`:
+  a camera's current still image from `++image`, returned as a `CameraImage`
+  (`data: bytes`, `content_type: str`; its `repr` hides the bytes). The credential
+  travels in the `Authorization` header only. A camera absent from
+  `server_info.cameras` raises `SecuritySpyPermissionError` without a request; a bad
+  camera number, a `width` below 1 or a `quality` outside 0-100 raises `ValueError`; a
+  response that is not an image raises `SecuritySpyConnectError`.
+- `ENDPOINT_IMAGE` constant.
+
 ## [0.3.0] - 2026-09-13
 
 ### Added

@@ -12,7 +12,7 @@ import logging
 import ssl
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Final, NoReturn, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import aiohttp
 
@@ -30,6 +30,7 @@ from .const import (
     ENDPOINT_CAM_STATUS,
     ENDPOINT_CAPTURE_LIST,
     ENDPOINT_GET_PREVIEW,
+    ENDPOINT_IMAGE,
     ENDPOINT_SET_SCHEDULE,
     ENDPOINT_SETTINGS_CAMERAS,
     ENDPOINT_SYSTEM_INFO,
@@ -55,6 +56,7 @@ from .models import (
     SETTINGS_PAGE_KEY_QUORUM,
     SETTINGS_PAGE_KEYS,
     ArmOverride,
+    CameraImage,
     CameraSettings,
     CameraSettingsPatch,
     CameraStatus,
@@ -117,6 +119,10 @@ _CAPTURE_LIST_KEYS: Final = ("captures", "caplist", "files", "file")
 
 #: Content type every ``settings-*`` write carries (research §8.0).
 _FORM_CONTENT_TYPE: Final = "application/x-www-form-urlencoded"
+
+#: Inclusive bounds of ``++image``'s ``quality`` parameter.
+_MIN_IMAGE_QUALITY: Final = 0
+_MAX_IMAGE_QUALITY: Final = 100
 
 #: Size of one chunk yielded by :class:`CaptureFileStream`, in bytes. Named
 #: rather than inlined so the memory bound the streaming API is built on is a
@@ -1033,6 +1039,79 @@ class SecuritySpyClient:
             path, permission=PERMISSION_NAMES[PERM_FILES], camera_number=capture.camera
         )
         return CapturePreview(data=body, content_type=content_type)
+
+    async def async_get_camera_image(
+        self,
+        server_info: ServerInfo,
+        camera_number: int,
+        *,
+        width: int | None = None,
+        quality: int | None = None,
+    ) -> CameraImage:
+        """Fetch a camera's current still image from ``++image``.
+
+        The credential travels in the ``Authorization`` header only, never in
+        the URL. A camera absent from ``server_info.cameras`` is refused
+        locally: ``++systemInfo`` lists only cameras the account may view live,
+        so absence is already a permission answer and no request is sent.
+
+        Args:
+            server_info: A previously fetched permission-scoped inventory; it
+                supplies which cameras are visible.
+            camera_number: The camera to fetch.
+            width: Optional output width in pixels, at least 1.
+            quality: Optional JPEG quality, 0 to 100.
+
+        Raises:
+            ValueError: The camera number is not a non-negative integer,
+                ``width`` is not an integer of at least 1, or ``quality`` is
+                not an integer from 0 to 100. No request is sent.
+            SecuritySpyPermissionError: The camera is not in
+                ``server_info.cameras``, the server answered 403, or a 401 that
+                a disambiguating probe confirmed was a permission denial.
+            SecuritySpyAuthError: The credentials were rejected (401), or a
+                401 that a disambiguating probe could not confirm was a
+                permission denial.
+            SecuritySpyConnectError: The server was unreachable, timed out,
+                answered with an unexpected status, sent a body exceeding the
+                8 MiB cap, or answered with something other than an image.
+
+        Returns:
+            The image bytes and the content type the server sent.
+
+        """
+        number = _validated_camera_number(camera_number)
+        params: dict[str, int] = {"cameraNum": number}
+        if width is not None:
+            if not isinstance(cast("object", width), int) or isinstance(width, bool) or width < 1:
+                message = "width must be an integer of at least 1"
+                raise ValueError(message)
+            params["width"] = width
+        if quality is not None:
+            if (
+                not isinstance(cast("object", quality), int)
+                or isinstance(quality, bool)
+                or not _MIN_IMAGE_QUALITY <= quality <= _MAX_IMAGE_QUALITY
+            ):
+                message = "quality must be an integer from 0 to 100"
+                raise ValueError(message)
+            params["quality"] = quality
+        if number not in server_info.cameras:
+            raise SecuritySpyPermissionError(PERMISSION_NAMES[PERM_LIVEVIDEO], number)
+        body, content_type = await self._request_bytes(
+            f"{ENDPOINT_IMAGE}?{urlencode(params)}",
+            permission=PERMISSION_NAMES[PERM_LIVEVIDEO],
+            camera_number=number,
+        )
+        if not body or not content_type.lower().startswith("image/"):
+            # The body is deliberately not echoed: an HTML error page is not
+            # ours to repeat into a log or traceback.
+            raise SecuritySpyConnectError(
+                self._connection.host,
+                self._connection.port,
+                "server did not return an image",
+            )
+        return CameraImage(data=body, content_type=content_type)
 
     async def async_get_capture_file(
         self,
