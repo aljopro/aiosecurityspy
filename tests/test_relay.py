@@ -981,6 +981,549 @@ async def test_hardening_scenarios_log_nothing_secret(
         assert value not in caplog.text, value
 
 
+# --- second review: nothing the consumer chooses rides the credential -----------
+
+
+class ScriptedUpstream:
+    """An upstream that answers each request with the next scripted reply."""
+
+    def __init__(self, replies: list[bytes]) -> None:
+        """Answer requests with ``replies`` in order, then close."""
+        self.replies = list(replies)
+        self.requests: list[tuple[str, list[tuple[str, str]], bytes]] = []
+        self.frames: list[bytes] = []
+        self.connections = 0
+        self.server: asyncio.Server | None = None
+        self.port = 0
+
+    async def start(self) -> None:
+        """Listen on a free loopback port."""
+        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self.port = int(self.server.sockets[0].getsockname()[1])
+
+    async def stop(self) -> None:
+        """Stop listening."""
+        if self.server is not None:
+            self.server.close()
+            await self.server.wait_closed()
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self.connections += 1
+        try:
+            while True:
+                message = await read_message(reader)
+                if message is None:
+                    break
+                if isinstance(message, bytes):
+                    self.frames.append(message)
+                    continue
+                self.requests.append(message)
+                if not self.replies:
+                    break
+                writer.write(self.replies.pop(0))
+                await writer.drain()
+        except asyncio.IncompleteReadError, ConnectionError:
+            pass
+        finally:
+            writer.close()
+            with contextlib.suppress(ConnectionError):
+                await writer.wait_closed()
+
+
+async def send_and_collect(port: int, payload: bytes) -> bytes:
+    """Send ``payload`` and return everything the relay sends before it closes."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(payload)
+        await writer.drain()
+        chunks = []
+        with contextlib.suppress(ConnectionError):
+            while chunk := await asyncio.wait_for(reader.read(4096), PATIENCE):
+                chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        writer.close()
+        with contextlib.suppress(ConnectionError):
+            await writer.wait_closed()
+
+
+async def scenario_line_break_in_a_header_cannot_smuggle_a_request() -> None:
+    upstream = ScriptedUpstream([b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n"] * 3)
+    await upstream.start()
+    try:
+        async with make_client().create_rtsp_relay(server_info(upstream.port)) as relay:
+            url = relay.stream_url(CAMERA)
+            smuggles = [
+                (
+                    f"OPTIONS {url} RTSP/1.0\r\nCSeq: 1\r\nX-A: a\n\nGET /++ssControlArm HTTP/1.0\n"
+                    "X-B: b\r\n\r\n"
+                ),
+                f"OPTIONS {url} RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: a\rGET /x HTTP/1.0\r\n\r\n",
+                f"OPTIONS {url} RTSP/1.0\nGET /x HTTP/1.0\r\nCSeq: 1\r\n\r\n",
+                f"OPTIONS {url} RTSP/1.0\r\nCSeq: 1\r\nBad Name: x\r\n\r\n",
+            ]
+            for smuggle in smuggles:
+                assert await send_and_collect(relay.bound_port, smuggle.encode()) == b""
+    finally:
+        await upstream.stop()
+    assert upstream.connections == 0
+    assert upstream.requests == []
+
+
+async def request_once(port: int, payload: bytes) -> object:
+    """Send one request and read one response, without waiting for the relay to close.
+
+    An accepted request leaves the connection open for the client's timeout, so
+    waiting for EOF would race the reader's own deadline.
+    """
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(payload)
+        await writer.drain()
+        return await asyncio.wait_for(read_message(reader), PATIENCE)
+    finally:
+        writer.close()
+        with contextlib.suppress(ConnectionError):
+            await writer.wait_closed()
+
+
+async def scenario_only_trackid_suffixes_reach_upstream() -> None:
+    upstream = ScriptedUpstream([b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n"])
+    await upstream.start()
+    try:
+        async with make_client().create_rtsp_relay(
+            server_info(upstream.port, (CAMERA, 9))
+        ) as relay:
+            url = relay.stream_url(CAMERA)
+            for suffix in ("/cameraNum=9", "/auth=x", "/trackID=1234", "/vcodec=1", "/trackID="):
+                request = f"OPTIONS {url}{suffix} RTSP/1.0\r\nCSeq: 1\r\n\r\n"
+                reply = await send_and_collect(relay.bound_port, request.encode())
+                assert reply == b"RTSP/1.0 404 Not Found\r\nCSeq: 1\r\n\r\n", suffix
+            assert upstream.connections == 0
+            request = f"OPTIONS {url}/TRACKID=01 RTSP/1.0\r\nCSeq: 1\r\n\r\n"
+            await request_once(relay.bound_port, request.encode())
+    finally:
+        await upstream.stop()
+    assert [start.split(" ")[1].rsplit("src", 1)[1] for start, _, _ in upstream.requests] == [
+        "/trackID=1"
+    ]
+
+
+async def scenario_request_headers_and_bodies_are_not_forwarded() -> None:
+    upstream = ScriptedUpstream([b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n"])
+    await upstream.start()
+    try:
+        async with make_client().create_rtsp_relay(server_info(upstream.port)) as relay:
+            url = relay.stream_url(CAMERA)
+            request = (
+                f"GET_PARAMETER {url} RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: probe\r\n"
+                "X-Evil: 1\r\nProxy-Authorization: Basic eDp5\r\nContent-Type: text/plain\r\n"
+                "Content-Length: 21\r\n\r\nGET /++ssControlArm\r\n"
+            )
+            await request_once(relay.bound_port, request.encode())
+    finally:
+        await upstream.stop()
+    assert len(upstream.requests) == 1
+    _, headers, body = upstream.requests[0]
+    assert [name for name, _ in headers] == ["CSeq", "User-Agent", "Authorization"]
+    assert body == b""
+
+
+async def scenario_response_headers_are_allowlisted_and_redirects_refused() -> None:
+    upstream = ScriptedUpstream(
+        [
+            (
+                b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nX-Url: rtsp:/127.0.0.1:1234/stream?a\r\n"
+                b"Via: RTSP/1.0 nvr.example\r\nPublic: OPTIONS, DESCRIBE\r\n\r\n"
+            ),
+            b"RTSP/1.0 302 Found\r\nCSeq: 2\r\nLocation: rtsp://127.0.0.1:9/x\r\n\r\n",
+        ]
+    )
+    await upstream.start()
+    try:
+        async with make_client().create_rtsp_relay(server_info(upstream.port)) as relay:
+            url = relay.stream_url(CAMERA)
+            payload = (
+                f"OPTIONS {url} RTSP/1.0\r\nCSeq: 1\r\n\r\n"
+                f"DESCRIBE {url} RTSP/1.0\r\nCSeq: 2\r\n\r\n"
+            )
+            reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_port)
+            writer.write(payload.encode())
+            await writer.drain()
+            first = await asyncio.wait_for(read_message(reader), PATIENCE)
+            second = await asyncio.wait_for(read_message(reader), PATIENCE)
+            writer.close()
+            with contextlib.suppress(ConnectionError):
+                await writer.wait_closed()
+    finally:
+        await upstream.stop()
+    assert first == ("RTSP/1.0 200 OK", [("CSeq", "1"), ("Public", "OPTIONS, DESCRIBE")], b"")
+    assert second == ("RTSP/1.0 502 Bad Gateway", [("CSeq", "2")], b"")
+
+
+async def scenario_a_reused_cseq_cannot_start_a_stream() -> None:
+    timeout = 0.3
+    upstream = ScriptedUpstream([b"RTSP/1.0 454 Session Not Found\r\nCSeq: 7\r\n\r\n"])
+    await upstream.start()
+    try:
+        async with make_client(timeout=timeout).create_rtsp_relay(
+            server_info(upstream.port)
+        ) as relay:
+            url = relay.stream_url(CAMERA)
+            reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_port)
+            writer.write(f"PLAY {url} RTSP/1.0\r\nCSeq: 7\r\nSession: 1\r\n\r\n".encode())
+            await writer.drain()
+            refused = await asyncio.wait_for(read_message(reader), PATIENCE)
+            writer.write(f"GET_PARAMETER {url} RTSP/1.0\r\nCSeq: 7\r\n\r\n".encode())
+            await writer.drain()
+            reused = await asyncio.wait_for(read_message(reader), PATIENCE)
+            assert await asyncio.wait_for(reader.read(), PATIENCE) == b""
+            writer.close()
+            with contextlib.suppress(ConnectionError):
+                await writer.wait_closed()
+            missing = await send_and_collect(
+                relay.bound_port, f"OPTIONS {url} RTSP/1.0\r\nUser-Agent: x\r\n\r\n".encode()
+            )
+    finally:
+        await upstream.stop()
+    assert isinstance(refused, tuple)
+    assert refused[0] == "RTSP/1.0 454 Session Not Found"
+    assert reused == ("RTSP/1.0 400 Bad Request", [("CSeq", "7")], b"")
+    assert missing == b"RTSP/1.0 400 Bad Request\r\n\r\n"
+    assert [start.split(" ")[0] for start, _, _ in upstream.requests] == ["PLAY"]
+
+
+async def scenario_frames_need_a_negotiated_channel() -> None:
+    exchanges = relayed_exchanges(ALLOWED)
+    upstream = FakeUpstream(exchanges)
+    await upstream.start()
+    try:
+        async with make_client().create_rtsp_relay(server_info(upstream.port)) as relay:
+            url = relay.stream_url(CAMERA)
+            reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_port)
+            for exchange in exchanges[:2]:
+                request = [readdress(exchange.request[0], url), *exchange.request[1:]]
+                writer.write(("\r\n".join(request) + "\r\n\r\n").encode("latin-1"))
+                await writer.drain()
+                assert isinstance(await asyncio.wait_for(read_message(reader), PATIENCE), tuple)
+            writer.write(make_frame(0, b"GET /++ssControlArm HTTP/1.0\r\n\r\n"))
+            await writer.drain()
+            assert await asyncio.wait_for(reader.read(), PATIENCE) == b""
+            writer.close()
+            with contextlib.suppress(ConnectionError):
+                await writer.wait_closed()
+            await asyncio.wait_for(upstream.done.wait(), PATIENCE)
+    finally:
+        await upstream.stop()
+    assert upstream.received_frames == []
+
+
+async def scenario_connections_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    with monkeypatch.context() as patch:
+        patch.setattr(relay_module, "MAX_CONNECTIONS", 1)
+        async with make_client().create_rtsp_relay(server_info(1)) as relay:
+            _, writer = await asyncio.open_connection("127.0.0.1", relay.bound_port)
+            try:
+                async with asyncio.timeout(PATIENCE):
+                    while not relay._tasks:  # noqa: SLF001, ASYNC110 - no event signals registration
+                        await asyncio.sleep(0.01)
+                refused = await send_and_collect(relay.bound_port, b"")
+            finally:
+                writer.close()
+                with contextlib.suppress(ConnectionError):
+                    await writer.wait_closed()
+    assert refused == b"RTSP/1.0 503 Service Unavailable\r\n\r\n"
+
+
+@pytest.mark.asyncio
+async def test_a_line_break_in_a_header_cannot_smuggle_a_request() -> None:
+    await scenario_line_break_in_a_header_cannot_smuggle_a_request()
+
+
+@pytest.mark.asyncio
+async def test_only_trackid_suffixes_reach_upstream() -> None:
+    await scenario_only_trackid_suffixes_reach_upstream()
+
+
+@pytest.mark.asyncio
+async def test_request_headers_and_bodies_are_not_forwarded() -> None:
+    await scenario_request_headers_and_bodies_are_not_forwarded()
+
+
+@pytest.mark.asyncio
+async def test_response_headers_are_allowlisted_and_redirects_refused() -> None:
+    await scenario_response_headers_are_allowlisted_and_redirects_refused()
+
+
+@pytest.mark.asyncio
+async def test_a_reused_or_missing_cseq_cannot_start_a_stream() -> None:
+    await scenario_a_reused_cseq_cannot_start_a_stream()
+
+
+@pytest.mark.asyncio
+async def test_frames_need_a_negotiated_channel() -> None:
+    await scenario_frames_need_a_negotiated_channel()
+
+
+@pytest.mark.asyncio
+async def test_connections_beyond_the_cap_are_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    await scenario_connections_are_capped(monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_second_review_scenarios_log_nothing_secret(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    issued: list[str] = []
+    original = RtspRelay.stream_url
+
+    def recording(self: RtspRelay, camera_number: int) -> str:
+        url = original(self, camera_number)
+        issued.append(relay_id(url))
+        return url
+
+    monkeypatch.setattr(RtspRelay, "stream_url", recording)
+    with caplog.at_level(logging.DEBUG), caplog.at_level(0, logger="aiosecurityspy"):
+        await scenario_line_break_in_a_header_cannot_smuggle_a_request()
+        await scenario_only_trackid_suffixes_reach_upstream()
+        await scenario_request_headers_and_bodies_are_not_forwarded()
+        await scenario_response_headers_are_allowlisted_and_redirects_refused()
+        await scenario_a_reused_cseq_cannot_start_a_stream()
+        await scenario_frames_need_a_negotiated_channel()
+        await scenario_connections_are_capped(monkeypatch)
+
+    assert issued
+    assert any(r.name == "aiosecurityspy.relay" for r in caplog.records)
+    for value in (
+        *SENTINELS,
+        aiohttp.encode_basic_auth(USERNAME, PASSWORD),
+        b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode(),
+        "Authorization",
+        "cameraNum",
+        "trackID",
+        "rtsp:",
+        "ssControlArm",
+        "1234",
+        *issued,
+    ):
+        assert value not in caplog.text, value
+
+
+# --- follow-up review: transports, repeated headers, and PLAY pairing ------------
+
+SETUP_OK: Final = (
+    b"RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nSession: 1\r\n"
+    b"Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n"
+)
+
+
+def setup_ok(cseq: int) -> bytes:
+    return SETUP_OK.replace(b"{cseq}", str(cseq).encode())
+
+
+async def scenario_transport_is_rebuilt_not_forwarded() -> None:
+    upstream = ScriptedUpstream([setup_ok(1)])
+    await upstream.start()
+    try:
+        async with make_client().create_rtsp_relay(server_info(upstream.port)) as relay:
+            url = relay.stream_url(CAMERA)
+            refused = []
+            for transport in (
+                "RTP/AVP;unicast;note=RTP/AVP/TCP;interleaved=0-1",
+                "RTP/AVP/TCP;unicast;interleaved=0-9",
+                "RTP/AVP/TCP;unicast;interleaved=255-256",
+                "RTP/AVP;unicast;client_port=5000-5001",
+            ):
+                request = (
+                    f"SETUP {url}/trackID=0 RTSP/1.0\r\nCSeq: 1\r\nTransport: {transport}\r\n\r\n"
+                )
+                refused.append(await request_once(relay.bound_port, request.encode()))
+            assert upstream.connections == 0
+            mixed = (
+                "RTP/AVP;unicast;destination=10.9.9.9;client_port=5000-5001,"
+                "RTP/AVP/TCP;interleaved=0-1;mode=play"
+            )
+            request = f"SETUP {url}/trackID=0 RTSP/1.0\r\nCSeq: 1\r\nTransport: {mixed}\r\n\r\n"
+            accepted = await request_once(relay.bound_port, request.encode())
+    finally:
+        await upstream.stop()
+    for reply in refused:
+        assert reply == ("RTSP/1.0 461 Unsupported Transport", [("CSeq", "1")], b"")
+    assert isinstance(accepted, tuple)
+    assert accepted[0] == "RTSP/1.0 200 OK"
+    assert len(upstream.requests) == 1
+    _, headers, _ = upstream.requests[0]
+    assert [v for k, v in headers if k == "Transport"] == ["RTP/AVP/TCP;unicast;interleaved=0-1"]
+
+
+async def scenario_repeated_headers_are_refused() -> None:
+    upstream = ScriptedUpstream([setup_ok(1)])
+    await upstream.start()
+    try:
+        async with make_client().create_rtsp_relay(server_info(upstream.port)) as relay:
+            url = relay.stream_url(CAMERA)
+            twice_cseq = f"OPTIONS {url} RTSP/1.0\r\nCSeq: 10\r\nCSeq: 3\r\n\r\n"
+            twice_transport = (
+                f"SETUP {url}/trackID=0 RTSP/1.0\r\nCSeq: 1\r\n"
+                "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n"
+                "transport: RTP/AVP;unicast;client_port=5000-5001\r\n\r\n"
+            )
+            twice_length = (
+                f"OPTIONS {url} RTSP/1.0\r\nCSeq: 1\r\nContent-Length: 0\r\n"
+                "Content-Length: 30\r\n\r\n"
+            )
+            replies = [
+                await send_and_collect(relay.bound_port, twice_cseq.encode()),
+                await send_and_collect(relay.bound_port, twice_transport.encode()),
+                await send_and_collect(relay.bound_port, twice_length.encode()),
+            ]
+    finally:
+        await upstream.stop()
+    assert replies == [
+        b"RTSP/1.0 400 Bad Request\r\nCSeq: 10\r\n\r\n",
+        b"RTSP/1.0 400 Bad Request\r\nCSeq: 1\r\n\r\n",
+        b"",
+    ]
+    assert upstream.connections == 0
+
+
+async def open_and_play(
+    port: int, url: str, setup_cseq: str, play_cseq: str
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Open a fresh connection, send SETUP then PLAY, and read both responses."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(
+        f"SETUP {url}/trackID=0 RTSP/1.0\r\nCSeq: {setup_cseq}\r\n"
+        "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n".encode()
+    )
+    await writer.drain()
+    assert isinstance(await asyncio.wait_for(read_message(reader), PATIENCE), tuple)
+    writer.write(f"PLAY {url} RTSP/1.0\r\nCSeq: {play_cseq}\r\nSession: 1\r\n\r\n".encode())
+    await writer.drain()
+    assert isinstance(await asyncio.wait_for(read_message(reader), PATIENCE), tuple)
+    return reader, writer
+
+
+async def close_quietly(writer: asyncio.StreamWriter) -> None:
+    writer.close()
+    with contextlib.suppress(ConnectionError):
+        await writer.wait_closed()
+
+
+async def scenario_play_pairing_decides_the_timeout() -> None:
+    timeout = 0.3
+    upstream = ScriptedUpstream(
+        [
+            # Connection 1: the PLAY is answered under a CSeq no request used.
+            setup_ok(1),
+            b"RTSP/1.0 200 OK\r\nCSeq: 99\r\nSession: 1\r\n\r\n",
+            # Connection 2: padded CSeqs, echoed unpadded, still pair.
+            setup_ok(1),
+            b"RTSP/1.0 200 OK\r\nCSeq: 2\r\nSession: 1\r\n\r\n",
+        ]
+    )
+    await upstream.start()
+    loop = asyncio.get_running_loop()
+    try:
+        async with make_client(timeout=timeout).create_rtsp_relay(
+            server_info(upstream.port)
+        ) as relay:
+            url = relay.stream_url(CAMERA)
+            # The scripted upstream stays open after its replies, so an EOF here
+            # can only be the relay's own pre-PLAY timeout.
+            reader, writer = await open_and_play(relay.bound_port, url, "1", "2")
+            started = loop.time()
+            assert await asyncio.wait_for(reader.read(), PATIENCE) == b""
+            assert loop.time() - started < timeout * 4
+            await close_quietly(writer)
+
+            reader, writer = await open_and_play(relay.bound_port, url, "01", "002")
+            await asyncio.sleep(timeout * 4)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(reader.read(1), timeout)
+            await close_quietly(writer)
+    finally:
+        await upstream.stop()
+
+
+async def scenario_frame_on_an_unnegotiated_channel() -> None:
+    upstream = ScriptedUpstream([setup_ok(1)])
+    await upstream.start()
+    allowed = make_frame(1, b"\x80\xc9\x00\x01rtcp")
+    stray = make_frame(2, b"GET /++ssControlArm HTTP/1.0\r\n\r\n")
+    try:
+        async with make_client().create_rtsp_relay(server_info(upstream.port)) as relay:
+            url = relay.stream_url(CAMERA)
+            reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_port)
+            writer.write(
+                f"SETUP {url}/trackID=0 RTSP/1.0\r\nCSeq: 1\r\n"
+                "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n".encode()
+            )
+            await writer.drain()
+            assert isinstance(await asyncio.wait_for(read_message(reader), PATIENCE), tuple)
+            writer.write(allowed + stray)
+            await writer.drain()
+            assert await asyncio.wait_for(reader.read(), PATIENCE) == b""
+            await close_quietly(writer)
+    finally:
+        await upstream.stop()
+    assert upstream.frames == [allowed]
+
+
+@pytest.mark.asyncio
+async def test_setup_transport_is_rebuilt_and_udp_never_offered() -> None:
+    await scenario_transport_is_rebuilt_not_forwarded()
+
+
+@pytest.mark.asyncio
+async def test_repeated_headers_are_refused() -> None:
+    await scenario_repeated_headers_are_refused()
+
+
+@pytest.mark.asyncio
+async def test_only_a_paired_play_lifts_the_timeout_and_padding_still_pairs() -> None:
+    await scenario_play_pairing_decides_the_timeout()
+
+
+@pytest.mark.asyncio
+async def test_a_frame_on_an_unnegotiated_channel_closes_the_connection() -> None:
+    await scenario_frame_on_an_unnegotiated_channel()
+
+
+@pytest.mark.asyncio
+async def test_follow_up_scenarios_log_nothing_secret(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    issued: list[str] = []
+    original = RtspRelay.stream_url
+
+    def recording(self: RtspRelay, camera_number: int) -> str:
+        url = original(self, camera_number)
+        issued.append(relay_id(url))
+        return url
+
+    monkeypatch.setattr(RtspRelay, "stream_url", recording)
+    with caplog.at_level(logging.DEBUG), caplog.at_level(0, logger="aiosecurityspy"):
+        await scenario_transport_is_rebuilt_not_forwarded()
+        await scenario_repeated_headers_are_refused()
+        await scenario_play_pairing_decides_the_timeout()
+        await scenario_frame_on_an_unnegotiated_channel()
+
+    assert issued
+    for value in (
+        *SENTINELS,
+        aiohttp.encode_basic_auth(USERNAME, PASSWORD),
+        b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode(),
+        "Authorization",
+        "10.9.9.9",
+        "trackID",
+        "rtsp:",
+        "ssControlArm",
+        *issued,
+    ):
+        assert value not in caplog.text, value
+
+
 # --- AC4: nothing secret or stream-addressing reaches a log record ---------------
 
 
