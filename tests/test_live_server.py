@@ -29,9 +29,11 @@ here must be diagnosable from status codes and shapes alone.
 from __future__ import annotations
 
 import asyncio
+import base64
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
+from http import HTTPStatus
 from typing import TYPE_CHECKING
 
 import aiohttp
@@ -176,6 +178,72 @@ async def test_live_camera_image_accepts_key_as_password(
     image = await client.async_get_camera_image(info, camera)
     assert image.content_type.startswith("image/")
     assert image.data
+
+
+def _base_url() -> str:
+    """Build the server's base URL from `.env`, skipping when unconfigured.
+
+    The library never constructs an `auth=` query parameter itself (AD-13
+    confines that form to the relay's own upstream connection), so exercising
+    it needs a raw request outside `SecuritySpyClient`.
+    """
+    host = live_env.get("SECURITYSPY_HOST")
+    if host is None:
+        pytest.skip("SECURITYSPY_HOST is not set; see aiosecurityspy/.env.example")
+    port = live_env.get_int("SECURITYSPY_PORT") or 8001
+    scheme = "https" if live_env.flag("SECURITYSPY_USE_HTTPS") else "http"
+    return f"{scheme}://{host}:{port}"
+
+
+@pytest.mark.asyncio
+async def test_live_raw_key_in_auth_query_param_is_rejected(
+    session: aiohttp.ClientSession,
+) -> None:
+    """A raw key in `?auth=` is refused, contrary to SecuritySpy's own help text.
+
+    The "API Key" section of Settings > Web account management describes
+    adding `auth=<key>` to any URL. Live testing found the server rejects that
+    literal form with 401 on every endpoint tried, while wrapping it the way
+    Basic auth wraps a password (`auth=` + base64 of `username:key`) succeeds.
+    Regression check for that vendor discrepancy, not a library bug -- the
+    library never builds the raw form itself.
+    """
+    key = live_env.get("SECURITYSPY_LIVE_KEY")
+    if key is None:
+        pytest.skip("SECURITYSPY_LIVE_KEY is not set; see aiosecurityspy/.env.example")
+    async with session.get(
+        f"{_base_url()}/++systemInfo",
+        params={"auth": key},
+        ssl=live_env.flag("SECURITYSPY_VERIFY_SSL"),
+    ) as response:
+        await response.read()  # drain fully so the connection closes cleanly
+        assert response.status == HTTPStatus.UNAUTHORIZED
+
+
+@pytest.mark.asyncio
+async def test_live_base64_wrapped_key_in_auth_query_param_is_accepted(
+    session: aiohttp.ClientSession,
+) -> None:
+    """`?auth=` accepts a key wrapped the same way Basic auth wraps a password.
+
+    Companion to `test_live_raw_key_in_auth_query_param_is_rejected`: proves
+    the query-string form isn't rejected outright, only the raw-key spelling
+    the vendor's help text describes. The username is arbitrary and ignored,
+    matching the Basic-auth-header behavior -- confirmed with a made-up
+    username, not the account's real one, so this cannot be mistaken for an
+    ordinary authenticated request.
+    """
+    key = live_env.get("SECURITYSPY_LIVE_KEY")
+    if key is None:
+        pytest.skip("SECURITYSPY_LIVE_KEY is not set; see aiosecurityspy/.env.example")
+    wrapped = base64.b64encode(f"not-a-real-account:{key}".encode()).decode()
+    async with session.get(
+        f"{_base_url()}/++systemInfo",
+        params={"auth": wrapped},
+        ssl=live_env.flag("SECURITYSPY_VERIFY_SSL"),
+    ) as response:
+        await response.read()  # drain fully so the connection closes cleanly
+        assert response.status == HTTPStatus.OK
 
 
 # --- what each account can see ------------------------------------------------
