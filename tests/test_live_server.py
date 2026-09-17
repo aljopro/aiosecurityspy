@@ -111,6 +111,73 @@ def _test_camera() -> int:
     return number
 
 
+def _client_with_key_as_password(session: aiohttp.ClientSession) -> SecuritySpyClient:
+    """Build a client for the "Live" account using its API key as the password.
+
+    Skips when the key is not configured. Story 1.21's spike: SecuritySpy
+    6.22b9+ per-account API keys authenticate identically to the password when
+    placed in the same `Authorization: Basic` slot, with the username ignored.
+    This uses the account's real username (see `.env.example`); the key value
+    itself is never asserted on or logged.
+    """
+    host = live_env.get("SECURITYSPY_HOST")
+    if host is None:
+        pytest.skip("SECURITYSPY_HOST is not set; see aiosecurityspy/.env.example")
+    account = live_env.credentials("LIVE")
+    key = live_env.get("SECURITYSPY_LIVE_KEY")
+    if account is None or key is None:
+        pytest.skip("SECURITYSPY_LIVE_USER/_PASS/_KEY are not all set")
+    username, _password = account
+    return SecuritySpyClient(
+        session,
+        host,
+        live_env.get_int("SECURITYSPY_PORT") or 8001,
+        username=username,
+        password=key,
+        use_https=live_env.flag("SECURITYSPY_USE_HTTPS"),
+        verify_ssl=live_env.flag("SECURITYSPY_VERIFY_SSL"),
+        timeout=15.0,
+    )
+
+
+# --- API keys as Basic-auth passwords (Story 1.21) ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_live_server_info_accepts_key_as_password(
+    session: aiohttp.ClientSession,
+) -> None:
+    """`++systemInfo` accepts the "Live" account's API key as the Basic password.
+
+    Regression check for the spike's headline finding: a key placed in the
+    password slot of `Authorization: Basic base64(username:KEY)` authenticates
+    exactly like the password, with the real username. See
+    `_bmad-output/planning-artifacts/research/securityspy-api-keys-6.22.md`.
+    """
+    client = _client_with_key_as_password(session)
+    info = await client.async_get_server_info()
+    assert info.cameras, "the key-authenticated account saw no cameras at all"
+
+
+@pytest.mark.asyncio
+async def test_live_camera_image_accepts_key_as_password(
+    session: aiohttp.ClientSession,
+) -> None:
+    """`++image` accepts the "Live" account's API key as the Basic password.
+
+    Companion to `test_live_server_info_accepts_key_as_password`: confirms the
+    key also authenticates the media path, not only `++systemInfo`.
+    """
+    client = _client_with_key_as_password(session)
+    info = await client.async_get_server_info()
+    camera = _test_camera()
+    if camera not in info.cameras:
+        pytest.skip("SECURITYSPY_TEST_CAMERA is not visible to the LIVE account")
+    image = await client.async_get_camera_image(info, camera)
+    assert image.content_type.startswith("image/")
+    assert image.data
+
+
 # --- what each account can see ------------------------------------------------
 
 

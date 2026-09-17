@@ -69,17 +69,38 @@ DEVICE_PASSWORD: Final = "device-pass-22b9"  # noqa: S105 - leak-detection senti
 #: fields of it that happen to be passwords.
 PAYLOAD_MARKER: Final = "payload-marker-5c0e"
 
+#: A SecuritySpy 6.22b9+ per-account API key, used as the Basic-auth password
+#: (Story 1.21's spike). Shaped like a real key (`API_` + 32 base62 chars, 36
+#: total) but not one -- proves a key-shaped credential never leaks either.
+API_KEY: Final = "API_" + "9f3a7c1e5b2d4f608a1c3e5f7b9d1c3e"
+
+#: A username distinct from `USERNAME`, used only with `API_KEY`. If the key
+#: path ever leaked a username through code the password path does not
+#: exercise, this sentinel -- not `USERNAME` -- would be the one to appear,
+#: making the two credential types distinguishable in a failure.
+KEY_USERNAME: Final = "key-user-3b8a"
+
 #: Everything that must never appear in a log line, an exception or a URL.
-SENTINELS: Final = (USERNAME, PASSWORD, DEVICE_USERNAME, DEVICE_PASSWORD, PAYLOAD_MARKER)
+SENTINELS: Final = (
+    USERNAME,
+    PASSWORD,
+    DEVICE_USERNAME,
+    DEVICE_PASSWORD,
+    PAYLOAD_MARKER,
+    API_KEY,
+    KEY_USERNAME,
+)
 
 CAMERA: Final = 3
 DAY: Final = date(2026, 8, 9)
 
 #: The floor the log sweep must clear before its "nothing leaked" search means
-#: anything. The three phases together emit 21 at the time of writing, so the
-#: guard survives an ordinary logging change while still failing loudly if the
-#: library ever goes quiet and the search runs over an empty haystack -- which a
-#: bare ``caplog.text.strip()`` would not, since one stray line satisfies it.
+#: anything. The five phases (password-authenticated healthy/rejected/
+#: undecodable, plus key-authenticated healthy/rejected) together emit well
+#: over this at the time of writing, so the guard survives an ordinary
+#: logging change while still failing loudly if the library ever goes quiet
+#: and the search runs over an empty haystack -- which a bare
+#: ``caplog.text.strip()`` would not, since one stray line satisfies it.
 MINIMUM_DEBUG_RECORDS: Final = 12
 
 #: Every endpoint constant the package exports, ``ENDPOINT_PREFIX`` aside. Named
@@ -351,6 +372,21 @@ def make_client(server: FakeServer) -> SecuritySpyClient:
     )
 
 
+def make_client_with_key(server: FakeServer) -> SecuritySpyClient:
+    """Build a client authenticated with an API key instead of a password.
+
+    Story 1.21: a SecuritySpy 6.22b9+ API key sits in the same Basic-auth
+    password slot a real password would. This drives it through the same
+    paths ``make_client`` does, so ``API_KEY`` is a genuine credential in
+    flight for the sweep below rather than a declared-but-unused sentinel.
+    Uses ``KEY_USERNAME``, not ``USERNAME``, so a leak under this path is
+    distinguishable from a leak under the password path.
+    """
+    return SecuritySpyClient(
+        cast("aiohttp.ClientSession", server), HOST, PORT, username=KEY_USERNAME, password=API_KEY
+    )
+
+
 async def until(condition: Callable[[], bool]) -> None:
     """Yield to the loop until ``condition`` holds, failing rather than hanging."""
     async with asyncio.timeout(PATIENCE):
@@ -366,8 +402,14 @@ async def drain_capture_file(client: SecuritySpyClient) -> None:
             pass
 
 
-async def drive_every_path(server: FakeServer) -> list[SecuritySpyError]:
+async def drive_every_path(
+    server: FakeServer, client_factory: Callable[[FakeServer], SecuritySpyClient] = make_client
+) -> list[SecuritySpyError]:
     """Run every public request path plus a stream session against ``server``.
+
+    ``client_factory`` defaults to a username/password client; pass
+    ``make_client_with_key`` to run the same sweep with an API key as the
+    credential instead (Story 1.21).
 
     Returns:
         Every library error raised along the way. On a healthy server that is
@@ -375,7 +417,7 @@ async def drive_every_path(server: FakeServer) -> list[SecuritySpyError]:
         them is a haystack the credential search runs over.
 
     """
-    client = make_client(server)
+    client = client_factory(server)
     errors: list[SecuritySpyError] = []
     calls: tuple[Callable[[], Any], ...] = (
         client.async_get_server_info,
@@ -434,11 +476,12 @@ async def test_no_credential_reaches_a_log_line_an_exception_or_a_traceback(
 ) -> None:
     """Every public path, healthy and failing, under the whole logger tree at level 0.
 
-    Four distinct sentinels are in play: the connection credential the client
+    Five distinct sentinels are in play: the connection credential the client
     and the stream hold, the device credential the settings page carries in
-    plaintext (research §8.3), and a perfectly ordinary settings value -- because
+    plaintext (research §8.3), a perfectly ordinary settings value -- because
     the rule is that the settings *payload* is never logged, not merely its two
-    password-shaped fields.
+    password-shaped fields -- and a SecuritySpy 6.22b9+ API key, driven through
+    its own key-authenticated pass (Story 1.21).
     """
     # `at_level(0, logger="aiosecurityspy")` alone captures *nothing*: level 0 is
     # NOTSET, which means "inherit", and the root logger caplog attaches its
@@ -452,19 +495,27 @@ async def test_no_credential_reaches_a_log_line_an_exception_or_a_traceback(
         # neither JSON nor a settings page.
         rejected = await drive_every_path(FakeServer(401))
         undecodable = await drive_every_path(FakeServer(body="<html>not securityspy</html>"))
+        # Same sweep again, authenticated with an API key instead of a
+        # password (Story 1.21) -- proves a key-shaped credential leaks no
+        # more than a password does, on both a healthy and a rejecting server.
+        key_succeeding = await drive_every_path(FakeServer(), make_client_with_key)
+        key_rejected = await drive_every_path(FakeServer(401), make_client_with_key)
 
     # Asserted per phase, not over the combined list: if the 401 phase silently
     # stopped raising -- the exact regression it exists to catch -- a non-empty
     # combined list would still be satisfied by the undecodable-body phase.
+    assert not succeeding, "the healthy-server phase must not raise"
     assert rejected, "the rejected-credential phase must actually have raised"
     assert undecodable, "the undecodable-body phase must actually have raised"
-    errors = succeeding + rejected + undecodable
+    assert not key_succeeding, "the key-authenticated healthy-server phase must not raise"
+    assert key_rejected, "the key-rejected phase must actually have raised"
+    errors = succeeding + rejected + undecodable + key_succeeding + key_rejected
     haystack = f"{caplog.text}\n{rendered(errors)}"
     for sentinel in SENTINELS:
         assert sentinel not in haystack, sentinel
     # Not a tautology: one stray line from anywhere would satisfy a bare
     # `caplog.text.strip()`, so count the library's own debug records instead.
-    # The floor sits well under the 21 the three phases actually emit, so an
+    # The floor sits well under what the five phases actually emit, so an
     # ordinary logging change does not break it, while staying far above what a
     # single stray line could reach.
     debug_records = [
