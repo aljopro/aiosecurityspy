@@ -311,15 +311,28 @@ async def test_live_samekey_password_is_refused_at_web_login(
 
 
 @pytest.mark.asyncio
-async def test_live_partial_key_shaped_password_authenticates_normally(
+async def test_live_partial_key_shaped_password_is_refused_on_the_api_surface(
     session: aiohttp.ClientSession,
 ) -> None:
-    """A password starting `API_` but not full key-shaped authenticates as itself.
+    """A password merely starting `API_` is refused by Basic auth, unlike the web UI.
 
-    Closes the sub-AC Story 1.21 left untested: does a password that merely
-    begins with the key prefix get mistaken for a key (and so authenticate
-    under any username, like the SAMEKEY case), or does it behave as an
-    ordinary password? Only the account's own username is tried here.
+    Live finding (2026-09-16, post-done follow-up to Story 1.22): a password
+    that starts with `API_` but does not match the full key shape (`API_` + 32
+    base62 characters) is accepted by SecuritySpy's own web UI login form, but
+    refused with 401 on the Basic-auth API surface (`++systemInfo` and, by the
+    same code path, every other endpoint this library calls). Confirmed with
+    the API key deleted from the account beforehand, ruling out interference
+    from a real key coexisting on the same account.
+
+    This is a *different* lock-out than the SAMEKEY case Story 1.21 documented
+    (there, a password matching the *full* key shape was accepted on the API
+    surface but refused at the web UI -- the reverse asymmetry). Here, the
+    trigger appears to be the `API_` *prefix alone*, not a full shape match:
+    the API surface's Basic-auth handling looks like it attempts a key lookup
+    for any credential starting with `API_` and refuses outright when no
+    matching key is found, while the web login form does not apply that same
+    check. This was not previously confirmed live; Story 1.22's original write-up
+    incorrectly assumed a partial-shape password would authenticate normally.
     """
     account = live_env.credentials("PARTIALKEY")
     if account is None:
@@ -329,7 +342,7 @@ async def test_live_partial_key_shaped_password_authenticates_normally(
     assert password.startswith("API_"), "SECURITYSPY_PARTIALKEY_PASS must start with 'API_'"
     assert len(password) != full_key_length, (
         "SECURITYSPY_PARTIALKEY_PASS must NOT match the full key shape (API_ + "
-        "32 base62 chars), or this test silently validates an ordinary password "
+        "32 base62 chars), or this test silently validates the SAMEKEY case "
         "instead of the partial-key-shape case it exists to cover -- see "
         ".env.example"
     )
@@ -339,7 +352,7 @@ async def test_live_partial_key_shaped_password_authenticates_normally(
         ssl=live_env.flag("SECURITYSPY_VERIFY_SSL"),
     ) as response:
         await response.read()  # drain fully so the connection closes cleanly
-        assert response.status == HTTPStatus.OK
+        assert response.status == HTTPStatus.UNAUTHORIZED
 
 
 @pytest.mark.asyncio
