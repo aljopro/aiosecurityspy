@@ -307,6 +307,97 @@ async def test_live_samekey_password_is_refused_at_web_login(
         assert response.status == HTTPStatus.FORBIDDEN
 
 
+# --- Story 1.22: closing 1.21's unmet sub-ACs ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_live_partial_key_shaped_password_authenticates_normally(
+    session: aiohttp.ClientSession,
+) -> None:
+    """A password starting `API_` but not full key-shaped authenticates as itself.
+
+    Closes the sub-AC Story 1.21 left untested: does a password that merely
+    begins with the key prefix get mistaken for a key (and so authenticate
+    under any username, like the SAMEKEY case), or does it behave as an
+    ordinary password? Only the account's own username is tried here.
+    """
+    account = live_env.credentials("PARTIALKEY")
+    if account is None:
+        pytest.skip("SECURITYSPY_PARTIALKEY_USER/_PASS are not set")
+    username, password = account
+    full_key_length = len("API_") + 32
+    assert password.startswith("API_"), "SECURITYSPY_PARTIALKEY_PASS must start with 'API_'"
+    assert len(password) != full_key_length, (
+        "SECURITYSPY_PARTIALKEY_PASS must NOT match the full key shape (API_ + "
+        "32 base62 chars), or this test silently validates an ordinary password "
+        "instead of the partial-key-shape case it exists to cover -- see "
+        ".env.example"
+    )
+    async with session.get(
+        f"{_base_url()}/++systemInfo",
+        headers={"Authorization": aiohttp.encode_basic_auth(username, password)},
+        ssl=live_env.flag("SECURITYSPY_VERIFY_SSL"),
+    ) as response:
+        await response.read()  # drain fully so the connection closes cleanly
+        assert response.status == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_live_percam_key_on_unpermitted_camera_is_denied(
+    session: aiohttp.ClientSession,
+) -> None:
+    """A PERCAM key sees exactly the same cameras as the PERCAM password.
+
+    Closes the other sub-AC Story 1.21 left untested: does a key carry exactly
+    the account's camera-visibility permissions? A local-only check (does
+    `async_get_camera_image` refuse a camera absent from the key-authenticated
+    inventory) would prove nothing, since that guard fires before any request
+    reaches the server regardless of which credential fetched the inventory --
+    see `client.py::async_get_camera_image`. The real question is whether the
+    *server* scopes a key-authenticated `++systemInfo` the same as a
+    password-authenticated one, so this compares both inventories for the same
+    account and then, only as a secondary check, confirms the local guard still
+    denies a camera outside that shared scope.
+    """
+    host = live_env.get("SECURITYSPY_HOST")
+    if host is None:
+        pytest.skip("SECURITYSPY_HOST is not set; see aiosecurityspy/.env.example")
+    key = live_env.get("SECURITYSPY_PERCAM_KEY")
+    if key is None:
+        pytest.skip("SECURITYSPY_PERCAM_KEY is not set")
+    password_client = _client(session, "PERCAM")
+    password_info = await password_client.async_get_server_info()
+
+    account = live_env.credentials("PERCAM")
+    assert account is not None  # `_client` above already skipped if this were unset
+    username, _password = account
+    key_client = SecuritySpyClient(
+        session,
+        host,
+        live_env.get_int("SECURITYSPY_PORT") or 8001,
+        username=username,
+        password=key,
+        use_https=live_env.flag("SECURITYSPY_USE_HTTPS"),
+        verify_ssl=live_env.flag("SECURITYSPY_VERIFY_SSL"),
+        timeout=15.0,
+    )
+    key_info = await key_client.async_get_server_info()
+
+    assert set(key_info.cameras) == set(password_info.cameras), (
+        "the key-authenticated account sees a different camera set than the "
+        "password-authenticated one; the key does not carry exactly the "
+        "account's camera-visibility permissions"
+    )
+
+    all_camera_numbers = range(max(password_info.cameras, default=-1) + 2)
+    unpermitted = next((n for n in all_camera_numbers if n not in key_info.cameras), None)
+    if unpermitted is None:
+        pytest.skip("the PERCAM account can see every camera number the server has")
+
+    with pytest.raises(SecuritySpyPermissionError):
+        await key_client.async_get_camera_image(key_info, unpermitted)
+
+
 # --- what each account can see ------------------------------------------------
 
 
