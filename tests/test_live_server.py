@@ -246,6 +246,67 @@ async def test_live_base64_wrapped_key_in_auth_query_param_is_accepted(
         assert response.status == HTTPStatus.OK
 
 
+def _samekey_password() -> str:
+    """Return the SAMEKEY account's password, or skip when it is not configured.
+
+    `SECURITYSPY_SAMEKEY_KEY` is deliberately not read here: it was miscaptured
+    (one character short, missing the `API_` prefix) when this fixture was set
+    up, and the account's password -- set equal to the real key at creation --
+    is what actually carries the key value. `.env.example` documents this.
+    """
+    account = live_env.credentials("SAMEKEY")
+    if account is None:
+        pytest.skip("SECURITYSPY_SAMEKEY_USER/_PASS are not set")
+    _username, password = account
+    return password
+
+
+@pytest.mark.asyncio
+async def test_live_samekey_password_authenticates_api_endpoints_under_any_username(
+    session: aiohttp.ClientSession,
+) -> None:
+    """An account whose password equals its own key authenticates like a key.
+
+    Regression check for the password-equals-key lock-out finding: once an
+    account's password is set to a key-shaped value, SecuritySpy treats it as
+    key-authenticated on the API surface -- any username works, including one
+    that is not the account's own -- exactly as a real key does.
+    """
+    password = _samekey_password()
+    async with session.get(
+        f"{_base_url()}/++systemInfo",
+        headers={"Authorization": aiohttp.encode_basic_auth("not-a-real-account", password)},
+        ssl=live_env.flag("SECURITYSPY_VERIFY_SSL"),
+    ) as response:
+        await response.read()  # drain fully so the connection closes cleanly
+        assert response.status == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_live_samekey_password_is_refused_at_web_login(
+    session: aiohttp.ClientSession,
+) -> None:
+    """The same account is locked out of its own web UI login by its password.
+
+    Companion to the API-side test above: with the account's real username,
+    the identical password/key value is refused (403) at the web interface,
+    the same lock-out a real API key produces. This is SecuritySpy's own
+    behavior, not something the library can detect or prevent -- documented
+    here as a known edge case, not addressed with a library change.
+    """
+    account = live_env.credentials("SAMEKEY")
+    if account is None:
+        pytest.skip("SECURITYSPY_SAMEKEY_USER/_PASS are not set")
+    username, password = account
+    async with session.get(
+        f"{_base_url()}/",
+        headers={"Authorization": aiohttp.encode_basic_auth(username, password)},
+        ssl=live_env.flag("SECURITYSPY_VERIFY_SSL"),
+    ) as response:
+        await response.read()  # drain fully so the connection closes cleanly
+        assert response.status == HTTPStatus.FORBIDDEN
+
+
 # --- what each account can see ------------------------------------------------
 
 
