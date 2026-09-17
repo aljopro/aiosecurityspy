@@ -92,14 +92,44 @@ class SecuritySpyAuthError(SecuritySpyError):
     reauthentication; that is the consumer's job (AD-6, AD-18).
     """
 
-    def __init__(self, host: str, port: int, status: int) -> None:
-        """Record the endpoint and the rejecting status code, never the credentials."""
+    def __init__(
+        self, host: str, port: int, status: int, *, password_has_api_key_prefix: bool = False
+    ) -> None:
+        """Record the endpoint and the rejecting status code, never the credentials.
+
+        Args:
+            host: The host that rejected the credentials.
+            port: The port that rejected the credentials.
+            status: The rejecting HTTP status code.
+            password_has_api_key_prefix: Whether the configured password
+                starts with the literal prefix ``API_`` -- the same prefix a
+                SecuritySpy 6.22+ per-account API key uses, though this check
+                only matches the prefix, not a key's full shape, so it also
+                fires for an ordinary password that merely happens to start
+                that way. When ``True``, an extra, hedged sentence is appended
+                naming this as a *possible* contributing factor -- not
+                necessarily the cause of this specific rejection -- based on
+                behavior observed against SecuritySpy 6.22b9-6.22b10 during
+                this library's own testing (see Story 1.22,
+                `research/securityspy-api-keys-6.22.md` in the `ha-securityspy`
+                planning repo). Never quotes the password itself. Defaults to
+                ``False``, which reproduces today's message byte-for-byte.
+
+        """
         self.host = host
         self.port = port
         self.status = status
-        super().__init__(
-            f"SecuritySpy at {host}:{port} rejected the supplied credentials (HTTP {status})"
-        )
+        message = f"SecuritySpy at {host}:{port} rejected the supplied credentials (HTTP {status})"
+        if password_has_api_key_prefix:
+            message += (
+                ". Note: the configured password starts with 'API_', the same prefix "
+                "SecuritySpy 6.22+ per-account API keys use. This may not be why this "
+                "particular request was rejected, but on some SecuritySpy versions a "
+                "password merely starting with that prefix has been observed to be refused "
+                "on this API even when the identical password logs into the SecuritySpy web "
+                "UI successfully -- worth ruling out if the credentials otherwise look correct."
+            )
+        super().__init__(message)
 
 
 class SecuritySpyPermissionError(SecuritySpyError):

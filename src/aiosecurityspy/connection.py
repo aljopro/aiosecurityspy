@@ -137,6 +137,13 @@ class _ConnectionSettings:
     auth_header: str
     verify_ssl: bool
     timeout: float
+    #: Whether the plaintext password started with ``API_`` at construction
+    #: time -- the shape a SecuritySpy 6.22+ per-account API key takes, but
+    #: also one an ordinary password can coincidentally start with. This is
+    #: the *only* trace of the password's content retained past `create()`;
+    #: it exists solely to let a 401 raise a more specific diagnostic
+    #: (`SecuritySpyAuthError`) and is never used to change auth behavior.
+    password_has_api_key_prefix: bool
 
     @classmethod
     def create(  # noqa: PLR0913 - connection parameters are irreducible; all but the first two are keyword-only
@@ -209,6 +216,7 @@ class _ConnectionSettings:
             auth_header=aiohttp.encode_basic_auth(username, password),
             verify_ssl=verify_ssl,
             timeout=timeout,
+            password_has_api_key_prefix=password.startswith("API_"),
         )
 
     @property

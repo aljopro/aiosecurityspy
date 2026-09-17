@@ -1267,7 +1267,12 @@ class SecuritySpyClient:
                     permission if permission is not None else _PERMISSION_UNKNOWN,
                     camera_number,
                 )
-            raise SecuritySpyAuthError(self._connection.host, self._connection.port, status)
+            raise SecuritySpyAuthError(
+                self._connection.host,
+                self._connection.port,
+                status,
+                password_has_api_key_prefix=self._connection.password_has_api_key_prefix,
+            )
         if status == _HTTP_FORBIDDEN:
             raise SecuritySpyPermissionError(
                 permission if permission is not None else _PERMISSION_UNKNOWN,

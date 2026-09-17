@@ -80,6 +80,16 @@ API_KEY: Final = "API_" + "9f3a7c1e5b2d4f608a1c3e5f7b9d1c3e"
 #: making the two credential types distinguishable in a failure.
 KEY_USERNAME: Final = "key-user-3b8a"
 
+#: A password that starts with `API_` but is NOT the full key shape (the
+#: spec's diagnostic-hint change): an ordinary password that happens to start
+#: with the prefix. Deliberately a different length/shape than `API_KEY` so a
+#: leak of *this* sentinel is distinguishable from a leak of the genuine
+#: key-shaped one, and short enough that it plainly is not SAMEKEY-shaped.
+PARTIAL_KEY_PASSWORD: Final = "API_sentinel-partial-e91c"  # noqa: S105 - leak-detection sentinel
+
+#: A username distinct from the others, used only with `PARTIAL_KEY_PASSWORD`.
+PARTIAL_KEY_USERNAME: Final = "partial-key-user-6d2f"
+
 #: Everything that must never appear in a log line, an exception or a URL.
 SENTINELS: Final = (
     USERNAME,
@@ -89,6 +99,8 @@ SENTINELS: Final = (
     PAYLOAD_MARKER,
     API_KEY,
     KEY_USERNAME,
+    PARTIAL_KEY_PASSWORD,
+    PARTIAL_KEY_USERNAME,
 )
 
 CAMERA: Final = 3
@@ -387,6 +399,22 @@ def make_client_with_key(server: FakeServer) -> SecuritySpyClient:
     )
 
 
+def make_client_with_partial_key_prefix(server: FakeServer) -> SecuritySpyClient:
+    """Build a client whose password merely starts with `API_` (not key-shaped).
+
+    This drives the diagnostic-hint path (spec: api-key-prefix-diagnostic-warning):
+    a 401 for this client must have the extra hint sentence in its message, and
+    the sentinel password itself must still never appear anywhere.
+    """
+    return SecuritySpyClient(
+        cast("aiohttp.ClientSession", server),
+        HOST,
+        PORT,
+        username=PARTIAL_KEY_USERNAME,
+        password=PARTIAL_KEY_PASSWORD,
+    )
+
+
 async def until(condition: Callable[[], bool]) -> None:
     """Yield to the loop until ``condition`` holds, failing rather than hanging."""
     async with asyncio.timeout(PATIENCE):
@@ -500,6 +528,12 @@ async def test_no_credential_reaches_a_log_line_an_exception_or_a_traceback(
         # more than a password does, on both a healthy and a rejecting server.
         key_succeeding = await drive_every_path(FakeServer(), make_client_with_key)
         key_rejected = await drive_every_path(FakeServer(401), make_client_with_key)
+        # And once more with a merely `API_`-prefixed (not key-shaped) password,
+        # which now triggers the diagnostic hint on `SecuritySpyAuthError` --
+        # proving the hint fires without ever leaking the password it names.
+        partial_key_rejected = await drive_every_path(
+            FakeServer(401), make_client_with_partial_key_prefix
+        )
 
     # Asserted per phase, not over the combined list: if the 401 phase silently
     # stopped raising -- the exact regression it exists to catch -- a non-empty
@@ -509,10 +543,18 @@ async def test_no_credential_reaches_a_log_line_an_exception_or_a_traceback(
     assert undecodable, "the undecodable-body phase must actually have raised"
     assert not key_succeeding, "the key-authenticated healthy-server phase must not raise"
     assert key_rejected, "the key-rejected phase must actually have raised"
-    errors = succeeding + rejected + undecodable + key_succeeding + key_rejected
+    assert partial_key_rejected, "the partial-key-prefix rejected phase must actually have raised"
+    errors = (
+        succeeding + rejected + undecodable + key_succeeding + key_rejected + partial_key_rejected
+    )
     haystack = f"{caplog.text}\n{rendered(errors)}"
     for sentinel in SENTINELS:
         assert sentinel not in haystack, sentinel
+    # The hint must actually have fired for this phase -- not merely have been
+    # silently skipped -- so the sentinel-absence assertion above means something.
+    assert any("API_" in str(err) for err in partial_key_rejected), (
+        "the API_-prefix diagnostic hint did not fire for a partial-key-shaped password"
+    )
     # Not a tautology: one stray line from anywhere would satisfy a bare
     # `caplog.text.strip()`, so count the library's own debug records instead.
     # The floor sits well under what the five phases actually emit, so an
