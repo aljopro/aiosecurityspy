@@ -32,7 +32,7 @@ import asyncio
 import base64
 import shutil
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 
@@ -44,6 +44,8 @@ import live_env
 from aiosecurityspy import (
     ARM_OVERRIDE_ARMED_1_HOUR,
     ARM_OVERRIDE_UNCHANGED,
+    CAPTURE_FILTER_ALL,
+    CAPTURE_TYPE_MOVIE,
     PERM_CAMCONTROL,
     PERM_SCHED,
     PERM_SETTINGS,
@@ -57,7 +59,7 @@ from aiosecurityspy import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from aiosecurityspy import ServerInfo
+    from aiosecurityspy import Capture, ServerInfo
 
 pytestmark = pytest.mark.live
 
@@ -66,6 +68,19 @@ UNNAMED_BIT_1 = 2
 
 #: Bounded lookback for the media probe; FR-4 forbids unbounded history queries.
 CAPTURE_LOOKBACK_DAYS = 7
+
+#: Poll cadence and deadline for the triggered-capture mechanism test (Story 4.1).
+TRIGGER_CAPTURE_POLL_INTERVAL = 3.0
+TRIGGER_CAPTURE_POLL_SECONDS = 90.0
+
+#: A matching capture's ``start`` must fall within this margin of the trigger
+#: instant, so an unrelated scheduled recording is never mistaken for the one
+#: the trigger produced.
+TRIGGER_CAPTURE_START_MARGIN = 15.0
+
+#: 2xx success band for the manual-trigger response.
+HTTP_2XX_MIN = 200
+HTTP_2XX_MAX = 300
 
 
 def _report(message: str) -> None:
@@ -791,3 +806,120 @@ async def test_live_relay_stream_decodes_through_ffprobe(session: aiohttp.Client
     assert client.host not in trace, "SecuritySpy's host reached the consumer"
     assert "auth=" not in trace
     assert "WWW-Authenticate" not in trace
+
+
+# --- Story 4.1: classification write timing (spike) --------------------------
+
+
+def _match_rank(capture: Capture, trigger_wall: datetime) -> tuple[int, timedelta]:
+    """Rank a candidate: prefer a motion movie, then closeness to the trigger."""
+    is_movie = capture.capture_type == CAPTURE_TYPE_MOVIE
+    distance = abs(capture.start - trigger_wall) if capture.start is not None else timedelta.max
+    return (0 if is_movie else 1, distance)
+
+
+@pytest.mark.asyncio
+async def test_live_classification_write_timing_mechanism(  # noqa: PLR0915 - trigger + bounded poll loop is the whole test
+    session: aiohttp.ClientSession,
+) -> None:
+    """A manual-triggered capture appears in `++caplist` with a decodable class set.
+
+    Mechanism lock-in for Story 4.1 (gate 4.1-LIVE-076): a triggered motion
+    movie must appear in `++caplist`, and its `o` field must decode to a
+    `frozenset[str]`. No wall-clock bound is asserted -- that would flake on
+    scene activity and model speed; the measured latency is a spike deliverable
+    in `scripts/measure_classification_write_timing.py`, not a test assertion.
+
+    The matched capture must be a motion movie whose ``start`` falls within a
+    small margin of the trigger instant; matching any new capture for the
+    camera would let an unrelated scheduled recording produce a false pass.
+    """
+    if not live_env.flag("SECURITYSPY_ALLOW_WRITES"):
+        pytest.skip("SECURITYSPY_ALLOW_WRITES is not set; this test triggers a real camera")
+    camera = _test_camera()
+    # The probe falls back from ADMIN to CONTROL when only CONTROL is
+    # configured; mirror that so the test does not skip where the probe runs.
+    role = "ADMIN" if live_env.credentials("ADMIN") is not None else "CONTROL"
+    client = _client(session, role)
+    info = await client.async_get_server_info()
+    if camera not in info.cameras:
+        pytest.skip(f"camera {camera} is not visible to the {role} account")
+    if info.utc_offset is None:
+        pytest.skip("the server published no usable seconds-from-gmt offset")
+    server_timezone = timezone(info.utc_offset)
+
+    # Widen the folder-date window so a trigger straddling the server's local
+    # midnight still finds its capture in the adjacent folder.
+    today = datetime.now(tz=server_timezone).date()
+    folder_start = today - timedelta(days=1)
+    folder_end = today + timedelta(days=1)
+    baseline = await client.async_get_captures(
+        [camera],
+        start_date=folder_start,
+        end_date=folder_end,
+        capture_filter=CAPTURE_FILTER_ALL,
+        server_timezone=server_timezone,
+    )
+    baseline_filenames = {capture.filename for capture in baseline}
+
+    account = live_env.credentials(role)
+    assert account is not None  # `_client` above already skipped if it were unset
+    username, password = account
+    trigger_wall = datetime.now(UTC)
+    headers = {"Authorization": aiohttp.encode_basic_auth(username, password)}
+    async with session.get(
+        f"{_base_url()}/++triggermd",
+        params={"cameraNum": camera},
+        headers=headers,
+        ssl=live_env.flag("SECURITYSPY_VERIFY_SSL"),
+    ) as response:
+        await response.read()  # drain fully so the connection closes cleanly
+        status = response.status
+    # Never keep the credential (or its base64 header) in the test frame past
+    # this point: a later assertion failure under `--showlocals` would print it.
+    del username, password
+    del headers["Authorization"]
+    assert HTTP_2XX_MIN <= status < HTTP_2XX_MAX, f"manual trigger returned HTTP {status}"
+
+    earliest = trigger_wall - timedelta(seconds=TRIGGER_CAPTURE_START_MARGIN)
+    latest = trigger_wall + timedelta(seconds=TRIGGER_CAPTURE_START_MARGIN)
+    deadline = asyncio.get_running_loop().time() + TRIGGER_CAPTURE_POLL_SECONDS
+    seen = set(baseline_filenames)
+    matched: Capture | None = None
+    while asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(TRIGGER_CAPTURE_POLL_INTERVAL)
+        captures = await client.async_get_captures(
+            [camera],
+            start_date=folder_start,
+            end_date=folder_end,
+            capture_filter=CAPTURE_FILTER_ALL,
+            server_timezone=server_timezone,
+        )
+        candidates: list[Capture] = []
+        for capture in captures:
+            if capture.filename in seen:
+                continue
+            seen.add(capture.filename)
+            if capture.camera != camera or capture.start is None:
+                continue
+            if not earliest <= capture.start <= latest:
+                continue
+            candidates.append(capture)
+        if candidates:
+            matched = min(
+                candidates,
+                key=lambda c: _match_rank(c, trigger_wall),
+            )
+            break
+    assert matched is not None, (
+        "no triggered motion capture appeared for the test camera within the "
+        "poll window; the camera may not be armed for motion recording, the "
+        "capture may have landed outside the start margin (busy camera, "
+        "trigger rate limiting), or the trigger was refused"
+    )
+    assert isinstance(matched.object_classes, frozenset)
+    assert all(isinstance(name, str) for name in matched.object_classes)
+    _report(
+        f"  camera {camera}: triggered capture {matched.filename!r} "
+        f"object_classes={sorted(matched.object_classes)}"
+    )
