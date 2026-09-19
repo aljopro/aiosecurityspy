@@ -3,6 +3,15 @@ name: Publish
 on:
   release:
     types: [published]
+  # Every change to the library's source (or its packaging) that lands on main is
+  # published as an alpha, so the integration can test it against the real
+  # package with an exact pin. Stable releases stay manual: publish a GitHub
+  # Release tagged vX.Y.Z.
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "pyproject.toml"
 
 # Actions are pinned to commit SHAs rather than floating tags, not just as a
 # general precaution: this workflow holds `id-token: write` for PyPI trusted
@@ -12,6 +21,7 @@ on:
 jobs:
   publish:
     name: Build and publish to PyPI
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -62,3 +72,95 @@ jobs:
 
       - name: Publish
         run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/aiosecurityspy/
+
+  # Decides whether this push produces an alpha, and which version it gets. It has
+  # no `id-token` permission: nothing that can mint a PyPI token runs until the
+  # gates in `publish-alpha` have passed.
+  plan-alpha:
+    name: Plan the alpha version
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      alpha_version: ${{ steps.plan.outputs.alpha_version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Derive the alpha version
+        id: plan
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          base="$(uv version --short)"
+          case "$base" in
+            *[a-zA-Z]*)
+              echo "pyproject.toml declares a pre-release ('${base}'); it must hold the plain X.Y.Z being prepared." >&2
+              exit 1
+              ;;
+          esac
+          # pyproject.toml holds the version being prepared. Once that exact
+          # version is on PyPI as a stable release, an alpha of it would sort
+          # below the release, so wait for the next version bump instead.
+          status="$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://pypi.org/pypi/aiosecurityspy/${base}/json")"
+          if [ "$status" = "200" ]; then
+            echo "::notice::${base} is already released; bump pyproject.toml to the next version to publish alphas again."
+            echo "alpha_version=" >> "$GITHUB_OUTPUT"
+          else
+            echo "alpha_version=${base}a${RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "Planned alpha: ${base}a${RUN_NUMBER}"
+          fi
+
+  publish-alpha:
+    name: Build and publish the alpha to PyPI
+    needs: plan-alpha
+    if: needs.plan-alpha.outputs.alpha_version != ''
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # required for PyPI trusted publishing (OIDC)
+    concurrency:
+      group: publish-alpha
+      cancel-in-progress: false
+    env:
+      ALPHA_VERSION: ${{ needs.plan-alpha.outputs.alpha_version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Mypy (strict)
+        run: uv run mypy --strict src tests
+
+      - name: Pytest
+        run: uv run pytest -q
+
+      # The alpha version exists only for this build; nothing is committed back.
+      - name: Set the alpha version
+        run: uv version "$ALPHA_VERSION" --frozen
+
+      - name: Build
+        run: uv build
+
+      - name: Publish
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/aiosecurityspy/
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published aiosecurityspy ${ALPHA_VERSION}"
+            echo "From \`${GITHUB_SHA}\`. Pin it exactly to test it: \`aiosecurityspy==${ALPHA_VERSION}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
