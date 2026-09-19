@@ -48,7 +48,11 @@ from .const import (
     decode_object_classes,
     decode_permissions,
 )
-from .exceptions import SecuritySpyPermissionError, SecuritySpyUnsupportedVersionError
+from .exceptions import (
+    SecuritySpyPermissionError,
+    SecuritySpyServerIdentityError,
+    SecuritySpyUnsupportedVersionError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -996,7 +1000,10 @@ def _decode_rtsp_port(server: dict[str, object]) -> int | None:
 class ServerInfo:
     """The SecuritySpy server and its camera inventory.
 
-    ``uuid`` is the stable hub identifier; never key off hostname or IP.
+    ``uuid`` is the stable hub identifier; never key off hostname or IP. It is
+    always a non-empty string: :meth:`from_api` raises
+    :class:`~aiosecurityspy.SecuritySpyServerIdentityError` rather than return
+    an instance without one.
     """
 
     uuid: str
@@ -1078,6 +1085,9 @@ class ServerInfo:
                 server is older than the supported minimum, when no recognised
                 camera-list key is present at all, or when the server reports a
                 positive camera count but zero cameras survive decoding.
+            SecuritySpyServerIdentityError: When the server block has no
+                usable ``uuid`` (missing, null, empty or whitespace only). The
+                version check runs first, so a bad version wins.
 
         Returns:
             The decoded server info.
@@ -1097,6 +1107,9 @@ class ServerInfo:
             raise SecuritySpyUnsupportedVersionError(version, MIN_SERVER_VERSION_TEXT)
         if version_info < MIN_SERVER_VERSION:
             raise SecuritySpyUnsupportedVersionError(version, MIN_SERVER_VERSION_TEXT)
+        uuid = (_as_str(server.get("uuid")) or "").strip()
+        if not uuid:
+            raise SecuritySpyServerIdentityError
 
         schedules = cls._decode_schedules(system)
         cameras, located = cls._decode_cameras(system)
@@ -1122,7 +1135,7 @@ class ServerInfo:
         memory_pressure = _as_float(server.get("memory-pressure"))
         utc_offset = _decode_utc_offset(server.get("seconds-from-gmt"))
         return cls(
-            uuid=_as_str(server.get("uuid")) or "",
+            uuid=uuid,
             name=_decode_server_name(server),
             version=version,
             version_info=version_info,

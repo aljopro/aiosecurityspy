@@ -21,6 +21,7 @@ __all__ = [
     "SecuritySpyConnectError",
     "SecuritySpyError",
     "SecuritySpyPermissionError",
+    "SecuritySpyServerIdentityError",
     "SecuritySpyUnsupportedVersionError",
 ]
 
@@ -158,3 +159,18 @@ class SecuritySpyUnsupportedVersionError(SecuritySpyError):
             f"SecuritySpy server version {found_text} is not supported; "
             f"version {required} or newer is required"
         )
+
+
+class SecuritySpyServerIdentityError(SecuritySpyError):
+    """The ``++systemInfo`` payload carries no usable server UUID.
+
+    A real SecuritySpy server always publishes its UUID, so a payload without
+    one is malformed or is not SecuritySpy. This is a permanent failure:
+    retrying will not help. It is deliberately not a subclass of the connect,
+    auth, permission or unsupported-version errors. The message never includes
+    the payload, the host or any credential.
+    """
+
+    def __init__(self) -> None:
+        """Build the fixed, payload-free message."""
+        super().__init__("SecuritySpy server info did not include a server UUID")

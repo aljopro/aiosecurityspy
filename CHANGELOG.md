@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (pre-1.0; the next release is a minor bump):** `ServerInfo.from_api()`
+  now raises the new `SecuritySpyServerIdentityError` when the `++systemInfo`
+  payload has no usable server `uuid` (missing, null, empty or whitespace only).
+  Previously such a payload decoded to `uuid=""`. `ServerInfo.uuid` is therefore
+  always a non-empty `str`. The check runs after the version check, so a missing
+  or unsupported version still raises `SecuritySpyUnsupportedVersionError` first.
+  The error is a permanent failure (do not retry), a sibling of the other
+  `SecuritySpyError` subclasses, and its message never includes the payload, host
+  or credentials. It surfaces from `async_get_server_info()` and from every method
+  built on it, so code that catches only specific errors around those calls should
+  also catch this one (or `SecuritySpyError`). The decoded UUID is now stripped of
+  surrounding whitespace.
+
+### Added
+
+- `SecuritySpyServerIdentityError`, exported from `aiosecurityspy`.
+
 ## [0.4.0] - 2026-09-13
 
 ### Added

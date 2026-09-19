@@ -33,6 +33,7 @@ from aiosecurityspy import (
     CameraStatus,
     Capture,
     CapturePreview,
+    SecuritySpyServerIdentityError,
     SecuritySpyUnsupportedVersionError,
     ServerInfo,
     capture_filter_for_class,
@@ -727,7 +728,7 @@ def test_underscored_camera_number_does_not_alias_a_real_camera() -> None:
     """`int("1_0")` is 10 in Python; that must not collide with a real camera 10."""
     info = ServerInfo.from_api(
         {
-            "server": {"version": "6.20"},
+            "server": {"version": "6.20", "uuid": "abc"},
             "cameralist": {"camera": [{"number": "1_0"}, {"number": "10", "name": "Real"}]},
         }
     )
@@ -746,7 +747,7 @@ def test_negative_camera_count_falls_back_to_the_decoded_count() -> None:
     """A negative inventory size is nonsense and must not reach a consumer."""
     info = ServerInfo.from_api(
         {
-            "server": {"version": "6.20", "camera-count": "-3"},
+            "server": {"version": "6.20", "uuid": "abc", "camera-count": "-3"},
             "cameralist": {"camera": [{"number": "1"}]},
         }
     )
@@ -1655,3 +1656,67 @@ def test_rtsp_port_decodes_enabled_disabled_missing_and_malformed(
     if port is not None:
         server["http-port"] = port
     assert ServerInfo.from_api(wrap(server, [])).rtsp_port == expected
+
+
+# --- Story 8.1: a payload with no server UUID is a decode failure ------------
+
+
+def _identity_payload(**server: object) -> dict[str, object]:
+    """Build a minimal valid payload whose server block is exactly `server`."""
+    return {"system": {"server": server, "camera-list": []}}
+
+
+def test_server_uuid_present_decodes() -> None:
+    """A non-empty UUID decodes unchanged."""
+    info = ServerInfo.from_api(_identity_payload(version="6.20", uuid="abc-123"))
+    assert info.uuid == "abc-123"
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        {"version": "6.20"},
+        {"version": "6.20", "uuid": None},
+        {"version": "6.20", "uuid": ""},
+        {"version": "6.20", "uuid": "   \t\n"},
+        {"version": "6.20", "uuid": True},
+        {"version": "6.20", "uuid": ["x"]},
+    ],
+)
+def test_server_uuid_missing_null_or_blank_raises(server: dict[str, object]) -> None:
+    """Missing, null, empty, whitespace-only or unusable UUIDs raise the identity error."""
+    with pytest.raises(SecuritySpyServerIdentityError):
+        ServerInfo.from_api(_identity_payload(**server))
+
+
+def test_server_uuid_is_stored_stripped() -> None:
+    """Surrounding whitespace is not part of the identity, so the stored UUID is stripped."""
+    info = ServerInfo.from_api(_identity_payload(version="6.20", uuid="  abc \n"))
+    assert info.uuid == "abc"
+
+
+def test_server_uuid_wrong_type_follows_as_str_rules() -> None:
+    """A numeric UUID is coerced as other fields are, and is not rejected."""
+    info = ServerInfo.from_api(_identity_payload(version="6.20", uuid=123))
+    assert info.uuid == "123"
+
+
+@pytest.mark.parametrize("version", [None, "not-a-version", "5.0"])
+def test_bad_version_is_reported_before_missing_uuid(version: str | None) -> None:
+    """The existing version error still wins when the UUID is also missing."""
+    server: dict[str, object] = {} if version is None else {"version": version}
+    with pytest.raises(SecuritySpyUnsupportedVersionError):
+        ServerInfo.from_api(_identity_payload(**server))
+
+
+def test_server_identity_error_message_has_no_payload_data() -> None:
+    """The message names the missing UUID only, never host, name or other payload values."""
+    with pytest.raises(SecuritySpyServerIdentityError) as err:
+        ServerInfo.from_api(
+            _identity_payload(version="6.20", name="secret-host.local", **{"http-port": 8000})
+        )
+    message = str(err.value)
+    assert "UUID" in message
+    assert "secret-host" not in message
+    assert "8000" not in message
+    assert "6.20" not in message

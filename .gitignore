@@ -8,9 +8,9 @@ __pycache__/
 .venv/
 venv/
 
-# Local credentials for the opt-in live-server tests. This repository is
-# published standalone via `git subtree split`, so it cannot rely on the
-# parent repository's .gitignore to keep these out of a public commit.
+# Local credentials for the opt-in live-server tests. This is a public
+# repository of its own, so it must keep these out of a commit itself rather
+# than rely on any other repository's .gitignore.
 .env
 .env.*
 !.env.example

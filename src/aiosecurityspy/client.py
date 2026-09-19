@@ -597,6 +597,8 @@ class SecuritySpyClient:
                 account lacks a required permission (403).
             SecuritySpyUnsupportedVersionError: The server is older than the
                 supported minimum, or the payload shape is not locatable.
+            SecuritySpyServerIdentityError: The payload carries no usable
+                server UUID. This is permanent; retrying will not help.
 
         Returns:
             The decoded server info, including ``cameras`` keyed by camera
@@ -710,6 +712,8 @@ class SecuritySpyClient:
                 permission.
             SecuritySpyUnsupportedVersionError: The server or payload shape
                 was unsupported.
+            SecuritySpyServerIdentityError: The server info carried no usable
+                server UUID.
 
         Returns:
             One :class:`~aiosecurityspy.CameraView` per camera this account

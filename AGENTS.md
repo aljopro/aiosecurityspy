@@ -6,7 +6,7 @@ This file provides guidance to AI coding agents (Claude Code and others) when wo
 
 `aiosecurityspy` — an async, fully-typed Python client library for the Ben Software SecuritySpy HTTP and event API. It owns *all* SecuritySpy protocol knowledge (endpoint URLs, event-stream framing, capture-field/bitmask decoding, the detection-episode reducer, credential-safe diagnostics) as an ordinary PyPI package usable from any script — no Home Assistant import anywhere in it.
 
-This directory is both a subtree of `ha-securityspy` (a Home Assistant custom integration that consumes this library as a dev/editable dependency) and mirrored as the standalone GitHub repo `aljopro/aiosecurityspy`, published to PyPI. If you're working from inside `ha-securityspy`, see that repo's root `AGENTS.md`, section "Porting `aiosecurityspy` changes to the standalone repo", for how the two fit together and how commits get ported between them — in short: `git subtree split` + merge, one way only (subtree → standalone), never a hand-edit of this repo's working tree from outside it.
+This is its own repository (`aljopro/aiosecurityspy`), published to PyPI through the trusted-publisher workflow. The `ha-securityspy` Home Assistant integration consumes it as an exactly-pinned PyPI dependency; it is no longer a subtree of that repo, and changes here reach the integration only through a release and a pin bump there.
 
 Design constraints that shape everything here:
 - **Session-injected**: `aiohttp` is a dependency, but the library never creates, reconfigures, or closes a session. The caller owns it. `SecuritySpyClient` deliberately has no `close()`.
@@ -29,7 +29,7 @@ uv run mypy --strict src tests
 uv build                                   # sdist + wheel
 ```
 
-If you're invoking these from the `ha-securityspy` repo root instead of from here, use `uv run --directory aiosecurityspy pytest -q` — plain `pytest` from that root picks up the *integration's* incompatible pytest config (`asyncio_mode = "auto"`, no `filterwarnings`) and the library's ~700 tests error at setup rather than fail normally. This library's own config (`asyncio_mode = "strict"`, `filterwarnings = ["error"]` — a bare deprecation warning fails the run) only applies when pytest starts from inside this directory.
+This library's own pytest config (`asyncio_mode = "strict"`, `filterwarnings = ["error"]` — a bare deprecation warning fails the run) applies when pytest starts from inside this repository, so run every command from here.
 
 ### CI does more than the four commands above
 
@@ -39,7 +39,7 @@ If you're invoking these from the `ha-securityspy` repo root instead of from her
 
 SecuritySpy's HTTP API is undocumented by the vendor. This library's description of it is the authority:
 - **[docs/securityspy-openapi.yaml](docs/securityspy-openapi.yaml)** — OpenAPI 3.1, schema-validated in CI. Read its header before generating anything from it: `++getpreview`'s URL has a literal `?` inside the path and a second one before `archive`; settings POST bodies must start with a bare `formData` token (not `key=value`); checkbox fields are keyed by HTML element id and their order matters. A generated client that ignores these annotations will be broken in ways the description looks like it endorses.
-- If working inside the `ha-securityspy` repo, `_bmad-output/planning-artifacts/research/securityspy-api-reference.md` is the deeper reverse-engineering writeup this OpenAPI file is distilled from, and supersedes the vendor's own docs where they disagree.
+- The `ha-securityspy` repo's `_bmad-output/planning-artifacts/research/securityspy-api-reference.md` is the deeper reverse-engineering writeup this OpenAPI file is distilled from, and supersedes the vendor's own docs where they disagree.
 
 ## Protocol gotchas — each has caused a real bug
 
@@ -66,11 +66,11 @@ SecuritySpy's HTTP API is undocumented by the vendor. This library's description
 - `episodes.py` — `EpisodeReducer` / `ReducerConfig` / `EpisodeOpened` / `EpisodeClosed`.
 - `models.py` — `ServerInfo`, camera info, `Capture`, etc.
 - `diagnostics.py` — credential-safe redaction helpers.
-- `exceptions.py` — typed error hierarchy: `SecuritySpyAuthError`, `SecuritySpyPermissionError`, `SecuritySpyConnectError`, `SecuritySpyCertificateError`, `SecuritySpyUnsupportedVersionError`, `SecuritySpyError`.
+- `exceptions.py` — typed error hierarchy: `SecuritySpyAuthError`, `SecuritySpyPermissionError`, `SecuritySpyConnectError`, `SecuritySpyCertificateError`, `SecuritySpyUnsupportedVersionError`, `SecuritySpyServerIdentityError` (the `++systemInfo` payload has no server UUID; permanent, not retryable), `SecuritySpyError`.
 - `const.py` — protocol constants (e.g. `DEFAULT_PORT`).
 
 ## Release process
 
-PyPI publishing is trusted-publisher (OIDC) via `.github/workflows/publish.yml`, triggered on a GitHub release — no API tokens/secrets involved. See the `aiosecurityspy-release-setup` memory: the trusted publisher and `pypi` environment are already configured; the first actual release is still pending, so don't assume a version is on PyPI without checking.
+PyPI publishing is trusted-publisher (OIDC) via `.github/workflows/publish.yml`, triggered on a GitHub release — no API tokens/secrets involved. See the `aiosecurityspy-release-setup` memory: the trusted publisher and `pypi` environment are already configured; releases are cut from GitHub releases (the CHANGELOG lists what has shipped), but check PyPI before assuming a given version is published.
 
 Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/spec/v2.0.0.html) in `CHANGELOG.md` — a breaking API change (like the `server_timezone` requirement) gets an explicit "BREAKING" callout under `### Changed`, not just a terse bullet.

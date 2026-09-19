@@ -40,6 +40,7 @@ from aiosecurityspy import (
     SecuritySpyConnectError,
     SecuritySpyError,
     SecuritySpyPermissionError,
+    SecuritySpyServerIdentityError,
     SecuritySpyUnsupportedVersionError,
 )
 from aiosecurityspy import client as client_module
@@ -532,6 +533,15 @@ async def test_old_server_maps_to_unsupported_version() -> None:
         await make_client(FakeSession(200, body)).async_get_server_info()
     assert "5.2" in str(err.value)
     assert "6.0" in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_missing_server_uuid_raises_identity_error_and_is_not_a_connect_error() -> None:
+    """The permanent identity error reaches the caller as itself, never as a retryable one."""
+    body = json.dumps({"system": {"server": {"version": "6.20"}, "cameralist": {"camera": []}}})
+    with pytest.raises(SecuritySpyServerIdentityError) as err:
+        await make_client(FakeSession(200, body)).async_get_server_info()
+    assert not isinstance(err.value, SecuritySpyConnectError)
 
 
 @pytest.mark.asyncio

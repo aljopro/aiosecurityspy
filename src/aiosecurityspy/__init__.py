@@ -144,6 +144,7 @@ from .exceptions import (
     SecuritySpyConnectError,
     SecuritySpyError,
     SecuritySpyPermissionError,
+    SecuritySpyServerIdentityError,
     SecuritySpyUnsupportedVersionError,
 )
 from .models import (
@@ -312,6 +313,7 @@ __all__ = [
     "SecuritySpyError",
     "SecuritySpyEventStream",
     "SecuritySpyPermissionError",
+    "SecuritySpyServerIdentityError",
     "SecuritySpyUnsupportedVersionError",
     "ServerInfo",
     "StreamEvent",

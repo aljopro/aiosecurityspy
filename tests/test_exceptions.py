@@ -7,7 +7,16 @@ flag on must append one generic, credential-free sentence.
 
 from __future__ import annotations
 
-from aiosecurityspy.exceptions import SecuritySpyAuthError
+import aiosecurityspy
+from aiosecurityspy.exceptions import (
+    SecuritySpyAuthError,
+    SecuritySpyCertificateError,
+    SecuritySpyConnectError,
+    SecuritySpyError,
+    SecuritySpyPermissionError,
+    SecuritySpyServerIdentityError,
+    SecuritySpyUnsupportedVersionError,
+)
 
 HOST = "nvr.example.com"
 PORT = 8001
@@ -46,3 +55,30 @@ def test_auth_error_hint_is_phrased_as_observed_not_guaranteed() -> None:
     hinted = SecuritySpyAuthError(HOST, PORT, STATUS, password_has_api_key_prefix=True)
     message = str(hinted).lower()
     assert "observed" in message
+
+
+def test_server_identity_error_is_a_plain_sibling_of_the_other_errors() -> None:
+    """It is a SecuritySpyError but not any of the retryable/auth/permission/version errors."""
+    assert issubclass(SecuritySpyServerIdentityError, SecuritySpyError)
+    for other in (
+        SecuritySpyConnectError,
+        SecuritySpyCertificateError,
+        SecuritySpyAuthError,
+        SecuritySpyPermissionError,
+        SecuritySpyUnsupportedVersionError,
+    ):
+        assert not issubclass(SecuritySpyServerIdentityError, other)
+        assert not issubclass(other, SecuritySpyServerIdentityError)
+
+
+def test_server_identity_error_message_and_repr_are_fixed() -> None:
+    """The message names only the missing UUID; repr is credential-free."""
+    err = SecuritySpyServerIdentityError()
+    assert str(err) == "SecuritySpy server info did not include a server UUID"
+    assert repr(err) == f"SecuritySpyServerIdentityError({str(err)!r})"
+
+
+def test_server_identity_error_is_exported_from_the_package() -> None:
+    """It is importable from the package root and listed in __all__."""
+    assert aiosecurityspy.SecuritySpyServerIdentityError is SecuritySpyServerIdentityError
+    assert "SecuritySpyServerIdentityError" in aiosecurityspy.__all__
